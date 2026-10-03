@@ -10,6 +10,7 @@ measured response of the anchor neurons (tools/probe_circuit.py).
 from __future__ import annotations
 
 import math
+from collections import deque
 from dataclasses import dataclass
 
 import numpy as np
@@ -32,8 +33,10 @@ class BrainSpec:
     walk_drive: tuple = (650.0, 3.0)  # Poisson events (Hz, mV on g) on WALK at full bias; rate scales with bias
     rest_drive: tuple | None = None   # tonic events on REST, which competes with WALK (toy only)
     bulk_hz: float = 0.0              # Poisson drive of BULK_DRIVE neurons (toy only)
-    gf_on_hz: float = 15.0
+    gf_on_hz: float = 15.0            # rate path to take-off (smoothed GF rate); the spike event below is the fast path
     gf_off_hz: float = 3.0
+    gf_event_spikes: int = 2          # take-off as soon as this many GF spikes (both neurons together) fall in one
+    gf_event_ms: float = 10.0         # window of at least this long (whole engine chunks); 0 spikes = rate path only
     mdn_on_hz: float = 5.0
     mdn_off_hz: float = 2.0
     groom_on_hz: float = 8.0          # mean rate of the grooming DNs (aDN1, aDN2)
@@ -46,7 +49,8 @@ class BrainSpec:
 
 
 # Toy circuit: calibrated with tools/calibrate.py
-TOY = BrainSpec(loom_gain=10.0, loom_max_hz=250.0, vis_max_hz=60.0, rest_drive=(500.0, 3.0), bulk_hz=150.0)
+TOY = BrainSpec(loom_gain=10.0, loom_max_hz=250.0, vis_max_hz=60.0, rest_drive=(500.0, 3.0), bulk_hz=150.0,
+               gf_event_spikes=0)
 # FlyWire circuit (15,000-neuron tier, within ~2% of the full brain; tools/probe_circuit.py, probe_combo.py):
 #   LPLC2 + LC4 -> GF: 15 Hz at ~6 Hz of input, 63 Hz at 20 Hz, 200 Hz at 80 Hz
 #   LPC1 -> MDN: ~0 up to 12 Hz of input, 15 Hz at 20 Hz, 26 Hz at 30 Hz  (LPC1 is a functional placeholder for
@@ -78,6 +82,9 @@ class Brain:
         parts = [self.group(k) for k in self.rates]
         self._mon_idx = np.concatenate(parts).astype(np.int32)
         self._mon_edges = np.cumsum([0] + [len(p) for p in parts])
+        self._gf_slot = list(self.rates).index("GF")
+        self._gf_hist: deque = deque()      # (chunk ms, GF spikes in it), newest last: the window of the spike event
+        self.gf_window = 0                  # GF spikes in that window now
         self.state = STAND
         self._dwell = 0.0
         self.walk_bias = 0.0
@@ -167,8 +174,17 @@ class Brain:
             if hi > lo:
                 inst = (cs[hi] - cs[lo]) / ((hi - lo) * ms / 1000.0)
                 self.rates[k] += a * (inst - self.rates[k])
+        self._track_gf_spikes(ms, int(cs[self._mon_edges[self._gf_slot + 1]] - cs[self._mon_edges[self._gf_slot]]))
         self._decode(ms)
         return self.state
+
+    def _track_gf_spikes(self, ms: float, spikes: int):
+        """Keep the GF spike counts of the last `gf_event_ms` (rounded up to whole chunks)."""
+        h = self._gf_hist
+        h.append((ms, spikes))
+        self.gf_window += spikes
+        while len(h) > 1 and sum(m for m, _ in h) - h[0][0] >= self.spec.gf_event_ms:
+            self.gf_window -= h.popleft()[1]
 
     def _decode(self, ms: float):
         """Priority: take-off, then grooming, then retreat, then walk / stand."""
@@ -179,7 +195,10 @@ class Brain:
         cur = self.state
         new = cur
         groom = self.rates["GROOM"]
-        if gf > s.gf_on_hz:
+        # take-off is an event, not a rate: a few GF spikes in ~10 ms (the animal takes off on one or two); the
+        # smoothed rate stays as the second path and as the way out of the state
+        event = s.gf_event_spikes > 0 and self.gf_window >= s.gf_event_spikes
+        if event or gf > s.gf_on_hz:
             new = FLY                                   # escape: immediate
         elif cur == FLY:
             if gf < s.gf_off_hz and self._dwell >= s.min_fly_ms:

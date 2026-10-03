@@ -124,3 +124,30 @@ def test_touch_calms_a_moderate_approach_but_not_a_fast_one():
     assert "fly" in seen["moderate"]
     assert "groom" in seen["moderate+touch"] and "fly" not in seen["moderate+touch"]
     assert "fly" in seen["fast+touch"]
+
+
+def test_restart_returns_at_once_and_the_last_request_wins():
+    r = Runner(EngineConfig(n=2_000, dt=0.5))
+    try:
+        assert _wait(lambda: r.ready, 90), "worker did not become ready"
+        t0 = time.perf_counter()
+        r.start(EngineConfig(n=5_000, dt=0.5))                  # the GUI thread must not wait for the old worker
+        r.start(EngineConfig(n=10_000, dt=0.5))
+        took = time.perf_counter() - t0
+        assert took < 0.5, f"start blocked for {took:.2f} s"
+        assert not r.ready and r.alive and not r.failed         # restarting is not an error
+        assert _wait(lambda: r.ready and r.stats()["n"] == 10_000, 90)
+        time.sleep(0.5)
+        assert r.stats()["n"] == 10_000 and r.cfg.n == 10_000   # the 5,000 one never replaced it
+    finally:
+        r.stop()
+    assert not r.alive
+
+
+def test_stop_during_a_restart_leaves_no_worker_behind():
+    r = Runner(EngineConfig(n=2_000, dt=0.5))
+    assert _wait(lambda: r.ready, 90)
+    r.start(EngineConfig(n=5_000, dt=0.5))
+    r.stop()
+    time.sleep(0.5)
+    assert not r.alive and r._proc is None

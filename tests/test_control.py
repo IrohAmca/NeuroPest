@@ -88,3 +88,41 @@ def test_tray_and_window_visibility_stay_in_step(app):
     c.visible.setChecked(True)
     assert t.visible.isChecked() and o.shown
     assert "Yürüyor" in t.toolTip()
+
+
+def test_gpus_are_listed_only_when_asked_for_or_needed(app, monkeypatch):
+    import time
+
+    from neuropest import control
+
+    calls = []
+    gpu = dict(index=3, name="Fake GPU", backend="Vulkan", type="DiscreteGPU")
+    monkeypatch.setattr(control, "list_gpus", lambda: calls.append(1) or [gpu])
+    monkeypatch.setattr(control.importlib.util, "find_spec", lambda name, *a: object() if name == "wgpu" else None)
+
+    def finish(c):
+        end = time.time() + 5
+        while not c._gpu_scanned and time.time() < end:
+            c._gpus_found()
+            time.sleep(0.02)
+        assert c._gpu_scanned
+
+    r = FakeRunner()
+    c = control.Control(FakeOverlay(), r)
+    assert not calls and c.hw.itemText(2) == control.SCAN_ITEM      # opening the window scans nothing
+    c.size.setValue(0)
+    c._apply()
+    assert not calls                                                # a small size on "Otomatik" does not need it
+    c.hw.setCurrentIndex(2)                                         # picking the entry asks for the scan
+    c._hw_activated(2)
+    assert c.hw.currentIndex() == 0
+    finish(c)
+    assert len(calls) == 1 and c.hw.itemText(2).startswith("GPU: Fake GPU") and c.hw.count() == 3
+
+    r2 = FakeRunner()                                               # a big size on "Otomatik" waits for the scan
+    c2 = control.Control(FakeOverlay(), r2)
+    c2.size.setValue(c2.size.maximum())
+    c2._apply()
+    assert not r2.started and c2._gpu_scanning
+    finish(c2)
+    assert r2.started[-1].backend == "gpu" and r2.started[-1].adapter == 3 and len(calls) == 2

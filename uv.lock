@@ -176,8 +176,6 @@ dependencies = [
     { name = "numba" },
     { name = "numpy", version = "2.4.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12'" },
     { name = "numpy", version = "2.5.3", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
-    { name = "pandas" },
-    { name = "pyarrow" },
     { name = "pyside6" },
     { name = "scipy", version = "1.17.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12'" },
     { name = "scipy", version = "1.18.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
@@ -189,6 +187,10 @@ gpu = [
 ]
 
 [package.dev-dependencies]
+build = [
+    { name = "pandas" },
+    { name = "pyarrow" },
+]
 dev = [
     { name = "pytest" },
 ]
@@ -197,8 +199,6 @@ dev = [
 requires-dist = [
     { name = "numba", specifier = ">=0.68.0" },
     { name = "numpy", specifier = ">=1.26" },
-    { name = "pandas", specifier = ">=2.0" },
-    { name = "pyarrow", specifier = ">=15" },
     { name = "pyside6", specifier = ">=6.7" },
     { name = "scipy", specifier = ">=1.11" },
     { name = "wgpu", marker = "extra == 'gpu'", specifier = ">=0.32.0" },
@@ -206,6 +206,10 @@ requires-dist = [
 provides-extras = ["gpu"]
 
 [package.metadata.requires-dev]
+build = [
+    { name = "pandas", specifier = ">=2.0" },
+    { name = "pyarrow", specifier = ">=15" },
+]
 dev = [{ name = "pytest", specifier = ">=9.1.1" }]
 
 [[package]]

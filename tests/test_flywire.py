@@ -6,7 +6,9 @@ import pyarrow.parquet as pq
 import pytest
 
 from neuropest import flywire
-from neuropest.brain import FLY, GROOM, RETREAT, STAND, Brain
+from dataclasses import replace
+
+from neuropest.brain import FLY, FLYWIRE, GROOM, RETREAT, STAND, Brain
 from neuropest.engine import LIFEngine
 
 N = 400
@@ -170,6 +172,33 @@ def test_brain_fast_approach_escapes_and_moderate_approach_retreats(tier):
     assert RETREAT in seen and FLY not in seen
 
 
+def test_brain_gf_spike_event_takes_off_without_the_rate_path(tier):
+    never_rate = 1e9                                    # the smoothed-rate path can no longer fire
+    b = Brain(tier, spec=replace(FLYWIRE, gf_on_hz=never_rate, gf_event_spikes=2))
+    b.set_stimulus(150, 3000, 0.0)
+    assert FLY in {b.advance(4.0) for _ in range(150)}
+    off = Brain(tier, spec=replace(FLYWIRE, gf_on_hz=never_rate, gf_event_spikes=0))
+    off.set_stimulus(150, 3000, 0.0)
+    assert FLY not in {off.advance(4.0) for _ in range(150)}
+
+
+def test_brain_gf_spike_window_covers_whole_chunks_of_at_least_the_event_time(tier):
+    b = Brain(tier, spec=replace(FLYWIRE, gf_event_ms=10.0))
+    for spikes in (1, 0, 0, 0, 0, 2):                   # 4 ms chunks: the window is 3 chunks (12 ms >= 10 ms)
+        b._track_gf_spikes(4.0, spikes)
+    assert b.gf_window == 2
+    b._track_gf_spikes(4.0, 1)
+    b._track_gf_spikes(4.0, 1)
+    assert b.gf_window == 4
+    for _ in range(3):
+        b._track_gf_spikes(4.0, 0)
+    assert b.gf_window == 0
+    g = Brain(tier, spec=replace(FLYWIRE, gf_event_ms=10.0))
+    g._track_gf_spikes(12.0, 3)                         # a GPU chunk longer than the window is its own window
+    g._track_gf_spikes(12.0, 1)
+    assert g.gf_window == 1
+
+
 def test_brain_steering_follows_the_side_of_the_cursor(tier):
     right, left = Brain(tier), Brain(tier)
     right.set_stimulus(150, 0, 0.0, bearing=1.5)
@@ -208,3 +237,33 @@ def test_brain_hover_makes_the_fly_groom_and_calms_a_take_off(tier):
     off = Brain(tier)
     off.set_stimulus(5, 0, 0.0, bearing=0.5, touch=0.0)  # near but not touching: no grooming
     assert GROOM not in {off.advance(4.0) for _ in range(250)}
+
+
+def test_tier_cache_is_written_once_and_follows_the_full_cache(raw, tmp_path):
+    full = flywire.build(raw)
+    cache = tmp_path / "full.npz"
+    full.save(cache)
+    tiers = tmp_path / "tiers"
+    a = flywire.load_tier(150, cache, tiers)
+    path = flywire.tier_path(150, cache, tiers)
+    assert path.exists() and a.n == 150
+    assert not list(tiers.glob("*.tmp.npz"))                    # the atomic write left nothing behind
+    mtime = path.stat().st_mtime_ns
+    b = flywire.load_tier(150, cache, tiers)                    # served from the file
+    assert path.stat().st_mtime_ns == mtime
+    assert np.array_equal(a.indptr, b.indptr) and np.array_equal(a.indices, b.indices)
+    assert np.array_equal(a.data, b.data) and np.array_equal(a.ids, b.ids)
+    assert all(np.array_equal(a.groups[k], b.groups[k]) for k in a.groups)
+    ref = full.prefix(150)                                      # and it is the same network as cutting it by hand
+    assert np.array_equal(ref.indices, b.indices) and np.array_equal(ref.ids, b.ids)
+    # a rebuilt full cache invalidates the tier
+    full.save(cache)
+    import os
+    os.utime(cache, ns=(cache.stat().st_atime_ns, cache.stat().st_mtime_ns + 5_000_000_000))
+    flywire.load_tier(150, cache, tiers)
+    assert path.stat().st_mtime_ns != mtime
+    # a damaged tier file is rebuilt, and the whole brain is never cached
+    path.write_bytes(b"not an npz")
+    assert flywire.load_tier(150, cache, tiers).n == 150
+    assert flywire.load_tier(full.n, cache, tiers).n == full.n
+    assert not flywire.tier_path(full.n, cache, tiers).exists()

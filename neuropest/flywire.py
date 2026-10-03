@@ -1,7 +1,7 @@
 """FlyWire v783 connectome -> `Network`, with named neuron groups and a relevance ranking.
 
 Raw files (not in git, see README): data/raw/
-  Connectivity_783.parquet   Shiu et al. 2024 packaging of FlyWire v783 (Dorkenwald et al. 2024, CC-BY 4.0)
+  Connectivity_783.parquet   Shiu et al. 2024 packaging of FlyWire v783 (Dorkenwald et al. 2024; data license CC BY-NC 4.0, flywire.ai/guidelines)
   Completeness_783.csv       neuron index -> FlyWire root id
   Supplemental_file1_neuron_annotations.tsv   cell types (Schlegel et al. 2024)
 
@@ -11,15 +11,16 @@ is streamed in batches.
 """
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 import numba as nb
 import numpy as np
 
 from .engine import LIFParams, Network
-from .paths import CACHE, RAW_DIR
+from .paths import CACHE, RAW_DIR, TIER_DIR
 
-SOURCE = "FlyWire v783 (Dorkenwald et al. 2024; Schlegel et al. 2024), CC-BY 4.0, via Shiu et al. 2024"
+SOURCE = "FlyWire v783 (Dorkenwald et al. 2024; Schlegel et al. 2024), CC BY-NC 4.0, via Shiu et al. 2024"
 
 # Anchor descending neurons and what the literature says they do. Used to read behavior out of the
 # simulation and as targets of the relevance ranking. Hemibrain type names, as the papers use them.
@@ -273,3 +274,45 @@ def load_cache(path: Path = CACHE) -> Network:
     if not path.exists():
         raise FileNotFoundError(f"{path} yok. Once: uv run python tools/build_flywire.py")
     return Network.load(path)
+
+
+TIER_SIZES = (2_000, 5_000, 10_000, 15_000, 20_000, 50_000)      # sizes the control window offers below the full brain
+
+
+def tier_path(n: int, cache: Path = CACHE, tier_dir: Path = TIER_DIR) -> Path:
+    return tier_dir / f"{cache.stem}_n{n}.npz"
+
+
+def _stamp(cache: Path) -> str:
+    st = cache.stat()
+    return f"{st.st_size}:{st.st_mtime_ns}"
+
+
+def load_tier(n: int, cache: Path = CACHE, tier_dir: Path = TIER_DIR) -> Network:
+    """The `n` most relevant neurons, from a per-size cache file next to the full cache.
+
+    Reading the 125 MB full cache and cutting the tier out of it cost ~0.8 s at every worker start; the tier's own
+    file loads in ~20 ms. The file is written on first use (atomically: workers may race) and tied to the full
+    cache by its size and mtime, so a rebuilt connectome never serves a stale tier."""
+    path = tier_path(n, cache, tier_dir)
+    stamp = _stamp(cache) if cache.exists() else None
+    if stamp is not None and path.exists():
+        try:
+            net = Network.load(path)
+            if net.meta.get("cache_stamp") == stamp:
+                return net
+        except (OSError, ValueError, KeyError):
+            pass                                            # damaged or half-written file: rebuild it
+    full = load_cache(cache)
+    if n >= full.n:
+        return full
+    net = full.prefix(n)
+    net.meta["cache_stamp"] = stamp
+    try:
+        tier_dir.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_name(f"{path.stem}.{os.getpid()}.tmp.npz")
+        net.save(tmp)
+        os.replace(tmp, path)
+    except OSError:
+        pass                                                # read-only folder: just run without the cache
+    return net
