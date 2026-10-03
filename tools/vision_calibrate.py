@@ -40,6 +40,10 @@ def paths(speeds):
            "still, right, 150 px": (lambda t: (0.0, 150.0), 1.5)}
     for v in speeds:
         out[f"approach {v:g} px/s"] = (approach(v), max(1.0, 0.5 + 350.0 / v + 0.6))
+    # size against speed: the same approach with a smaller and a bigger disc (LPLC2 reads size, LC4 speed)
+    for r in (15.0, 60.0):
+        out[f"approach 800 px/s, r {r:g}"] = (approach(800.0), 1.8, r)
+        out[f"approach 400 px/s, r {r:g}"] = (approach(400.0), 2.0, r)
     out["approach 800 px/s from 60 deg right"] = (approach(800.0, deg=60.0), 1.8)
     out["approach 800 px/s from 100 deg left"] = (approach(800.0, deg=-100.0), 1.8)
     out["slide 400 px/s at 150 px"] = (lambda t: (150.0, -400.0 + 400.0 * max(0.0, t - EVENT_S)), 2.0)
@@ -48,13 +52,23 @@ def paths(speeds):
     return out
 
 
-def run_scenario(net, drive, path, duration, height):
+def run_scenario(net, drive, path, duration, height, radius=None):
+    base_params = drive.params
+    if radius is not None:
+        drive.params = replace(base_params, halo_px=radius)
+    try:
+        return _run(net, drive, path, duration, height)
+    finally:
+        drive.params = base_params
+
+
+def _run(net, drive, path, duration, height):
     brain = Brain(net)
     brain.walk_bias = 0.0
     drive.reset()
     drive.eye_height = height
     seen, first = Counter(), {}
-    peak = dict(GF=0.0, MDN=0.0, steer=0.0, steer_min=0.0)
+    peak = dict(GF=0.0, MDN=0.0, steer=0.0, steer_min=0.0, LPLC2=0.0, LC4=0.0)
     sphere = drive.params.cursor_model == "sphere"
     for f in range(int(duration / FRAME_S)):
         t = f * FRAME_S
@@ -66,6 +80,8 @@ def run_scenario(net, drive, path, duration, height):
             idx, rates = drive.step(cursor_scene(*now, r, drive.params.background),
                                     cursor_scene(*prev, r, drive.params.background), 0.0, 0.0, 0.0, FRAME_S)
         brain.set_vision(idx, rates)
+        peak["LPLC2"] = max(peak["LPLC2"], float(rates[:drive.n_lplc2].max(initial=0.0)))
+        peak["LC4"] = max(peak["LC4"], float(rates[drive.n_lplc2:len(drive.loom_idx)].max(initial=0.0)))
         for _ in range(int(FRAME_S * 1000 / CHUNK_MS)):
             state = brain.advance(CHUNK_MS)
             seen[state] += 1
@@ -83,7 +99,7 @@ TARGET = {"still, ahead, 150 px": "stand", "slide 400 px/s at 150 px": "stand", 
           "approach 800 px/s": "fly", "approach 1500 px/s": "fly"}
 
 
-def scan(net, field, params, heights, scen, label=""):
+def scan(net, field, params, heights, scen, label="", verbose=False):
     drive = VisionDrive(net, params, field)
     print(f"\n== {label} (loom {params.gain_loom:g} max {params.max_loom:g}, retreat {params.gain_retreat:g} max "
           f"{params.max_retreat:g}, flee {params.flee_lo:g}-{params.flee_hi:g}, object {params.gain_object:g}) ==")
@@ -94,13 +110,16 @@ def scan(net, field, params, heights, scen, label=""):
     for h in heights:
         cells = []
         for name in names:
-            path, dur = scen[name]
-            outcome, first, seen, peak = run_scenario(net, drive, path, dur, h)
+            path, dur, *radius = scen[name]
+            outcome, first, seen, peak = run_scenario(net, drive, path, dur, h, *radius)
             at = first.get("fly" if outcome == "fly" else "retreat")
             ok = TARGET.get(name) in (None, outcome)
             score += TARGET.get(name) == outcome
             cells.append(f"{outcome + (f' {at:.2f}s' if at is not None else ''):>16}{'' if ok else ' !!'}"[:20].rjust(20))
             results[(h, name)] = (outcome, at, peak)
+            if verbose:
+                print(f"      {name:36s} LPLC2 peak {peak['LPLC2']:5.0f} Hz  LC4 peak {peak['LC4']:5.0f} Hz  GF {peak['GF']:5.0f}  "
+                      f"MDN {peak['MDN']:4.0f}")
         print(f"{h:5.0f} | " + " | ".join(cells), flush=True)
     return score, results
 
@@ -112,6 +131,7 @@ def main():
     ap.add_argument("--h", type=float, nargs="+", default=[20.0, 40.0, 100.0, 200.0, 300.0])
     ap.add_argument("--speeds", type=float, nargs="+", default=[150.0, 400.0, 800.0, 1500.0])
     ap.add_argument("--only", default="")
+    ap.add_argument("--verbose", action="store_true", help="also print the peak LPLC2 and LC4 rates of every scenario")
     ap.add_argument("--grid", action="store_true", help="search gain_loom, gain_retreat and the flee range for the best score")
     for f in fields(VisionParams):
         if f.type in ("float", float):
@@ -128,7 +148,7 @@ def main():
     for model in models:
         base = replace(VisionParams() if model == "sphere" else DISK_PLANE, **over)
         if not a.grid:
-            scan(net, field, base, a.h, scen, label=f"cursor model {model}")
+            scan(net, field, base, a.h, scen, label=f"cursor model {model}", verbose=a.verbose)
             continue
         best = []
         for gl in (15.0, 25.0, 40.0):

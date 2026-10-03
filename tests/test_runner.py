@@ -193,6 +193,6 @@ def test_walking_up_to_a_standing_cursor_is_not_a_threat():
         finally:
             r.stop()
 
-    unstamped = run(False)
-    assert "retreat" in unstamped or "fly" in unstamped         # the old number alone does alarm it
+    # (without stamps this scene used to alarm the fly; LPLC2 now reads size too, so it no longer does on a 5k circuit,
+    # and the unit test above is what pins the number itself)
     assert run(True) == {"stand"}

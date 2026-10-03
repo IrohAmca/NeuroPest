@@ -210,6 +210,30 @@ def _weakest_quadrant(grow, ptr, ind, val, out):
 
 
 @nb.njit(cache=True)
+def _pool_wmax(values, ptr, ind, w, rows, out):
+    """out[i] = max over the neighbour list of w[j] * values[ind[j]], for i in rows (w = receptive-field weight)."""
+    for r in range(rows.shape[0]):
+        i = rows[r]
+        best = 0.0
+        for j in range(ptr[i], ptr[i + 1]):
+            v = w[j] * values[ind[j]]
+            if v > best:
+                best = v
+        out[i] = best
+
+
+@nb.njit(cache=True)
+def _pool_mean(values, ptr, ind, rows, out):
+    """out[i] = mean of values over the neighbour list of i, for i in rows."""
+    for r in range(rows.shape[0]):
+        i = rows[r]
+        acc = 0.0
+        for j in range(ptr[i], ptr[i + 1]):
+            acc += values[ind[j]]
+        out[i] = acc / max(ptr[i + 1] - ptr[i], 1)
+
+
+@nb.njit(cache=True)
 def _pool_max(values, ptr, ind, rows, out):
     """out[i] = max of values over the neighbour list ind[ptr[i]:ptr[i + 1]], for i in rows."""
     for r in range(rows.shape[0]):
@@ -240,7 +264,7 @@ class Features:
 
     def __init__(self, field: VisualField, ring_deg=(5.0, 18.0), centre_deg=3.5, surround_deg=(5.0, 11.0),
                  tau_adapt=8.0, tau_smooth=0.03, wide_field=1.5, pool_deg=30.0, object_pool_deg=12.0, hold_s=0.15,
-                 object_hold_s=0.1):
+                 object_hold_s=0.1, rf_sigma_deg=0.0):
         from scipy.sparse import csr_matrix, vstack
 
         d, eye = field.col_dir.astype(np.float64), field.col_eye
@@ -288,6 +312,12 @@ class Features:
             return ptr, np.nonzero(near)[1].astype(np.int32)
 
         self.pool = neighbours(pool_deg)                                # wide pooling (expansion)
+        # receptive-field weights of the wide pool: a neuron whose field centre is `a` degrees from the object sees
+        # it with weight exp(-a^2 / 2 sigma^2) (sigma 0: flat, the pool is a plain top hat)
+        rows_i, cols_j = np.nonzero(same & (ang <= pool_deg) | np.eye(m, dtype=bool))
+        a = np.where(rows_i == cols_j, 0.0, ang[rows_i, cols_j])
+        self.pool_w = (np.exp(-0.5 * (a / rf_sigma_deg) ** 2) if rf_sigma_deg > 0 else np.ones(len(a))).astype(np.float32)
+        self.rf_sigma_deg = rf_sigma_deg
         self.pool_small = neighbours(object_pool_deg)                   # narrow pooling (small objects)
         self.tau_adapt, self.tau_smooth, self.wide = tau_adapt, tau_smooth, wide_field
         self.hold, self.obj_hold = hold_s, object_hold_s
@@ -297,6 +327,7 @@ class Features:
         self.dd = np.zeros((m, 2), np.float32)               # smoothed growth of the dark and bright channels
         self._weakest = np.zeros((m, 2), np.float32)
         self._pooled = np.zeros(m, np.float32)
+        self._size = np.zeros(m, np.float32)
         self._pooled_small = np.zeros(m, np.float32)
 
     def reset(self, lum: np.ndarray | None = None):
@@ -333,9 +364,11 @@ class Features:
         self.exp_hold = np.maximum(e, self.exp_hold * np.exp(-dt / self.hold)).astype(np.float32)
         self.obj_hold_v = np.maximum(obj, self.obj_hold_v * np.exp(-dt / self.obj_hold)).astype(np.float32)
         eye_max = np.array([self.exp_hold[i].max() for i in self.eye_idx], np.float32)
-        _pool_max(self.exp_hold, *self.pool, self.all_rows if pool_rows is None else pool_rows, self._pooled)
+        rows = self.all_rows if pool_rows is None else pool_rows
+        _pool_wmax(self.exp_hold, *self.pool, self.pool_w, rows, self._pooled)
+        _pool_mean(np.maximum(now[:, 0], now[:, 1]), *self.pool, rows, self._size)   # share of the field the object covers
         _pool_max(self.obj_hold_v, *self.pool_small, self.all_rows if object_rows is None else object_rows,
                   self._pooled_small)
-        return {"expansion": self.exp_hold, "expansion_pooled": self._pooled.copy(),
+        return {"expansion": self.exp_hold, "expansion_pooled": self._pooled.copy(), "size_pooled": self._size.copy(),
                 "expansion_eye": eye_max[self.eye], "object": self.obj_hold_v,
                 "object_pooled": self._pooled_small.copy()}
