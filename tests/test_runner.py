@@ -3,7 +3,7 @@ import time
 import pytest
 
 from neuropest.paths import CACHE, EYE, FIELD
-from neuropest.runner import EngineConfig, Runner
+from neuropest.runner import (I_CX, I_CY, I_STAMP, I_X, I_Y, EngineConfig, Runner, _Approach)
 
 
 def _wait(pred, timeout):

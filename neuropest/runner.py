@@ -7,6 +7,7 @@ behind, and `lag_ms` / `rt` in the telemetry say so (the fly then moves in slow 
 """
 from __future__ import annotations
 
+import math
 import multiprocessing as mp
 import threading
 import time
@@ -18,6 +19,7 @@ from .states import STAND, STATES
 # input slots
 I_DIST, I_CLOSING, I_BIAS, I_SKITTISH, I_BEARING, I_TOUCH = 0, 1, 2, 3, 4, 5
 I_X, I_Y, I_HEAD, I_CX, I_CY, I_VISION, I_HEIGHT = 6, 7, 8, 9, 10, 11, 12     # fly pose, cursor, vision switch
+I_STAMP = 13                # clock reading (s) of the frame the GUI sampled the cursor and pose at; 0 = not sent
 # output slots
 (O_READY, O_STATE, O_GF, O_WALK, O_REST, O_RT, O_ACTIVE, O_N, O_CPU, O_LAG, O_SIM_S, O_BEAT, O_MDN, O_STEER,
  O_SPIKES, O_GROOM, O_VISION) = range(17)
@@ -25,7 +27,8 @@ I_X, I_Y, I_HEAD, I_CX, I_CY, I_VISION, I_HEIGHT = 6, 7, 8, 9, 10, 11, 12     # 
 CHUNK_MS = 4.0              # simulated time advanced per loop iteration
 CHUNK_MS_GPU = 12.0         # a GPU read-back costs ~1 ms regardless of size; measured x1.8 -> x2.8-4 on a GTX 1650
 STATS_EVERY_S = 0.25
-VISION_PERIOD_MS = 1000.0 / 60.0     # the vision pipeline looks at a new image about this often
+VISION_PERIOD_MS = 20.0     # the vision pipeline looks at a new image this often: 5 CPU chunks (60 Hz was rounded up to this anyway)
+MAX_FRAME_GAP_S = 0.25      # two cursor samples further apart than this say nothing about its speed (a stalled GUI)
 MAX_LAG_S = 0.25            # beyond this the backlog is dropped (slow motion instead of catching up)
 
 
@@ -119,6 +122,7 @@ def _loop(cfg: EngineConfig, brain, net, inp, out, stop) -> None:
 
     chunk = CHUNK_MS if cfg.backend == "cpu" else CHUNK_MS_GPU
     eye = _Eye(net)
+    approach = _Approach()
     last_in = None
     t0 = time.perf_counter()
     sim_ms = 0.0
@@ -127,7 +131,9 @@ def _loop(cfg: EngineConfig, brain, net, inp, out, stop) -> None:
     while not stop.is_set():
         t = time.perf_counter()
         eye.update(brain, inp, out, sim_ms)
-        cur = (inp[I_DIST], inp[I_CLOSING], inp[I_BIAS], inp[I_SKITTISH], round(inp[I_BEARING], 2), inp[I_TOUCH])
+        closing = approach.update(inp)
+        cur = (inp[I_DIST], inp[I_CLOSING] if closing is None else closing, inp[I_BIAS], inp[I_SKITTISH],
+               round(inp[I_BEARING], 2), inp[I_TOUCH])
         if eye.on:                                      # the image, not cursor numbers, drives the looming inputs;
             cur = (1e6, 0.0, cur[2], cur[3], cur[4] if cur[5] else 0.0, cur[5])    # touch still needs its side
         if cur != last_in:
@@ -168,6 +174,37 @@ def _loop(cfg: EngineConfig, brain, net, inp, out, stop) -> None:
             w_wall, w_cpu, w_comp, w_sim, w_active, w_iters = now, cpu, 0.0, 0.0, 0.0, 0
 
 
+class _Approach:
+    """Closing speed of the cursor, measured here from the cursor and fly positions the GUI sends with a clock stamp.
+
+    The GUI used to divide the change of distance by its frame time clamped to 50 ms, so after a stall of 200 ms
+    the speed came out 4 times too high (a false retreat or take-off). Here the divisor is the real time between the
+    two samples, and the previous cursor position is measured from the fly's CURRENT position: the fly's own steps
+    toward a standing cursor are not the cursor looming."""
+
+    def __init__(self):
+        self.stamp = 0.0
+        self.cursor = None
+        self.closing = 0.0
+
+    def update(self, inp) -> float | None:
+        """px/s, positive when the cursor approaches; None when the GUI sent no stamp (use its own number)."""
+        stamp = inp[I_STAMP]
+        if stamp <= 0.0:
+            return None
+        if stamp != self.stamp:
+            cursor, fly = (inp[I_CX], inp[I_CY]), (inp[I_X], inp[I_Y])
+            dt = stamp - self.stamp
+            if self.cursor is None or not 0.002 < dt <= MAX_FRAME_GAP_S:
+                self.closing = 0.0
+            else:
+                before = math.hypot(self.cursor[0] - fly[0], self.cursor[1] - fly[1])
+                now = math.hypot(cursor[0] - fly[0], cursor[1] - fly[1])
+                self.closing = (before - now) / dt
+            self.cursor, self.stamp = cursor, stamp
+        return self.closing
+
+
 class _Eye:
     """Worker side of the visual input: while switched on, turns the scene around the fly into projection
     neuron rates about every VISION_PERIOD_MS of simulated time and hands them to the brain."""
@@ -181,6 +218,7 @@ class _Eye:
         self.failed = False             # asked for, but not available here: do not retry until switched off
         self.next_ms = self.last_ms = 0.0
         self.cursor = None              # where the cursor was at the previous frame
+        self.stamp = 0.0                # and the GUI clock reading of that sample
 
     def update(self, brain, inp, out, sim_ms: float) -> None:
         want = inp[I_VISION] > 0.5
@@ -223,7 +261,7 @@ class _Eye:
             self.failed, out[O_VISION] = True, -1.0         # this circuit has no LPLC2 / LC4 with receptive fields
             return
         self.drive.reset()
-        self.on, self.cursor = True, None
+        self.on, self.cursor, self.stamp = True, None, 0.0
         self.next_ms = self.last_ms = sim_ms
         out[O_VISION] = 1.0
 
@@ -235,12 +273,19 @@ class _Eye:
         p = d.params
         cursor = (inp[I_CX], inp[I_CY])
         prev = self.cursor or cursor
-        dt = max(sim_ms - self.last_ms, 1.0) / 1000.0
-        idx, rates = d.step(cursor_scene(cursor[0], cursor[1], d.halo_px, p.background),
-                            cursor_scene(prev[0], prev[1], d.halo_px, p.background),
-                            inp[I_X], inp[I_Y], inp[I_HEAD], dt)
+        stamp = inp[I_STAMP]
+        if stamp > 0.0 and self.stamp > 0.0:
+            dt = min(max(stamp - self.stamp, 0.005), MAX_FRAME_GAP_S)   # real time between the two cursor samples
+        else:
+            dt = max(sim_ms - self.last_ms, 1.0) / 1000.0                 # no stamps (tests): simulated time
+        if p.cursor_model == "sphere":
+            idx, rates = d.step_cursor(cursor, prev, inp[I_X], inp[I_Y], inp[I_HEAD], dt)
+        else:
+            idx, rates = d.step(cursor_scene(cursor[0], cursor[1], d.halo_px, p.background),
+                                cursor_scene(prev[0], prev[1], d.halo_px, p.background),
+                                inp[I_X], inp[I_Y], inp[I_HEAD], dt)
         brain.set_vision(idx, rates)
-        self.cursor, self.last_ms = cursor, sim_ms
+        self.cursor, self.last_ms, self.stamp = cursor, sim_ms, stamp
         self.next_ms = sim_ms + VISION_PERIOD_MS
 
 
@@ -301,13 +346,17 @@ class Runner:
             _retire(proc, stop)
 
     def send(self, dist: float, closing: float, bearing: float = 0.0, touch: float = 0.0,
-             pose=(0.0, 0.0, 0.0), cursor=(0.0, 0.0)) -> None:
-        """Per-frame input. pose = fly (x, y, heading) and cursor = (x, y) in screen px feed the visual input."""
+             pose=(0.0, 0.0, 0.0), cursor=(0.0, 0.0), stamp: float = 0.0) -> None:
+        """Per-frame input. pose = fly (x, y, heading) and cursor = (x, y) in screen px feed the visual input.
+
+        stamp: `time.perf_counter()` of the frame. With it the worker measures the cursor's closing speed itself from
+        pose and cursor (`closing` is then ignored); without it (0) `closing` is used as given."""
         inp = self.inp
         inp[I_DIST], inp[I_CLOSING], inp[I_BIAS], inp[I_SKITTISH] = dist, closing, self.bias, self.skittish
         inp[I_BEARING], inp[I_TOUCH] = bearing, touch
         inp[I_X], inp[I_Y], inp[I_HEAD] = pose
         inp[I_CX], inp[I_CY] = cursor
+        inp[I_STAMP] = stamp
         inp[I_VISION], inp[I_HEIGHT] = float(self.vision), self.eye_height
 
     @property

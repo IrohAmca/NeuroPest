@@ -59,16 +59,17 @@ class Overlay(QWidget):
 
     def tick(self):
         now = time.perf_counter()
-        dt = min(now - self.last, 0.05)
+        elapsed = now - self.last
+        dt = min(elapsed, 0.05)                 # the fly's physics never takes a step longer than this
         self.last = now
         cur = QCursor.pos()
         dist = ((cur.x() - self.fly.x) ** 2 + (cur.y() - self.fly.y) ** 2) ** 0.5
-        closing = 0.0 if self.prev_dist is None else (self.prev_dist - dist) / max(dt, 1e-3)
+        closing = 0.0 if self.prev_dist is None else (self.prev_dist - dist) / max(elapsed, 1e-3)     # real frame time
         self.prev_dist = dist
         touch = 1.0 if dist < TOUCH_RADIUS_PX * self.scale else 0.0      # click-through overlay: hover = cursor over the fly
         # pose and cursor in screen px feed the visual input (runner.vision); the numbers feed the cursor drive
         self.runner.send(dist, closing, self.fly.bearing_of((cur.x(), cur.y())), touch,
-                         (self.fly.x, self.fly.y, self.fly.heading), (cur.x(), cur.y()))
+                         (self.fly.x, self.fly.y, self.fly.heading), (cur.x(), cur.y()), stamp=now)
         self.fly.update(dt, self.runner.state, (cur.x(), cur.y()), self.play_rect(), self.runner.steer)
         self.update()
 

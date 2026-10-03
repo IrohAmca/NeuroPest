@@ -39,7 +39,7 @@ def run(r: Runner, kind: str, seconds: float):
     while (t := time.perf_counter() - t0) < seconds:
         cx, cy = cursor_path(kind, t)
         d = ((cx - FLY[0]) ** 2 + (cy - FLY[1]) ** 2) ** 0.5
-        r.send(d, 0.0, 0.0, pose=FLY, cursor=(cx, cy))
+        r.send(d, 0.0, 0.0, pose=FLY, cursor=(cx, cy), stamp=time.perf_counter())
         st = r.stats()
         seen[r.state] = seen.get(r.state, 0) + 1
         if t >= 0.5:
@@ -58,7 +58,7 @@ def main():
     ap.add_argument("--n", type=int, default=15000)
     ap.add_argument("--dt", type=float, default=0.5)
     ap.add_argument("--backend", default="cpu")
-    ap.add_argument("--h", type=float, default=100.0, help="eye height, px")
+    ap.add_argument("--h", type=float, default=100.0, help="eye height, px (only the plane-disk cursor model uses it)")
     ap.add_argument("--seconds", type=float, default=2.5)
     ap.add_argument("--only", default="")
     a = ap.parse_args()

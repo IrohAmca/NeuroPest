@@ -1,139 +1,144 @@
-"""Image -> retinotopic features -> projection neuron rates -> behavior, on synthetic scenes.
+"""Cursor scenes -> the REAL VisionDrive -> projection-neuron rates -> Brain, scanned over eye height and speed.
 
-A fly at the origin faces +x (heading 0). Scenes are drawn on the screen plane. Prints feature strength and
-what the Brain does, so gains and thresholds can be tuned against the cursor-based behavior.
+A fly at the origin faces +x (heading 0); the cursor moves along a path. For every frame (20 ms, the worker's real
+vision period; the Brain advances in its real 4 ms chunks) the drive is the same `visual.VisionDrive` the worker
+runs, with its halo / height scaling and its `VisionParams` gains, so a number here is what the app does.
+(The first version of this tool re-implemented the drive with its own gains and skipped the scaling; its results
+did not carry over to the app.)
 
-Run: uv run python tools/vision_calibrate.py [--tier 15000] [--h 60] [--r 30] [--gain-e 40 --gain-r 20 --gain-o 40]
+Prints the outcome (stand / retreat / fly) per scenario, per eye height, per cursor model:
+  sphere  the cursor is a disc at eye level (VisionParams.cursor_model, the default; height independent)
+  disk    the cursor lies on the screen plane and is seen through the funnel (the first model; height dependent)
+
+Run: uv run python tools/vision_calibrate.py [--tier 15000] [--model sphere|disk|both] [--h 20 40 100 200 300]
+         [--speeds 150 400 800 1500] [--grid] [--gain-loom 25 --gain-retreat 18 ...]
 """
 from __future__ import annotations
 
 import argparse
-import time
 from collections import Counter
+from dataclasses import fields, replace
 
 import numpy as np
 
 from neuropest import flywire
 from neuropest.brain import Brain
-from neuropest.vision import Features, VisualField, sample_scene
+from neuropest.visual import DISK_PLANE, VisionDrive, VisionParams, cursor_scene
 
-DT = 1.0 / 60.0
-
-
-def disk(cx, cy, radius, dark=0.0, back=0.5):
-    def scene(px, py):
-        return np.where((px - cx) ** 2 + (py - cy) ** 2 <= radius ** 2, dark, back).astype(np.float32)
-    return scene
+FRAME_S = 0.02               # the worker's vision period (runner.VISION_PERIOD_MS)
+CHUNK_MS = 4.0               # the worker's engine chunk on the CPU
+EVENT_S = 0.5                # the event of every scenario starts here
 
 
-def make_scenarios(r):
-    """name -> (function(t) -> scene, duration s). The event runs from t = 0.5 s."""
-    def approach(speed, d0=400.0, y=0.0, stop=50.0):
-        return lambda t: disk(max(stop, d0 - speed * max(0.0, t - 0.5)), y, r)
+def paths(speeds):
+    """name -> (cursor position at time t, duration s)."""
+    def approach(speed, d0=400.0, stop=50.0, deg=0.0):
+        c, s = np.cos(np.radians(deg)), np.sin(np.radians(deg))
+        return lambda t: (c * max(stop, d0 - speed * max(0.0, t - EVENT_S)), s * max(stop, d0 - speed * max(0.0, t - EVENT_S)))
 
-    def slide(speed, d=150.0):
-        return lambda t: disk(d, -400 + speed * max(0.0, t - 0.5), r)
-
-    return {
-        "still disk, ahead, 150 px": (lambda t: disk(150, 0, r), 1.5),
-        "still disk, right, 150 px": (lambda t: disk(0, 150, r), 1.5),
-        "still disk, left, 150 px": (lambda t: disk(0, -150, r), 1.5),
-        "approach 150 px/s": (approach(150), 2.6),
-        "approach 400 px/s": (approach(400), 1.5),
-        "approach 800 px/s": (approach(800), 1.2),
-        "approach 1500 px/s": (approach(1500), 1.0),
-        "slide 400 px/s at 150 px": (slide(400), 2.0),
-        "recede 400 px/s": (lambda t: disk(50 + 400 * max(0.0, t - 0.5), 0, r), 1.5),
-        "recede after 3 s near": (lambda t: disk(50 + 400 * max(0.0, t - 3.0), 0, r), 4.0),
-    }
+    out = {"still, ahead, 150 px": (lambda t: (150.0, 0.0), 1.5),
+           "still, right, 150 px": (lambda t: (0.0, 150.0), 1.5)}
+    for v in speeds:
+        out[f"approach {v:g} px/s"] = (approach(v), max(1.0, 0.5 + 350.0 / v + 0.6))
+    out["approach 800 px/s from 60 deg right"] = (approach(800.0, deg=60.0), 1.8)
+    out["approach 800 px/s from 100 deg left"] = (approach(800.0, deg=-100.0), 1.8)
+    out["slide 400 px/s at 150 px"] = (lambda t: (150.0, -400.0 + 400.0 * max(0.0, t - EVENT_S)), 2.0)
+    out["recede 400 px/s"] = (lambda t: (50.0 + 400.0 * max(0.0, t - EVENT_S), 0.0), 1.5)
+    out["recede after 3 s near"] = (lambda t: (50.0 + 400.0 * max(0.0, t - 3.0), 0.0), 4.0)
+    return out
 
 
-def run_scenario(net, field, retina, feats, idx, maps, a, fn, dur):
-    """Run one scene; returns the strongest behavior reached (stand < retreat < fly), when, and peaks."""
-    loom_col, ret_col, lc10_col, n_loom, n_ret = maps
-    brain = Brain(net, dt=0.5, seed=1)
+def run_scenario(net, drive, path, duration, height):
+    brain = Brain(net)
     brain.walk_bias = 0.0
-    feats.reset()
-    seen = Counter()
-    first = {}
-    peak = dict(E=0.0, GF=0.0, MDN=0.0, steer=0.0, steer_min=0.0, loomHz=0.0)
-    for f in range(int(dur / DT)):
-        t = f * DT
-        lum_now = sample_scene(retina, fn(t), 0.0, 0.0, 0.0, a.h)
-        lum_prev = sample_scene(retina, fn(t - DT), 0.0, 0.0, 0.0, a.h)
-        ft = feats.update(lum_now, lum_prev, DT)
-        e, o, ee = ft["expansion_pooled"], ft["object_pooled"], ft["expansion_eye"]
-        retreat = np.minimum(a.gain_r * ee[ret_col], 20.0) * np.clip((a.flee_hi - ee[ret_col]) / (a.flee_hi - a.flee_lo), 0.0, 1.0)
-        rates = np.concatenate([np.minimum(a.gain_e * e[loom_col], a.max_hz), retreat, np.minimum(a.gain_o * o[lc10_col], a.max_o)])
+    drive.reset()
+    drive.eye_height = height
+    seen, first = Counter(), {}
+    peak = dict(GF=0.0, MDN=0.0, steer=0.0, steer_min=0.0)
+    sphere = drive.params.cursor_model == "sphere"
+    for f in range(int(duration / FRAME_S)):
+        t = f * FRAME_S
+        now, prev = path(t), path(t - FRAME_S)
+        if sphere:
+            idx, rates = drive.step_cursor(now, prev, 0.0, 0.0, 0.0, FRAME_S)
+        else:
+            r = drive.halo_px
+            idx, rates = drive.step(cursor_scene(*now, r, drive.params.background),
+                                    cursor_scene(*prev, r, drive.params.background), 0.0, 0.0, 0.0, FRAME_S)
         brain.set_vision(idx, rates)
-        state = brain.advance(DT * 1000.0)
-        seen[state] += 1
-        if t >= 0.5 and state not in first:
-            first[state] = t - 0.5
-        peak["E"] = max(peak["E"], float(e.max()))
-        peak["GF"] = max(peak["GF"], brain.rates["GF"])
-        peak["MDN"] = max(peak["MDN"], brain.rates["MDN"])
-        peak["steer"] = max(peak["steer"], brain.steer)
-        peak["steer_min"] = min(peak["steer_min"], brain.steer)
-        peak["loomHz"] = max(peak["loomHz"], float(rates[:n_loom].max()))
+        for _ in range(int(FRAME_S * 1000 / CHUNK_MS)):
+            state = brain.advance(CHUNK_MS)
+            seen[state] += 1
+            if t >= EVENT_S and state not in first:
+                first[state] = t - EVENT_S
+            peak["GF"] = max(peak["GF"], brain.rates["GF"])
+            peak["MDN"] = max(peak["MDN"], brain.rates["MDN"])
+            peak["steer"], peak["steer_min"] = max(peak["steer"], brain.steer), min(peak["steer_min"], brain.steer)
     outcome = "fly" if "fly" in first else ("retreat" if "retreat" in first else "stand")
     return outcome, first, seen, peak
+
+
+TARGET = {"still, ahead, 150 px": "stand", "slide 400 px/s at 150 px": "stand", "recede 400 px/s": "stand",
+          "recede after 3 s near": "stand", "approach 150 px/s": "stand", "approach 400 px/s": "retreat",
+          "approach 800 px/s": "fly", "approach 1500 px/s": "fly"}
+
+
+def scan(net, field, params, heights, scen, label=""):
+    drive = VisionDrive(net, params, field)
+    print(f"\n== {label} (loom {params.gain_loom:g} max {params.max_loom:g}, retreat {params.gain_retreat:g} max "
+          f"{params.max_retreat:g}, flee {params.flee_lo:g}-{params.flee_hi:g}, object {params.gain_object:g}) ==")
+    names = list(scen)
+    print(f"{'h px':>5} | " + " | ".join(f"{n.replace('approach ', 'app ').replace(' px/s', '')[:20]:>20}" for n in names))
+    score = 0
+    results = {}
+    for h in heights:
+        cells = []
+        for name in names:
+            path, dur = scen[name]
+            outcome, first, seen, peak = run_scenario(net, drive, path, dur, h)
+            at = first.get("fly" if outcome == "fly" else "retreat")
+            ok = TARGET.get(name) in (None, outcome)
+            score += TARGET.get(name) == outcome
+            cells.append(f"{outcome + (f' {at:.2f}s' if at is not None else ''):>16}{'' if ok else ' !!'}"[:20].rjust(20))
+            results[(h, name)] = (outcome, at, peak)
+        print(f"{h:5.0f} | " + " | ".join(cells), flush=True)
+    return score, results
 
 
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--tier", type=int, default=15000)
-    ap.add_argument("--h", type=float, default=100.0)
-    ap.add_argument("--r", type=float, default=30.0)
-    ap.add_argument("--gain-e", type=float, default=25.0, help="Hz of LPLC2/LC4 drive per unit of expansion")
-    ap.add_argument("--gain-r", type=float, default=10.0, help="Hz of LPC1 drive per unit of expansion")
-    ap.add_argument("--gain-o", type=float, default=100.0, help="Hz of LC10 drive per unit of object feature")
-    ap.add_argument("--max-hz", type=float, default=150.0)
-    ap.add_argument("--max-o", type=float, default=100.0)
-    ap.add_argument("--flee-lo", type=float, default=3.5, help="retreat drive fades out between flee-lo and flee-hi")
-    ap.add_argument("--flee-hi", type=float, default=5.0)
-    ap.add_argument("--tau-adapt", type=float, default=2.0, help="seconds of the slow baseline (photoreceptor adaptation)")
+    ap.add_argument("--model", default="both", choices=["sphere", "disk", "both"])
+    ap.add_argument("--h", type=float, nargs="+", default=[20.0, 40.0, 100.0, 200.0, 300.0])
+    ap.add_argument("--speeds", type=float, nargs="+", default=[150.0, 400.0, 800.0, 1500.0])
     ap.add_argument("--only", default="")
-    ap.add_argument("--grid", action="store_true", help="search gains for: 150 stand, 400 retreat, 800 and 1500 fly, rest stand")
+    ap.add_argument("--grid", action="store_true", help="search gain_loom, gain_retreat and the flee range for the best score")
+    for f in fields(VisionParams):
+        if f.type in ("float", float):
+            ap.add_argument("--" + f.name.replace("_", "-"), type=float, default=None)
     a = ap.parse_args()
 
     net = flywire.load_cache().prefix(a.tier)
-    field = VisualField.load()
-    retina = field.as_retina()
-    feats = Features(field, tau_adapt=a.tau_adapt)
-    loom_idx, loom_col = field.neurons(net, ["LPLC2", "LC4"])
-    ret_idx, ret_col = field.neurons(net, ["LPC1"])
-    lc10_idx, lc10_col = field.neurons(net, ["LC10a", "LC10c-2", "LC10d"])
-    idx = np.concatenate([loom_idx, ret_idx, lc10_idx])
-    maps = (loom_col, ret_col, lc10_col, len(loom_idx), len(ret_idx))
-    print(f"tier {net.n} neurons; driven: {len(loom_idx)} LPLC2+LC4, {len(ret_idx)} LPC1, {len(lc10_idx)} LC10")
-    scen = make_scenarios(a.r)
-    if a.grid:
-        target = {"approach 150 px/s": "stand", "approach 400 px/s": "retreat", "approach 800 px/s": "fly",
-                  "approach 1500 px/s": "fly", "slide 400 px/s at 150 px": "stand", "recede 400 px/s": "stand",
-                  "recede after 3 s near": "stand",
-                  "still disk, ahead, 150 px": "stand"}
+    field = __import__("neuropest.vision", fromlist=["VisualField"]).VisualField.load()
+    scen = {n: v for n, v in paths(a.speeds).items() if a.only in n}
+    over = {f.name: getattr(a, f.name) for f in fields(VisionParams) if getattr(a, f.name, None) is not None}
+    models = ["sphere", "disk"] if a.model == "both" else [a.model]
+    d = VisionDrive(net, field=field)
+    print(f"tier {net.n} neurons; driven: {len(d.loom_idx)} LPLC2+LC4, {len(d.ret_idx)} LPC1, {len(d.obj_idx)} LC10")
+    for model in models:
+        base = replace(VisionParams() if model == "sphere" else DISK_PLANE, **over)
+        if not a.grid:
+            scan(net, field, base, a.h, scen, label=f"cursor model {model}")
+            continue
         best = []
-        for ge in (15.0, 25.0, 40.0):
+        for gl in (15.0, 25.0, 40.0):
             for gr in (6.0, 12.0, 24.0):
                 for lo, hi in ((2.5, 4.0), (3.5, 5.0), (4.5, 6.5)):
-                    a.gain_e, a.gain_r, a.flee_lo, a.flee_hi = ge, gr, lo, hi
-                    res = {n: run_scenario(net, field, retina, feats, idx, maps, a, *scen[n])[0] for n in target}
-                    score = sum(res[n] == target[n] for n in target)
-                    best.append((score, ge, gr, lo, hi, res))
-                    print(f"gain_e {ge:4.0f} gain_r {gr:4.0f} flee {lo}-{hi}: score {score}/{len(target)} "
-                          + " ".join(f"{n.split()[0][:3]}{n.split()[1][:4]}={res[n][0]}" for n in target), flush=True)
-        best.sort(key=lambda x: -x[0])
-        print("best:", best[0][:5])
-        return
-    for name, (fn, dur) in scen.items():
-        if a.only and a.only not in name:
-            continue
-        outcome, first, seen, peak = run_scenario(net, field, retina, feats, idx, maps, a, fn, dur)
-        n = sum(seen.values())
-        print(f"{name:28s} -> {outcome:7s} | E {peak['E']:5.1f} loom {peak['loomHz']:4.0f} Hz | GF {peak['GF']:4.0f} MDN {peak['MDN']:3.0f} "
-              f"steer {peak['steer_min']:4.0f}..{peak['steer']:3.0f} | " + " ".join(f"{k} {100 * v / n:3.0f}%" for k, v in seen.items())
-              + "".join(f" | {k} at {v:.2f} s" for k, v in first.items() if k != "stand"), flush=True)
+                    p = replace(base, gain_loom=gl, gain_retreat=gr, flee_lo=lo, flee_hi=hi)
+                    score, _ = scan(net, field, p, a.h, scen, label=f"grid {model}")
+                    best.append((score, gl, gr, lo, hi))
+        best.sort(reverse=True)
+        print("best (score, gain_loom, gain_retreat, flee_lo, flee_hi):", best[:5])
 
 
 if __name__ == "__main__":

@@ -137,8 +137,14 @@ orta şiddetli yaklaşmada GF'yi bastırır (looming 20 Hz: GF 59 → 3 Hz), ço
 Kutu açıkken sinek, ekran düzleminin `h` px üstünde duruyormuş gibi görüntüyü görür. Her medulla sütunu
 gövde çerçevesinde bir yöne (azimut, yükseklik) bakar; ufkun altına bakan bir yön ekranı `h / tan(-yükseklik)`
 uzaklıkta keser. Yakın zemini ince alt ommatidialar, uzak ekranı ufkun hemen altındaki dar bir bant görür:
-eğimi çok düşük bir huni. Sahne şimdilik imleç (30 px yarıçaplı koyu disk, nötr zemin); gerçek ekran yakalama
-sıradaki iş.
+eğimi çok düşük bir huni. Bu, ekran düzlemindeki içerik (yakalanacak ekran görüntüsü) için doğru geometri.
+**İmleç ise düzlemde yatan disk olarak değil, sineğin göz hizasında ona dönük koyu bir disk (küre) olarak çizilir**
+(`VisionParams.cursor_model = "sphere"`, varsayılan): görüntü yarıçapı atan(r/d), ufukta, azimutu imleç yönü.
+Düzlemdeki disk için genişleme hızı v·d/(d²+h²) iken aşağı kayma h·v/(d²+h²) olur (oran d/h): göz yükseldikçe
+yaklaşma "çarpışma rotası" olmaktan çıkıp "altından geçen nesne"ye dönüşür ve dedektör haklı olarak susar.
+Göz hizasındaki diskte genişleme yükseklikten bağımsız v/d'dir; göz yüksekliği yalnız ekran düzlemi içeriği
+(ve eski düzlem-disk modeli, `visionparams.DISK_PLANE`) için anlamlıdır, kontrol penceresindeki kaydırıcı bu
+yüzden imleç için etkisizdir ve pasif gösterilir. Gerçek ekran yakalama sıradaki iş.
 
 ```bash
 uv run python tools/build_eye.py      # ham veriyle bir kez: data/circuits/eye.npz ve field.npz (+ eye_map.png)
@@ -180,15 +186,37 @@ sineğin üstünde) mekanik olduğundan görsel girdi açıkken de imleç konumu
 (girdi nöronları her katmanda var). Ekran yakalama (gerçek ekran için) Qt `grabWindow` ile GUI iş parçacığına
 ağır: 2560x1440'ta tam ekran 58 ms, 600x600'lük bölge 14 ms (`tools/capture_cost.py`); ayrı süreç gerekecek.
 
-**Sınırlar.** İmleç düz bir düzlemde uzakta ince bir şerit olur, looming yalnız yakında belirgin
-(göz yüksekliği ayarı ve imleç halesi bunu dengeler). Göz yükseldikçe imleç diski büyütülür, genişleme çıkışı
-ve yön sürücüsü ölçeklenir: 250 px'ten yukarıda 30 px'lik disk bir sütundan küçük kalıyor ve sinek hiç
-kaçmıyordu. 100 ile 250 px arasında yavaş/orta/hızlı yaklaşma aynı davranışı veriyor (15.000 nöron ve tam
-beyin GPU'da); 350 px'te hızlı yaklaşma kalkış veriyor, orta hızlı yaklaşma geri çekilme vermiyor. Optik lob
-simüle edilmiyor. Katman doğruluğu görüntüyle
-(mekânsal olarak seyrek) yeniden ölçülmedi; senaryolar 5.000 ve 15.000 katmanda denendi (5.000'de eşiklere
-daha az pay var: kalkışta Giant Fiber ~23 Hz, eşik 15). 15.000 katmanda şiddetli kaçış sırasında (yüz binlerce
-spike/sn) ve makine yüklüyken bir ölçümde gerçek zamanın altına (×0,8) inildi; 5.000'de ×7,4.
+**Sınırlar.** Kazançlar ve eşikler artık `tools/vision_calibrate.py` ile **gerçek `VisionDrive`** üzerinden
+(halo ve yükseklik ölçeklemesi, `VisionParams` varsayılanları, işçinin 20 ms görüntü adımı ve 4 ms motor parçaları)
+bulunuyor; aracın ilk sürümü sürücüyü kendi kazançlarıyla yeniden yazıyordu ve bulguları uygulamaya
+taşınmıyordu. 15.000 nöron, çıkış = durum / ilk görüldüğü an:
+
+| Göz yüksekliği | Model | 150 px/s | 400 px/s | 800 px/s | 1500 px/s | yandan 800 (60° sağ / 100° sol) |
+|---|---|---|---|---|---|---|
+| 20-300 px (hepsinde aynı) | **küre (varsayılan)** | dur | geri 0,86 s | kaç 0,44 s | kaç 0,24 s | kaç 0,36 / 0,38 s |
+| 20 px | düzlem diski | geri (2,4 s) | kaç (0,90 s) | kaç 0,46 s | kaç 0,26 s | kaç 0,44 / 0,46 s |
+| 100 px | düzlem diski | dur | geri 0,86 s | kaç 0,44 s | kaç 0,26 s | kaç 0,50 s / dur |
+| 200 px | düzlem diski | dur | geri 0,76 s | kaç 0,48 s | kaç 0,24 s | geri 0,52 s / dur |
+| 300 px | düzlem diski | dur | geri 0,64 s | geri 0,34 s | kaç 0,18 s | geri 0,46 s / dur |
+
+Küre modelinde ayrıca duran, kayan (400 px/s, 150 px'ten), uzaklaşan ve 3 s yakında durup uzaklaşan imleç sineği
+durduruyor; 250 px/s yaklaşma 1,36 s'de geri yürüme, 100 px/s yaklaşma ancak imleç 50 px'e girince (3,5 s) geri
+yürüme veriyor. Düzlem modeli yükseklikle değişiyor (20 px'te 150 px/s ve 3 s sonra uzaklaşma yanlış geri çekilme
+veriyor, 300 px'te 800 px/s artık kalkış değil geri yürüme veriyor) ve yandan/arkadan yaklaşmaya zayıf. Küre
+modelinde kazanç farkı: geri çekilme kazancı 18 yerine 12 (göz hizasındaki disk yavaş yaklaşmada daha çok
+genişliyor). Küre sineğin arkasını (±120° dışı) görmez: arkadan gelen imleç yalnızca imleç-sayısı sürücüsüyle
+(görsel girdi kapalıyken) tepki verir. Optik lob simüle edilmiyor. Katman doğruluğu görüntüyle (mekânsal olarak
+seyrek) yeniden ölçülmedi. 15.000 katmanda şiddetli kaçış sırasında (yüz binlerce spike/sn) ve makine yüklüyken
+bir ölçümde gerçek zamanın altına (×0,8) inildi; 5.000'de ×7,4.
+
+**Yaklaşma hızı.** İmlecin yaklaşma hızı artık GUI'de değil işçide, GUI'nin her karede gönderdiği saat damgası,
+imleç ve sinek konumlarından hesaplanıyor. Eski yöntem mesafe değişimini 50 ms'ye kırpılmış kare süresine bölüyordu:
+200 ms'lik bir takılmadan sonra hız 4 kat büyük çıkıyor, sahte geri çekilme ya da kalkış doğuyordu. Şimdi bölen iki
+örnek arasındaki gerçek süre, önceki imleç konumu sineğin **şimdiki** konumundan ölçülüyor (sineğin imlece doğru
+yürümesi looming sayılmıyor; yürüyen sineğe 400 px/s'lik "kapanma" gönderen eski sayı geri çekilme çıkarıyordu,
+`tests/test_runner.py`) ve 250 ms'den uzun boşluklar hız sayılmıyor. Görüntü yolunda kare periyodu 16,7 ms olarak
+yazılıyordu ama 4 ms'lik parçalara yuvarlanıp 20 ms'ydi; artık 20 ms yazılı ve dedektörün zaman farkı iki imleç
+örneği arasındaki gerçek süre.
 
 ## Motor (`neuropest/engine`)
 

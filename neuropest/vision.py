@@ -101,6 +101,27 @@ def sample_scenes(retina: Retina, scenes, x: float, y: float, heading: float, ey
     return out
 
 
+def sphere_luminance(col_dir: np.ndarray, cursor: tuple[float, float], x: float, y: float, heading: float,
+                     radius_px: float, background: float = 0.5, dark: float = 0.0, elevation_deg: float = 0.0,
+                     edge_deg: float = 2.0) -> np.ndarray:
+    """Luminance of every column when the cursor is a dark disc facing the fly at eye level.
+
+    The disc sits on the horizon at the cursor's azimuth and subtends atan(radius / distance), so an approach
+    expands it at v / d whatever the eye height is (a disc lying on the screen plane shrinks into the thin band
+    under the horizon as the eye rises, and the expansion detectors fall silent: it looks like something passing
+    underneath rather than a collision). `edge_deg` softens the rim over about one ommatidial acceptance angle, so
+    a distant disc smaller than a column still dims the nearest columns by its coverage.
+    """
+    dx, dy = cursor[0] - x, cursor[1] - y
+    az = np.arctan2(dy, dx) - heading
+    el = np.radians(elevation_deg)
+    centre = np.array([np.cos(el) * np.cos(az), np.cos(el) * np.sin(az), np.sin(el)])
+    half = np.arctan2(radius_px, max(np.hypot(dx, dy), 1.0))
+    ang = np.arccos(np.clip(col_dir.astype(np.float64) @ centre, -1.0, 1.0))
+    cover = np.clip((half - ang) / np.radians(edge_deg) + 0.5, 0.0, 1.0)
+    return (background + (dark - background) * cover).astype(np.float32)
+
+
 def image_scene(gray: np.ndarray, outside: float = 0.5):
     """Scene function over a grayscale image (rows = y, columns = x), bilinear, `outside` beyond its edges."""
     from scipy.ndimage import map_coordinates

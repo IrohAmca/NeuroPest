@@ -10,8 +10,9 @@ import pytest
 
 from neuropest import flywire
 from neuropest.paths import CACHE, EYE, FIELD
-from neuropest.vision import Features, Retina, VisualField, image_scene, plane_hits, sample_scene, sample_scenes
-from neuropest.visual import VisionDrive, cursor_scene
+from neuropest.vision import (Features, Retina, VisualField, image_scene, plane_hits, sample_scene, sample_scenes,
+                              sphere_luminance)
+from neuropest.visual import DISK_PLANE, VisionDrive, VisionParams, cursor_scene
 
 DT = 1 / 60
 needs_eye = pytest.mark.skipif(not (CACHE.exists() and EYE.exists() and FIELD.exists()),
@@ -146,7 +147,7 @@ def test_pooled_outputs_follow_the_requested_rows(field):
 @needs_eye
 def test_cursor_disk_drives_looming_neurons_only_while_it_approaches():
     net = flywire.load_cache().prefix(5000)
-    drive = VisionDrive(net)
+    drive = VisionDrive(net, DISK_PLANE)
     assert drive.usable and len(drive.idx) > 500
     fly = (1000.0, 700.0, 0.0)
 
@@ -171,7 +172,7 @@ def test_cursor_disk_drives_looming_neurons_only_while_it_approaches():
 def test_looming_survives_a_more_vertical_view():
     """From 250 px up a 30 px disk was smaller than a column and the fly never fled (E = 0 for every approach)."""
     net = flywire.load_cache().prefix(5000)
-    drive = VisionDrive(net)
+    drive = VisionDrive(net, DISK_PLANE)
     fly = (1000.0, 700.0, 0.0)
     assert drive.halo_px == drive.params.halo_px                   # unchanged at the calibrated height
 
@@ -189,3 +190,71 @@ def test_looming_survives_a_more_vertical_view():
     for height in (100.0, 250.0, 350.0):
         assert loom_peak(1500.0, height) > 50.0, height            # a fast dash still drives the looming neurons
         assert loom_peak(150.0, height) < 30.0, height             # a slow walk up to the fly still does not
+
+
+# --------------------------------------------------------------------------- the eye-level disc
+def test_sphere_disc_sits_at_the_cursor_azimuth_and_subtends_atan_r_over_d(field):
+    cd = field.col_dir
+    lum = sphere_luminance(cd, (1100.0, 700.0), 1000.0, 700.0, 0.0, 30.0)         # 100 px straight ahead
+    ang = np.degrees(np.arccos(np.clip(cd.astype(np.float64) @ direction(0.0, 0.0), -1, 1)))
+    half = np.degrees(np.arctan2(30.0, 100.0))                                      # 16.7 deg
+    assert (lum[ang < half - 3.0] == 0.0).all() and (lum[ang > half + 3.0] == 0.5).all()
+    right = sphere_luminance(cd, (1000.0, 800.0), 1000.0, 700.0, 0.0, 30.0)         # +y on screen is the fly's right
+    assert cd[right < 0.25][:, 1].mean() > 0.9
+    turned = sphere_luminance(cd, (1000.0, 800.0), 1000.0, 700.0, np.pi / 2, 30.0)  # heading +y: it is straight ahead
+    assert np.array_equal(turned, lum)
+    # the rim is soft: a disc smaller than a column still dims the nearest column by its coverage
+    far = sphere_luminance(cd, (1700.0, 728.0), 1000.0, 700.0, 0.0, 30.0)         # 2.3 deg off a column, radius 2.5 deg
+    assert 0.0 < (0.5 - far).max() < 0.5
+
+
+def test_sphere_expansion_does_not_depend_on_the_eye_height(field):
+    """The disc faces the fly, so eye height does not enter at all (the plane disk it replaces shrank into a thin
+    band as the eye rose and the detectors fell silent)."""
+    def peak(path):
+        f = Features(field)
+        f.reset(np.full(len(field.col_dir), 0.5, np.float32))
+        top = 0.0
+        for k in range(-30, 70):
+            t = k / 60
+            now = sphere_luminance(field.col_dir, path(t), 0.0, 0.0, 0.0, 30.0)
+            before = sphere_luminance(field.col_dir, path(t - 1 / 60), 0.0, 0.0, 0.0, 30.0)
+            out = f.update(now, before, DT)
+            top = max(top, float(out["expansion"].max()))
+        return top
+
+    dash = lambda t: (max(60.0, 400.0 - 1500.0 * max(0.0, t)), 0.0)                  # noqa: E731
+    slide = lambda t: (150.0, -400.0 + 400.0 * max(0.0, t))                           # noqa: E731
+    still = lambda t: (150.0, 0.0)                                                    # noqa: E731
+    top = peak(dash)
+    assert top > 3.0 and peak(slide) < 0.25 * top and peak(still) < 0.05
+
+
+@needs_eye
+def test_sphere_cursor_drives_looming_at_any_azimuth_and_height_does_not_matter():
+    net = flywire.load_cache().prefix(5000)
+    drive = VisionDrive(net)
+    assert drive.params.cursor_model == "sphere" and drive.halo_px == drive.params.halo_px
+    fly = (1000.0, 700.0, 0.0)
+    nl = len(drive.loom_idx)
+
+    def loom_peak(deg, height, speed=1500.0):
+        drive.eye_height = height
+        drive.reset()
+        c, s = np.cos(np.radians(deg)), np.sin(np.radians(deg))
+        path = lambda t: (1000.0 + c * max(60.0, 400.0 - speed * max(0.0, t - 0.3)),     # noqa: E731
+                          700.0 + s * max(60.0, 400.0 - speed * max(0.0, t - 0.3)))
+        top = 0.0
+        for k in range(75):
+            idx, rates = drive.step_cursor(path(k / 60), path((k - 1) / 60), *fly, DT)
+            assert np.isfinite(rates).all() and rates.min() >= 0.0
+            top = max(top, float(rates[:nl].max()))
+        return top
+
+    results = {(deg, h): loom_peak(deg, h) for deg in (0.0, 60.0, -100.0) for h in (20.0, 100.0, 300.0)}
+    assert min(results.values()) > 50.0
+    for deg in (0.0, 60.0, -100.0):                                 # the same at every height
+        assert results[(deg, 20.0)] == results[(deg, 300.0)]
+    assert loom_peak(0.0, 100.0, speed=150.0) < 60.0                # a slow walk up to the fly drives far less
+    behind = loom_peak(180.0, 100.0)
+    assert behind < 1.0                                             # nothing is seen behind (no columns there)
