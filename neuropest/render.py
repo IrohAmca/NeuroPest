@@ -6,7 +6,7 @@ import math
 from PySide6.QtCore import QPointF, Qt
 from PySide6.QtGui import QColor, QPainter, QPen
 
-from .brain import FLY, WALK
+from .states import FLY, WALK
 
 INK = QColor(235, 235, 235, 235)
 

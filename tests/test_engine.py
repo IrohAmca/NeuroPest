@@ -28,6 +28,19 @@ def test_matches_reference(dt):
     assert corr > 0.98
 
 
+def test_current_drive_matches_reference():
+    net = Network.random(300, mean_deg=15, seed=4, gain=1.4)
+    idx = np.arange(0, 300, 7)
+    fast, ref = LIFEngine(net, dt=0.5, eps=0.0), ReferenceEngine(net, dt=0.5)
+    for e in (fast, ref):
+        for t in range(300):
+            e.set_current_drive(idx, 1e9 if t % 10 == 0 else 0.0, 60.0)   # p == 1.0 on every 10th step
+            e.advance(0.5)
+    assert ref.total_spikes > 100
+    assert abs(fast.total_spikes - ref.total_spikes) <= 0.02 * ref.total_spikes
+    assert np.corrcoef(fast.counts, ref.counts)[0, 1] > 0.98
+
+
 def test_silent_network_costs_nothing():
     net = Network.random(2000, seed=1)
     e = LIFEngine(net)

@@ -29,6 +29,9 @@ class ReferenceEngine:
         self.rng = np.random.default_rng(seed)
         self.f_idx = np.zeros(0, np.int32)
         self.f_p = np.zeros(0, f32)
+        self.c_idx = np.zeros(0, np.int32)
+        self.c_p = np.zeros(0, f32)
+        self.c_w = np.zeros(0, f32)
         self._rem = 0.0
         self.steps = 0
         self.total_spikes = 0
@@ -39,6 +42,15 @@ class ReferenceEngine:
         keep = rate > 0
         self.f_idx = idx[keep]
         self.f_p = (1.0 - np.exp(-rate[keep] * self.dt / 1000.0)).astype(np.float32)
+
+    def set_current_drive(self, idx, rate_hz, w_mv):
+        idx = np.asarray(idx, np.int32)
+        rate = np.broadcast_to(np.asarray(rate_hz, np.float32), idx.shape)
+        w = np.broadcast_to(np.asarray(w_mv, np.float32), idx.shape)
+        keep = rate > 0
+        self.c_idx = idx[keep]
+        self.c_p = (1.0 - np.exp(-rate[keep] * self.dt / 1000.0)).astype(np.float32)
+        self.c_w = np.ascontiguousarray(w[keep])
 
     def _emit(self, spk: np.ndarray, slot: int) -> None:
         net = self.net
@@ -55,6 +67,9 @@ class ReferenceEngine:
         self.g += self.ring[self.pos]
         self.ring[self.pos] = 0
         slot = (self.pos + self.dly) % len(self.ring)
+        if len(self.c_idx):
+            hit = self.rng.random(len(self.c_idx)) < self.c_p
+            np.add.at(self.g, self.c_idx[hit], self.c_w[hit])
         free = self.ref <= 0
         u = (self.v - np.float32(p.v_rest)) * self.a + self.g * self.c * (self.a - self.b)
         g_new = self.g * self.b

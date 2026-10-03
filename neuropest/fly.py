@@ -4,7 +4,7 @@ from __future__ import annotations
 import math
 import random
 
-from .brain import FLY, STAND, WALK
+from .states import FLY, STAND, WALK
 
 Rect = tuple[float, float, float, float]   # left, top, right, bottom of the area the fly's center may use
 

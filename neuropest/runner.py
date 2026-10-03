@@ -1,0 +1,134 @@
+"""Runs the brain in a separate process so the overlay never stalls on a heavy circuit.
+
+GUI -> worker: stimulus in a shared double array (latest value wins).
+worker -> GUI: behavior state and telemetry in another shared array.
+The worker paces itself to wall-clock time; if the circuit is too heavy it falls
+behind, and `lag_ms` / `rt` in the telemetry say so (the fly then moves in slow motion).
+"""
+from __future__ import annotations
+
+import multiprocessing as mp
+import time
+from dataclasses import dataclass
+
+from .states import STAND, STATES
+
+# input slots
+I_DIST, I_CLOSING, I_BIAS = 0, 1, 2
+# output slots
+O_READY, O_STATE, O_GF, O_WALK, O_REST, O_RT, O_ACTIVE, O_N, O_CPU, O_LAG, O_SIM_S, O_BEAT = range(12)
+
+CHUNK_MS = 4.0              # simulated time advanced per loop iteration
+STATS_EVERY_S = 0.25
+MAX_LAG_S = 0.25            # beyond this the backlog is dropped (slow motion instead of catching up)
+
+
+@dataclass(frozen=True)
+class EngineConfig:
+    n: int = 146            # neurons in the circuit
+    dt: float = 0.5         # integration step, ms
+    seed: int = 1
+
+
+def _worker_main(cfg: EngineConfig, inp, out, stop) -> None:
+    from .brain import Brain
+    from .toy_circuit import build
+
+    net = build(cfg.n, cfg.seed)
+    brain = Brain(net, dt=cfg.dt, seed=cfg.seed)
+    brain.advance(cfg.dt * 4)                       # triggers/loads the compiled kernel
+    out[O_N] = net.n
+    out[O_READY] = 1.0
+
+    last_in = None
+    t0 = time.perf_counter()
+    sim_ms = 0.0
+    w_wall, w_cpu, w_comp, w_sim, w_active, w_iters = t0, time.process_time(), 0.0, 0.0, 0.0, 0
+    while not stop.is_set():
+        cur = (inp[I_DIST], inp[I_CLOSING], inp[I_BIAS])
+        if cur != last_in:
+            brain.set_stimulus(cur[0], cur[1], cur[2])
+            last_in = cur
+        t = time.perf_counter()
+        state = brain.advance(CHUNK_MS)
+        spent = time.perf_counter() - t
+        w_comp += spent
+        w_sim += CHUNK_MS
+        w_active += brain.engine.n_active
+        w_iters += 1
+        sim_ms += CHUNK_MS
+        out[O_STATE] = float(STATES.index(state))
+        out[O_GF], out[O_WALK], out[O_REST] = (brain.rates["GF"], brain.rates["WALK"], brain.rates["REST"])
+
+        ahead = t0 + sim_ms / 1000.0 - time.perf_counter()
+        if ahead > 0:
+            time.sleep(ahead)
+        elif ahead < -MAX_LAG_S:
+            t0 -= ahead + MAX_LAG_S                 # drop the backlog
+        lag = max(0.0, -ahead)
+
+        now = time.perf_counter()
+        if now - w_wall >= STATS_EVERY_S:
+            cpu = time.process_time()
+            out[O_RT] = (w_sim / 1000.0) / w_comp if w_comp > 0 else 0.0
+            out[O_ACTIVE] = w_active / max(w_iters, 1)
+            out[O_CPU] = (cpu - w_cpu) / (now - w_wall)
+            out[O_LAG] = lag * 1000.0
+            out[O_SIM_S] = sim_ms / 1000.0
+            out[O_BEAT] += 1
+            w_wall, w_cpu, w_comp, w_sim, w_active, w_iters = now, cpu, 0.0, 0.0, 0.0, 0
+
+
+class Runner:
+    """GUI-side handle to the worker process."""
+
+    def __init__(self, cfg: EngineConfig = EngineConfig()):
+        self._ctx = mp.get_context("spawn")
+        self.inp = self._ctx.Array("d", 8, lock=False)
+        self.out = self._ctx.Array("d", 16, lock=False)
+        self.cfg = cfg
+        self._proc = None
+        self._stop = None
+        self.bias = 0.65
+        self.start(cfg)
+
+    def start(self, cfg: EngineConfig) -> None:
+        self.stop()
+        self.cfg = cfg
+        for i in range(len(self.out)):
+            self.out[i] = 0.0
+        self.inp[I_DIST], self.inp[I_CLOSING], self.inp[I_BIAS] = 1e6, 0.0, self.bias
+        self._stop = self._ctx.Event()
+        self._proc = self._ctx.Process(target=_worker_main, args=(cfg, self.inp, self.out, self._stop),
+                                       daemon=True, name="neuropest-engine")
+        self._proc.start()
+
+    def stop(self) -> None:
+        if self._proc is None:
+            return
+        self._stop.set()
+        self._proc.join(2.0)
+        if self._proc.is_alive():
+            self._proc.terminate()
+            self._proc.join(1.0)
+        self._proc = None
+
+    def send(self, dist: float, closing: float) -> None:
+        self.inp[I_DIST], self.inp[I_CLOSING], self.inp[I_BIAS] = dist, closing, self.bias
+
+    @property
+    def ready(self) -> bool:
+        return self.out[O_READY] > 0
+
+    @property
+    def alive(self) -> bool:
+        return self._proc is not None and self._proc.is_alive()
+
+    @property
+    def state(self) -> str:
+        return STATES[int(self.out[O_STATE])] if self.ready else STAND
+
+    def stats(self) -> dict:
+        o = self.out
+        return dict(ready=self.ready, n=int(o[O_N]), rt=o[O_RT], active=o[O_ACTIVE], cpu=o[O_CPU],
+                    lag_ms=o[O_LAG], gf=o[O_GF], walk=o[O_WALK], rest=o[O_REST], sim_s=o[O_SIM_S])

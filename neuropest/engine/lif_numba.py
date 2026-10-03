@@ -22,12 +22,13 @@ from .params import LIFParams
 @nb.njit(cache=True)
 def _advance(n_steps, dt, a, b, c, dly, v0, v_th, t_ref, eps,
              v, g, ref, counts, ring, touch, ntouch, tflag,
-             act, in_act, sc, indptr, indices, data, f_idx, f_p, seed):
+             act, in_act, sc, indptr, indices, data, f_idx, f_p, c_idx, c_p, c_w, seed):
     np.random.seed(seed)
     D = ring.shape[0]
     pos = sc[0]
     nact = sc[1]
     nf = f_idx.shape[0]
+    nc = c_idx.shape[0]
     spikes = 0
     work = 0
     for _ in range(n_steps):
@@ -43,6 +44,16 @@ def _advance(n_steps, dt, a, b, c, dly, v0, v_th, t_ref, eps,
                 nact += 1
         ntouch[pos] = 0
         slot = (pos + dly) % D
+
+        # 1b. graded Poisson synaptic drive (events add w to g, like an outside presynaptic cell)
+        for q in range(nc):
+            if np.random.random() < c_p[q]:
+                i = c_idx[q]
+                g[i] += c_w[q]
+                if in_act[i] == 0:
+                    in_act[i] = 1
+                    act[nact] = i
+                    nact += 1
 
         # 2. integrate the active neurons, collect spikes, compact the list
         w = 0
@@ -139,6 +150,9 @@ class LIFEngine:
         self.steps = 0
         self.f_idx = np.zeros(0, np.int32)
         self.f_p = np.zeros(0, np.float32)
+        self.c_idx = np.zeros(0, np.int32)
+        self.c_p = np.zeros(0, np.float32)
+        self.c_w = np.zeros(0, np.float32)
 
     # -------------------------------------------------------------- input
     def set_drive(self, idx: np.ndarray, rate_hz: np.ndarray | float) -> None:
@@ -148,6 +162,17 @@ class LIFEngine:
         keep = rate > 0
         self.f_idx = np.ascontiguousarray(idx[keep])
         self.f_p = np.ascontiguousarray(1.0 - np.exp(-rate[keep] * self.dt / 1000.0), dtype=np.float32)
+
+    def set_current_drive(self, idx: np.ndarray, rate_hz: np.ndarray | float,
+                          w_mv: np.ndarray | float) -> None:
+        """Poisson synaptic input: events at `rate_hz`, each adding `w_mv` to g of neurons `idx`."""
+        idx = np.asarray(idx, np.int32)
+        rate = np.broadcast_to(np.asarray(rate_hz, np.float32), idx.shape)
+        w = np.broadcast_to(np.asarray(w_mv, np.float32), idx.shape)
+        keep = rate > 0
+        self.c_idx = np.ascontiguousarray(idx[keep])
+        self.c_p = np.ascontiguousarray(1.0 - np.exp(-rate[keep] * self.dt / 1000.0), dtype=np.float32)
+        self.c_w = np.ascontiguousarray(w[keep])
 
     # ---------------------------------------------------------------- run
     def advance(self, ms: float) -> int:
@@ -163,7 +188,7 @@ class LIFEngine:
                  np.float32(self.eps), self.v, self.g, self.ref, self.counts,
                  self.ring, self.touch, self.ntouch, self.tflag, self.act, self.in_act,
                  self.sc, net.indptr, net.indices, net.data, self.f_idx, self.f_p,
-                 self._seed)
+                 self.c_idx, self.c_p, self.c_w, self._seed)
         self.steps += n_steps
         return n_steps
 
