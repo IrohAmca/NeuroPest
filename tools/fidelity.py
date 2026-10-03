@@ -18,6 +18,7 @@ Run: uv run python tools/fidelity.py [n ...]
 from __future__ import annotations
 
 import json
+import platform
 import sys
 import time
 
@@ -29,6 +30,19 @@ from neuropest.engine import LIFEngine
 DEFAULT_TIERS = (1000, 2000, 3000, 5000, 7500, 10000, 15000, 20000, 30000, 50000, 100000)
 DT = 0.5
 ANCHORS = ("GF", "MDN", "DNa02_L", "DNa02_R", "GROOM")
+
+
+def machine_name() -> str:
+    """CPU the speed columns were measured on (they are machine specific)."""
+    name = platform.processor() or platform.machine()
+    try:
+        for line in open("/proc/cpuinfo", encoding="utf8"):
+            if line.startswith("model name"):
+                name = line.split(":", 1)[1].strip()
+                break
+    except OSError:
+        pass
+    return f"{name}, {platform.system()}"
 
 
 def run(net, protocols, warm_ms=300.0, run_ms=1000.0):
@@ -105,7 +119,7 @@ def main():
         out.append(row)
         print(f"{n:>8} {sub.nnz:>9} | {err['gf_err']:>6.1f} {err['mdn_err']:>6.1f} {err['steer_err']:>7.1f} {err['groom_err']:>7.1f} {err['mix_err']:>6.1f} | "
               f"{corr:>7.3f} {100 * kept:>9.1f} | {row['active']:>8.1f} {row['realtime']:>7.2f} {row['rt_min']:>7.2f}", flush=True)
-    paths.TIERS.write_text(json.dumps(dict(dt=DT, protocols=protocols, tiers=sorted(out, key=lambda r: r["n"])), indent=1))
+    paths.TIERS.write_text(json.dumps(dict(dt=DT, machine=machine_name(), protocols=protocols, tiers=sorted(out, key=lambda r: r["n"])), indent=1))
     print("wrote", paths.TIERS)
 
 
