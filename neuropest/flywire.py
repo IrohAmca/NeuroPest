@@ -97,6 +97,15 @@ def make_groups(meta: pd.DataFrame) -> dict[str, np.ndarray]:
         "VPN": idx(sc == "visual_projection"),
     }
     g["LOOM"] = np.union1d(g["LPLC2"], g["LC4"]).astype(np.int32)    # driven by the looming stimulus
+    # LPC1 is the visual projection type that drives MDN most strongly in the model (tools/probe_inputs.py):
+    # the input of the retreat (backward walking) response. Which VPN type feeds MDN is a model finding,
+    # not a literature claim.
+    g["RETREAT_IN"] = idx(ct == "LPC1")
+    # LC10a/c-2/d drive the DNa02 on their own side (tools/probe_side.py): the bearing input. DNa02 on
+    # one side makes the fly turn to that side (Rayshubskiy et al.), so a cursor on the left turns it left.
+    lc10 = ct.isin(["LC10a", "LC10c-2", "LC10d"])
+    g["LC10_L"] = idx(lc10 & (side == "left"))
+    g["LC10_R"] = idx(lc10 & (side == "right"))
     return g
 
 
@@ -170,13 +179,33 @@ def _spread_backward(indptr, indices, data, row_sum, y):
     return out
 
 
-# Looming-input rates (Hz, Poisson spikes on LPLC2 + LC4) the activity ranking is measured at.
-TRAIN_RATES = (2.0, 5.0, 10.0, 25.0, 50.0, 100.0, 150.0)
+# Stimulus protocols the activity ranking is measured at: {group: Poisson rate in Hz}. The cursor
+# produces looming input, retreat input and a left/right bearing input, alone or together.
+INPUT_GROUPS = ("LOOM", "RETREAT_IN", "LC10_L", "LC10_R")
 
 
-def activity_scores(net: Network, rates=TRAIN_RATES, dt: float = 0.5, warm_ms: float = 300.0,
+def train_protocols() -> list[dict[str, float]]:
+    p = [{"LOOM": r} for r in (2.0, 5.0, 10.0, 25.0, 50.0, 100.0, 150.0)]
+    p += [{"RETREAT_IN": r} for r in (5.0, 10.0, 25.0, 50.0, 80.0)]
+    for side in ("LC10_L", "LC10_R"):
+        p += [{side: r} for r in (5.0, 10.0, 25.0, 50.0, 100.0)]
+    p += [{"LOOM": 3.0, "RETREAT_IN": 20.0, "LC10_L": 30.0}, {"LOOM": 6.0, "RETREAT_IN": 40.0, "LC10_R": 60.0}]
+    return p
+
+
+def test_protocols() -> list[dict[str, float]]:
+    """Levels the ranking was not built from, for tools/fidelity.py."""
+    p = [{"LOOM": r} for r in (3.0, 7.0, 18.0, 35.0, 75.0, 125.0)]
+    p += [{"RETREAT_IN": r} for r in (7.0, 18.0, 35.0, 65.0)]
+    for side in ("LC10_L", "LC10_R"):
+        p += [{side: r} for r in (7.0, 18.0, 35.0, 75.0)]
+    p += [{"LOOM": 4.0, "RETREAT_IN": 30.0, "LC10_R": 40.0}, {"LOOM": 2.0, "RETREAT_IN": 12.0, "LC10_L": 20.0}]
+    return p
+
+
+def activity_scores(net: Network, protocols=None, dt: float = 0.5, warm_ms: float = 300.0,
                     run_ms: float = 1000.0) -> np.ndarray:
-    """Spikes per second of every neuron, summed over the stimulus levels, in the full network.
+    """Spikes per second of every neuron, summed over the stimulus protocols, in the full network.
 
     The model has no spontaneous activity, so a neuron that never spikes under a stimulus has no
     effect on the rest: dropping it changes nothing. Ranking by this score therefore gives tiers
@@ -186,9 +215,10 @@ def activity_scores(net: Network, rates=TRAIN_RATES, dt: float = 0.5, warm_ms: f
 
     total = np.zeros(net.n, np.float32)
     every = np.arange(net.n)
-    for r in rates:
+    for proto in protocols or train_protocols():
         e = LIFEngine(net, dt=dt, seed=11)
-        e.set_drive(net.groups["LOOM"], float(r))
+        for name, rate in proto.items():
+            e.add_drive(net.groups[name], float(rate))
         e.advance(warm_ms)
         e.pop_counts(every)
         e.advance(run_ms)
@@ -204,7 +234,7 @@ def build(raw_dir: Path = RAW_DIR, with_activity: bool = True) -> Network:
     net = Network(indptr, indices, data, ids=ids, groups=groups,
                   meta={"kind": "flywire", "source": SOURCE, "w_syn": LIFParams().w_syn})
     anchors = np.unique(np.concatenate([groups[k] for k in ANCHOR_GROUPS]))
-    pinned = np.union1d(anchors, groups["LOOM"])
+    pinned = np.unique(np.concatenate([anchors] + [groups[k] for k in INPUT_GROUPS]))
     structural = rank_by_pathway(net, groups["VPN"], anchors, pinned)
     if not with_activity:
         net.order = structural

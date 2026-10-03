@@ -37,7 +37,7 @@ def main():
         timers.append(t)
 
     at(10000, lambda: snap("start"))
-    at(10100, lambda: ctrl.size.setValue(FLYWIRE_SIZES.index(20_000)))
+    at(10100, lambda: ctrl.size.setValue(FLYWIRE_SIZES.index(5_000)))
     at(18000, lambda: snap("after size change"))
     at(18100, lambda: ctrl.circ.setCurrentIndex(len(ctrl.circuits) - 1))   # toy circuit
     at(26000, lambda: snap("toy circuit"))

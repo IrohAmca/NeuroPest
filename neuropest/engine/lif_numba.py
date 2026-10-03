@@ -166,6 +166,13 @@ class LIFEngine:
         self.f_idx = np.ascontiguousarray(idx[keep])
         self.f_p = np.ascontiguousarray(1.0 - np.exp(-rate[keep] * self.dt / 1000.0), dtype=np.float32)
 
+    def add_drive(self, idx: np.ndarray, rate_hz: np.ndarray | float) -> None:
+        """Like `set_drive` but keeps the drive already set (for several stimulated groups)."""
+        prev_i, prev_p = self.f_idx, self.f_p
+        self.set_drive(idx, rate_hz)
+        self.f_idx = np.concatenate([prev_i, self.f_idx])
+        self.f_p = np.concatenate([prev_p, self.f_p])
+
     def set_current_drive(self, idx: np.ndarray, rate_hz: np.ndarray | float,
                           w_mv: np.ndarray | float) -> None:
         """Poisson synaptic input: events at `rate_hz`, each adding `w_mv` to g of neurons `idx`."""

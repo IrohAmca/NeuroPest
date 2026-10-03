@@ -15,7 +15,8 @@ from .render import draw_fly
 from .runner import EngineConfig, Runner
 
 # circuit sizes offered in the UI (neurons). FlyWire sizes are tiers measured by tools/fidelity.py.
-FLYWIRE_SIZES = [500, 1_000, 2_000, 5_000, 10_000, 20_000, 50_000, 138_639]
+FLYWIRE_SIZES = [2_000, 5_000, 10_000, 15_000, 20_000, 50_000, 138_639]
+FLYWIRE_DEFAULT = 15_000
 TOY_SIZES = [146, 500, 2_000, 5_000, 10_000, 25_000, 50_000, 100_000, 139_000]
 DTS = [("Hassas (0.1 ms)", 0.1), ("Dengeli (0.5 ms)", 0.5), ("Hızlı (1 ms)", 1.0)]
 
@@ -75,8 +76,8 @@ class Overlay(QWidget):
         dist = ((cur.x() - self.fly.x) ** 2 + (cur.y() - self.fly.y) ** 2) ** 0.5
         closing = 0.0 if self.prev_dist is None else (self.prev_dist - dist) / max(dt, 1e-3)
         self.prev_dist = dist
-        self.runner.send(dist, closing)
-        self.fly.update(dt, self.runner.state, (cur.x(), cur.y()), self.play_rect())
+        self.runner.send(dist, closing, self.fly.bearing_of((cur.x(), cur.y())))
+        self.fly.update(dt, self.runner.state, (cur.x(), cur.y()), self.play_rect(), self.runner.steer)
         self.update()
 
     def paintEvent(self, _):
@@ -180,7 +181,7 @@ class Control(QWidget):
         self._describe()
 
     def _circuit_changed(self, _):
-        self._load_sizes(2_000 if self._kind() == "flywire" else TOY_SIZES[0])
+        self._load_sizes(FLYWIRE_DEFAULT if self._kind() == "flywire" else TOY_SIZES[0])
         self._debounce.start()
 
     def _size_moved(self, _):
@@ -194,10 +195,10 @@ class Control(QWidget):
             t = self.tiers.get(n)
             if t:
                 self.tier_info.setText(
-                    f"Tam beyne göre: Giant Fiber hatası %{t['gf_err']:.1f}, descending nöron korelasyonu "
-                    f"{t['dn_corr']:.3f}, descending ateşlemenin %{100 * t['dn_kept']:.0f}'i korunuyor. "
-                    f"Ölçülen hız ×{t['realtime']:.1f}" + (f" (en kötü ×{t['rt_min']:.1f})" if "rt_min" in t else "")
-                    + ". Bu doğruluk looming (yaklaşan nesne) girdisi için ölçüldü.")
+                    f"Tam beyne göre sapma: kalkış %{t['gf_err']:.0f}, geri yürüme %{t['mdn_err']:.0f}, "
+                    f"yön %{t['steer_err']:.0f}; descending nöron korelasyonu {t['dn_corr']:.3f}. "
+                    f"Ölçülen hız ×{t['realtime']:.1f} (en kötü ×{t['rt_min']:.1f}). "
+                    "Yalnız yaklaşan nesne, geri çekilme ve yön girdileri için ölçüldü.")
             else:
                 self.tier_info.setText("")
         else:
@@ -223,7 +224,7 @@ class Control(QWidget):
             self.warn.setText("")
             return
         self.telemetry.setText(
-            f"Durum: {r.state}   GF {st['gf']:.0f} Hz\n"
+            f"Durum: {r.state}   GF {st['gf']:.0f} Hz   MDN {st['mdn']:.0f} Hz   yön {st['steer']:+.0f}\n"
             f"Gerçek zaman çarpanı: ×{st['rt']:.1f}   CPU: %{100 * st['cpu']:.0f} (tek çekirdek)\n"
             f"Aktif nöron: {st['active']:,.0f} / {st['n']:,}")
         slow = st["rt"] < 1.0 or st["lag_ms"] > 100

@@ -6,7 +6,7 @@ import math
 from PySide6.QtCore import QPointF, Qt
 from PySide6.QtGui import QColor, QPainter, QPen
 
-from .states import FLY, WALK
+from .states import FLY, RETREAT, WALK
 
 INK = QColor(235, 235, 235, 235)
 
@@ -45,7 +45,7 @@ def draw_fly(p: QPainter, x: float, y: float, heading: float, state: str,
     else:
         for s in (-1, 1):  # folded wings
             p.drawLine(QPointF(-1, s * 3), QPointF(-22, s * 5))
-        _legs(p, phase if state == WALK else 0.0, tucked=False)
+        _legs(p, phase if state in (WALK, RETREAT) else 0.0, tucked=False)
     p.restore()
 
 

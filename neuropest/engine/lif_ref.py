@@ -43,6 +43,12 @@ class ReferenceEngine:
         self.f_idx = idx[keep]
         self.f_p = (1.0 - np.exp(-rate[keep] * self.dt / 1000.0)).astype(np.float32)
 
+    def add_drive(self, idx, rate_hz):
+        prev_i, prev_p = self.f_idx, self.f_p
+        self.set_drive(idx, rate_hz)
+        self.f_idx = np.concatenate([prev_i, self.f_idx])
+        self.f_p = np.concatenate([prev_p, self.f_p])
+
     def set_current_drive(self, idx, rate_hz, w_mv):
         idx = np.asarray(idx, np.int32)
         rate = np.broadcast_to(np.asarray(rate_hz, np.float32), idx.shape)

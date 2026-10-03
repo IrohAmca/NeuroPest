@@ -4,9 +4,10 @@ from __future__ import annotations
 import math
 import random
 
-from .states import FLY, STAND, WALK
+from .states import FLY, RETREAT, STAND, WALK
 
 Rect = tuple[float, float, float, float]   # left, top, right, bottom of the area the fly's center may use
+TURN_GAIN = 0.02                           # rad/s of turning per Hz of right-minus-left DNa02 rate
 
 
 class Fly:
@@ -16,9 +17,14 @@ class Fly:
         self.turn_t = 0.0
         self.turn = 0.0
 
-    def update(self, dt: float, state: str, cursor: tuple[float, float], rect: Rect):
+    def bearing_of(self, cursor: tuple[float, float]) -> float:
+        """Angle of `cursor` relative to the heading, radians, positive when it is to the fly's right."""
+        return _wrap(math.atan2(cursor[1] - self.y, cursor[0] - self.x) - self.heading)
+
+    def update(self, dt: float, state: str, cursor: tuple[float, float], rect: Rect, steer: float = 0.0):
+        """steer: right-minus-left DNa02 rate (Hz) from the brain; turns a walking or retreating fly."""
         l, t, r, b = rect
-        speed = {STAND: 0.0, WALK: 70.0, FLY: 420.0}[state]
+        speed = {STAND: 0.0, WALK: 70.0, FLY: 420.0, RETREAT: -45.0}[state]     # retreat = backward walking
         wx, wy = _wall_push(self.x, self.y, rect, 160.0 if state == FLY else 110.0)
         if state == FLY:
             # flee from the cursor, bending away from walls so it never pins itself to an edge
@@ -30,10 +36,12 @@ class Fly:
             self.turn_t -= dt
             if self.turn_t <= 0:
                 self.turn, self.turn_t = random.uniform(-1.5, 1.5), random.uniform(0.3, 1.2)
-            self.heading += self.turn * dt
+            self.heading += (self.turn * 0.5 + steer * TURN_GAIN) * dt
             w = math.hypot(wx, wy)
             if w > 0:
                 self.heading += _wrap(math.atan2(wy, wx) - self.heading) * min(1.0, 5 * w * dt)
+        elif state == RETREAT:
+            self.heading += steer * TURN_GAIN * dt          # keeps facing the cursor while backing away
         self.x += math.cos(self.heading) * speed * dt
         self.y += math.sin(self.heading) * speed * dt
         # hard limits: stay inside the usable area (e.g. above the taskbar), bounce off
@@ -44,7 +52,7 @@ class Fly:
             self.y = min(max(self.y, t), b)
             self.heading = -self.heading
         self.heading = _wrap(self.heading)
-        rate = {STAND: 0.0, WALK: 14.0, FLY: 120.0}[state]
+        rate = {STAND: 0.0, WALK: 14.0, FLY: 120.0, RETREAT: -10.0}[state]
         self.phase = (self.phase + rate * dt) % math.tau
 
     def clamp(self, rect: Rect):

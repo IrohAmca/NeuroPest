@@ -41,6 +41,24 @@ def test_not_pinned_to_the_bottom():
     assert 0.35 < sum(ys) / len(ys) / RECT[3] < 0.65
 
 
+def test_retreat_walks_backward_and_steering_turns_toward_the_cursor_side():
+    import math
+
+    from neuropest.states import RETREAT
+
+    fly = Fly(500, 500)
+    fly.heading = 0.0                                   # facing +x
+    fly.update(0.5, RETREAT, (900, 500), RECT)
+    assert fly.x < 500 and abs(fly.y - 500) < 1e-6      # moved backward, along -x
+    f2 = Fly(500, 500)
+    f2.heading, f2.turn, f2.turn_t = 0.0, 0.0, 10.0     # no random wander during the step
+    f2.update(0.1, WALK, (500, 900), RECT, steer=50.0)
+    assert f2.heading > 0.05                            # positive steer turns right (clockwise, toward +y)
+    f3 = Fly(500, 500)
+    f3.heading = 0.0
+    assert abs(f3.bearing_of((500, 900)) - math.pi / 2) < 1e-9      # cursor below a fly facing +x: 90 deg right
+
+
 def test_clamp_after_taskbar_grows():
     fly = Fly(500, 1000)
     fly.clamp((25.0, 25.0, 1895.0, 900.0))
