@@ -25,6 +25,11 @@ def main():
     flywire.CACHE.parent.mkdir(parents=True, exist_ok=True)
     net.save(flywire.CACHE)
     print("saved", flywire.CACHE, f"({flywire.CACHE.stat().st_size / 1e6:.0f} MB)")
+    for old in flywire.TIER_DIR.glob("*.npz"):              # tiers of the previous build are stale
+        old.unlink()
+    for n in flywire.TIER_SIZES:
+        flywire.load_tier(n)
+    print("tier files:", ", ".join(f"{n:,}" for n in flywire.TIER_SIZES), "in", flywire.TIER_DIR)
 
 
 if __name__ == "__main__":

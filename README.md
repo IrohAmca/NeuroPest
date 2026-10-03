@@ -54,7 +54,7 @@ git clone --depth 1 https://github.com/flyconnectome/flywire_annotations.git /tm
 cp /tmp/shiu/Connectivity_783.parquet /tmp/shiu/Completeness_783.csv data/raw/
 cp /tmp/fwann/supplemental_files/Supplemental_file1_neuron_annotations.tsv data/raw/
 git hash-object data/raw/*               # tablodaki SHA-1'lerle aynı olmalı
-uv run python tools/build_flywire.py     # ~30 s: data/circuits/flywire_v783.npz (125 MB)
+uv run python tools/build_flywire.py     # ~30 s: data/circuits/flywire_v783.npz (125 MB) + data/circuits/tiers/ (katman başına küçük dosya)
 uv run python tools/build_eye.py         # göz verisi: data/circuits/eye.npz ve field.npz (görsel girdi için)
 uv run python tools/fidelity.py          # ~5 dk: data/circuits/tiers.json (arayüzdeki doğruluk/hız bilgisi)
 ```
@@ -220,7 +220,8 @@ uv sync --extra gpu        # wgpu, 3,3 MB; NVIDIA, AMD, Intel ve Apple GPU'ları
 uv run neuropest           # kontrol penceresinde "Hesaplama": Otomatik / CPU / GPU adları
 ```
 
-Kontrol penceresi GPU'ları ayrı bir süreçte bulur (adaptör taraması ~100 MB bellek ister). "Otomatik",
+Kontrol penceresi GPU'ları ayrı bir süreçte bulur (adaptör taraması ~1 s ve ~100 MB bellek ister) ve bunu yalnız
+"GPU'ları ara…" seçilince ya da "Otomatik" büyük bir katman isteyince yapar. "Otomatik",
 50.000 nöron ve üstü katmanlarda GPU kullanır, daha küçüklerde CPU: olay tabanlı CPU motoru boşta ya da
 hafif yükte hızlıdır, GPU her adımda tüm nöronları günceller (hız yüke bağlı değil, sabit).
 
