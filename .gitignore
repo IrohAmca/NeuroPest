@@ -1,0 +1,7 @@
+__pycache__/
+*.pyc
+.venv/
+data/*.parquet
+data/*.csv
+data/*.pickle
+sprites_preview.png
