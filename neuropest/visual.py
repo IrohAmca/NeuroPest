@@ -1,34 +1,22 @@
 """From a scene to projection-neuron rates, for the engine worker.
 
-The scene is what lies on the screen plane around the fly (today: the cursor drawn as a dark disk on a
-neutral background; a captured screen image can be plugged in as `scene`). `VisionDrive.step` samples it
-through the funnel view at the fly's pose, runs the retinotopic detectors of `vision.Features` and turns
-their output into forced-spike rates of LPLC2, LC4 (looming), LPC1 (retreat) and LC10 (small object)
-neurons through the receptive fields found in the connectome.
+Two ways to show the fly the cursor:
+  step_cursor  a dark disc at eye level facing the fly, subtending atan(r / d) (the default, `cursor_model="sphere"`):
+               an approach expands it at v / d whatever the eye height, so the detectors answer the same from
+               any height
+  step         a scene lying on the screen plane (the cursor drawn as a dark disk, or a captured screen image) sampled
+               through the funnel view at the fly's pose; this is the geometry for real screen content, where the
+               eye height matters, and the first cursor model
+Either way the retinotopic detectors of `vision.Features` run on the column luminances and their output becomes
+forced-spike rates of LPLC2, LC4 (looming), LPC1 (retreat) and LC10 (small object) neurons through the receptive
+fields found in the connectome.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
-
 import numpy as np
 
-from .vision import Features, VisualField, sample_scenes
-
-
-@dataclass(frozen=True)
-class VisionParams:
-    eye_height: float = 100.0        # px above the screen plane; larger = more top-down view
-    halo_px: float = 30.0            # the cursor is drawn as a dark disk this big
-    background: float = 0.5
-    # gains found by grid search on approach / slide / recede scenes (tools/vision_calibrate.py --grid)
-    gain_loom: float = 25.0          # Hz of LPLC2/LC4 drive per unit of expansion
-    max_loom: float = 150.0
-    gain_retreat: float = 18.0       # Hz of LPC1 drive per unit of eye-wide expansion
-    max_retreat: float = 20.0
-    flee_lo: float = 3.0             # retreat drive fades out between these expansion values: strong looming flees
-    flee_hi: float = 4.5
-    gain_object: float = 50.0        # LC10 (steering): at 100 Hz a near disk drove DNa02 past 100 Hz, twice what
-    max_object: float = 50.0         # the cursor drive gives at its maximum (79 Hz)
+from .vision import Features, VisualField, sample_scenes, sphere_luminance
+from .visionparams import DISK_PLANE, VisionParams  # noqa: F401  (re-exported)
 
 
 def cursor_scene(cx: float, cy: float, radius: float, background: float = 0.5):
@@ -61,13 +49,18 @@ class VisionDrive:
     @property
     def halo_px(self) -> float:
         """Radius of the cursor disk. It grows with the eye height so it keeps its apparent size: from 250 px up
-        a 30 px disk spans less than a column and the expansion detector never saw it (the fly did not flee)."""
+        a 30 px disk spans less than a column and the expansion detector never saw it (the fly did not flee).
+        The eye-level disc ("sphere") does not depend on the height."""
+        if self.params.cursor_model == "sphere":
+            return self.params.halo_px
         return self.params.halo_px * max(1.0, self.eye_height / self.params.eye_height)
 
     @property
     def height_gain(self) -> float:
         """Looming is weaker from higher up even for a disk of the same apparent size (expansion for an approach at
         800 px/s: 5.4 at 100 px, 5.2 at 150, 3.1 at 250, 2.9 at 350); the detector outputs are scaled back up."""
+        if self.params.cursor_model == "sphere":
+            return 1.0
         return max(1.0, (self.eye_height / 150.0) ** 0.8)
 
     def reset(self):
@@ -79,12 +72,27 @@ class VisionDrive:
         p = self.params
         lum_now, lum_prev = sample_scenes(self.retina, (scene_now, scene_prev), x, y, heading, self.eye_height,
                                           sky=p.background)
+        return self._detect(lum_now, lum_prev, dt, self.height_gain, min(1.0, p.eye_height / self.eye_height))
+
+    def step_cursor(self, now: tuple[float, float], prev: tuple[float, float], x: float, y: float, heading: float,
+                    dt: float):
+        """One frame with the cursor drawn as a disc at eye level (`sphere_luminance`). `now` and `prev` are the
+        cursor positions at this and the previous frame (screen px); both are seen from the CURRENT pose, so the
+        fly's own walking does not count as the cursor moving."""
+        p = self.params
+        cd = self.field.col_dir
+        lum_now = sphere_luminance(cd, now, x, y, heading, p.halo_px, p.background)
+        lum_prev = sphere_luminance(cd, prev, x, y, heading, p.halo_px, p.background)
+        return self._detect(lum_now, lum_prev, dt, 1.0, 1.0)
+
+    def _detect(self, lum_now, lum_prev, dt: float, g: float, go: float):
+        """Luminance of the columns now and one frame ago (same pose) -> (neuron indices, rates in Hz).
+        `g` scales the looming and retreat detectors, `go` the small-object (steering) one."""
+        p = self.params
         if self._fresh:
             self.features.reset(lum_now)
             self._fresh = False
         f = self.features.update(lum_now, lum_prev, dt, self.loom_rows, self.obj_rows)
-        g = self.height_gain
-        go = min(1.0, self.params.eye_height / self.eye_height)   # the bigger disk drives more LC10 neurons
         e, o, eye = g * f["expansion_pooled"], f["object_pooled"], g * f["expansion_eye"]
         ee = eye[self.ret_col]
         retreat = np.minimum(self.skittish * p.gain_retreat * ee, p.max_retreat) * np.clip(

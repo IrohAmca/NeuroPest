@@ -3,7 +3,7 @@ import time
 import pytest
 
 from neuropest.paths import CACHE, EYE, FIELD
-from neuropest.runner import EngineConfig, Runner
+from neuropest.runner import (I_CX, I_CY, I_STAMP, I_X, I_Y, EngineConfig, Runner, _Approach)
 
 
 def _wait(pred, timeout):
@@ -124,3 +124,48 @@ def test_touch_calms_a_moderate_approach_but_not_a_fast_one():
     assert "fly" in seen["moderate"]
     assert "groom" in seen["moderate+touch"] and "fly" not in seen["moderate+touch"]
     assert "fly" in seen["fast+touch"]
+
+
+def test_closing_speed_comes_from_real_time_between_samples_and_ignores_own_steps():
+    a = _Approach()
+    inp = [0.0] * 16
+
+    def frame(stamp, cursor, fly=(0.0, 0.0)):
+        inp[I_STAMP], inp[I_CX], inp[I_CY], inp[I_X], inp[I_Y] = stamp, *cursor, *fly
+        return a.update(inp)
+
+    assert a.update([0.0] * 16) is None                         # no stamp: the caller uses the GUI's own number
+    assert frame(1.000, (500.0, 0.0)) == 0.0                    # first sample: nothing to compare with
+    assert frame(1.016, (484.0, 0.0)) == pytest.approx(1000.0)
+    assert frame(1.016, (400.0, 0.0)) == pytest.approx(1000.0)  # the same stamp is not a new sample
+    assert frame(1.216, (284.0, 0.0)) == pytest.approx(1000.0)  # a 200 ms stall: 200 px in 0.2 s (clamping to 50 ms said 4000)
+    assert frame(2.000, (100.0, 0.0)) == 0.0                    # a gap this long says nothing about its speed
+    frame(3.000, (300.0, 0.0))
+    assert frame(3.016, (300.0, 0.0), fly=(5.0, 0.0)) == pytest.approx(0.0)    # the fly stepped toward a standing cursor
+    assert frame(3.032, (290.0, 0.0), fly=(5.0, 0.0)) == pytest.approx(10.0 / 0.016)   # the cursor itself moved 10 px
+
+
+@pytest.mark.skipif(not CACHE.exists(), reason="needs the FlyWire cache (tools/build_flywire.py)")
+def test_walking_up_to_a_standing_cursor_is_not_a_threat():
+    """The GUI's own closing number includes the fly's steps (400 px/s here, 2.7 /s at 150 px: a retreat); with
+    stamps the worker measures the cursor alone."""
+    def run(stamped):
+        r = Runner(EngineConfig("flywire", 5_000, 0.5))
+        seen = set()
+        try:
+            assert _wait(lambda: r.ready, 120), "worker did not become ready"
+            r.bias = 0.0
+            t0 = time.perf_counter()
+            while (t := time.perf_counter() - t0) < 2.0:
+                fx = 1000.0 + min(400.0 * t, 100.0)             # the fly walks toward a cursor at x = 1250
+                r.send(1250.0 - fx, 400.0 if t < 0.25 else 0.0, 0.0, pose=(fx, 700.0, 0.0), cursor=(1250.0, 700.0),
+                       stamp=time.perf_counter() if stamped else 0.0)
+                seen.add(r.state)
+                time.sleep(0.016)
+            return seen
+        finally:
+            r.stop()
+
+    unstamped = run(False)
+    assert "retreat" in unstamped or "fly" in unstamped         # the old number alone does alarm it
+    assert run(True) == {"stand"}

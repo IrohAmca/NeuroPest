@@ -12,6 +12,7 @@ from PySide6.QtWidgets import (QApplication, QCheckBox, QComboBox, QFrame, QGrid
 from .paths import CACHE, EYE, FIELD, TIERS
 from .runner import GPU_AUTO_MIN_NEURONS, EngineConfig, list_gpus, pick_gpu
 from .theme import ERROR, FAINT, MUTED, STATE_STYLE, fly_icon
+from .visionparams import VisionParams
 
 # circuit sizes offered in the UI (neurons). FlyWire sizes are tiers measured by tools/fidelity.py.
 FLYWIRE_SIZES = [2_000, 5_000, 10_000, 15_000, 20_000, 50_000, 138_639]
@@ -190,10 +191,15 @@ class Control(QWidget):
                                "nöronlarının bağlantıdan çıkarılan alıcı alanları (neuropest/vision.py)")
         self.vision.toggled.connect(lambda on: setattr(self.runner, "vision", on))
         card.body.addWidget(self.vision)
-        hgt = QSlider(Qt.Horizontal, minimum=40, maximum=300, value=int(self.runner.eye_height), enabled=self.has_eye)
+        # The cursor is a disc at eye level (VisionParams.cursor_model = "sphere"), so the eye height changes nothing
+        # for it; the slider is for the funnel view of a screen image (screen capture, not built yet) and the legacy
+        # plane-disk model.
+        hgt = QSlider(Qt.Horizontal, minimum=40, maximum=300, value=int(self.runner.eye_height),
+                      enabled=self.has_eye and VisionParams().cursor_model != "sphere")
         hgt.valueChanged.connect(lambda v: setattr(self.runner, "eye_height", float(v)))
-        slider_row(card, "Göz yüksekliği", "Ekran düzleminin kaç px üstünden bakıyor: büyük = daha dikey (tepeden) bakış.",
-                   hgt, lambda v: f"{v} px")
+        slider_row(card, "Göz yüksekliği", "Ekran düzleminin kaç px üstünden bakıyor: büyük = daha dikey (tepeden) bakış. "
+                   "İmleç göz hizasında bir disk olarak çizildiği için imleç için etkisiz; ekran görüntüsü "
+                   "yakalama gelince (funnel görüşü) kullanılacak.", hgt, lambda v: f"{v} px")
         self.vision_info = _label("", "Faint", wrap=True)
         card.body.addWidget(self.vision_info)
         self.page.addWidget(card)
@@ -204,8 +210,8 @@ class Control(QWidget):
         if not self.has_eye:
             text = "Göz verisi yok: uv run python tools/build_eye.py (ham veri gerekir, README'ye bak)."
         elif state > 0:
-            text = ("Sinek imleci kendi gözünden, yere yakın koyu bir disk olarak görüyor; yaklaşma ve yön bilgisi "
-                    "retinotopik dedektörlerden geliyor.")
+            text = ("Sinek imleci kendi gözünden, göz hizasında koyu bir disk olarak görüyor (yaklaştıkça büyür); "
+                    "yaklaşma ve yön bilgisi retinotopik dedektörlerden geliyor.")
         elif state < 0 and self.vision.isChecked():
             text = "Bu devrede görsel girdi yok (alıcı alanı olan LPLC2/LC4 gerekir): imleç sayılarıyla çalışılıyor."
         else:
