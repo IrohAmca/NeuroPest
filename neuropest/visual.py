@@ -58,6 +58,18 @@ class VisionDrive:
     def usable(self) -> bool:
         return len(self.loom_idx) > 0
 
+    @property
+    def halo_px(self) -> float:
+        """Radius of the cursor disk. It grows with the eye height so it keeps its apparent size: from 250 px up
+        a 30 px disk spans less than a column and the expansion detector never saw it (the fly did not flee)."""
+        return self.params.halo_px * max(1.0, self.eye_height / self.params.eye_height)
+
+    @property
+    def height_gain(self) -> float:
+        """Looming is weaker from higher up even for a disk of the same apparent size (expansion for an approach at
+        800 px/s: 5.4 at 100 px, 5.2 at 150, 3.1 at 250, 2.9 at 350); the detector outputs are scaled back up."""
+        return max(1.0, (self.eye_height / 150.0) ** 0.8)
+
     def reset(self):
         self._fresh = True                  # the next frame sets the slow baseline to what the eye sees then
 
@@ -71,10 +83,12 @@ class VisionDrive:
             self.features.reset(lum_now)
             self._fresh = False
         f = self.features.update(lum_now, lum_prev, dt, self.loom_rows, self.obj_rows)
-        e, o, eye = f["expansion_pooled"], f["object_pooled"], f["expansion_eye"]
+        g = self.height_gain
+        go = min(1.0, self.params.eye_height / self.eye_height)   # the bigger disk drives more LC10 neurons
+        e, o, eye = g * f["expansion_pooled"], f["object_pooled"], g * f["expansion_eye"]
         ee = eye[self.ret_col]
         retreat = np.minimum(self.skittish * p.gain_retreat * ee, p.max_retreat) * np.clip(
             (p.flee_hi - ee) / (p.flee_hi - p.flee_lo), 0.0, 1.0)
         rates = np.concatenate([np.minimum(self.skittish * p.gain_loom * e[self.loom_col], p.max_loom), retreat,
-                                np.minimum(p.gain_object * o[self.obj_col], p.max_object)])
+                                np.minimum(go * p.gain_object * o[self.obj_col], go * p.max_object)])
         return self.idx, rates.astype(np.float32)

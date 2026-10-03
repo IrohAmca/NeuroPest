@@ -165,3 +165,27 @@ def test_cursor_disk_drives_looming_neurons_only_while_it_approaches():
     assert still < 1.0 and dash > 50.0
     receding = loom_peak(lambda t: (1050.0 + 400.0 * max(0.0, t - 3.0), 700.0), 4.0)    # near for 3 s, then away
     assert receding < 10.0                                      # leaving is not looming (slow baseline)
+
+
+@needs_eye
+def test_looming_survives_a_more_vertical_view():
+    """From 250 px up a 30 px disk was smaller than a column and the fly never fled (E = 0 for every approach)."""
+    net = flywire.load_cache().prefix(5000)
+    drive = VisionDrive(net)
+    fly = (1000.0, 700.0, 0.0)
+    assert drive.halo_px == drive.params.halo_px                   # unchanged at the calibrated height
+
+    def loom_peak(speed, height):
+        drive.eye_height = height
+        drive.reset()
+        path = lambda t: (max(1050.0, 1400.0 - speed * max(0.0, t - 0.3)), 700.0)    # noqa: E731
+        top = 0.0
+        for k in range(75):
+            idx, rates = drive.step(cursor_scene(*path(k / 60), drive.halo_px),
+                                    cursor_scene(*path((k - 1) / 60), drive.halo_px), *fly, DT)
+            top = max(top, float(rates[:len(drive.loom_idx)].max()))
+        return top
+
+    for height in (100.0, 250.0, 350.0):
+        assert loom_peak(1500.0, height) > 50.0, height            # a fast dash still drives the looming neurons
+        assert loom_peak(150.0, height) < 30.0, height             # a slow walk up to the fly still does not

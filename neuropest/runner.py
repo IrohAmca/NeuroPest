@@ -219,8 +219,8 @@ class _Eye:
         cursor = (inp[I_CX], inp[I_CY])
         prev = self.cursor or cursor
         dt = max(sim_ms - self.last_ms, 1.0) / 1000.0
-        idx, rates = d.step(cursor_scene(cursor[0], cursor[1], p.halo_px, p.background),
-                            cursor_scene(prev[0], prev[1], p.halo_px, p.background),
+        idx, rates = d.step(cursor_scene(cursor[0], cursor[1], d.halo_px, p.background),
+                            cursor_scene(prev[0], prev[1], d.halo_px, p.background),
                             inp[I_X], inp[I_Y], inp[I_HEAD], dt)
         brain.set_vision(idx, rates)
         self.cursor, self.last_ms = cursor, sim_ms

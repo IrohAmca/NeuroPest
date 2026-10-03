@@ -91,13 +91,16 @@ ortalama göreli hatası:
 
 | Nöron | Kalkış (GF) | Geri yürüme (MDN) | Yön (DNa02) | DN korelasyonu | Hız (ort. / en kötü) |
 |---:|---:|---:|---:|---:|---:|
-| 2.000 | %16 | %66 | %27 | 0,985 | ×17 / ×5,5 |
-| 5.000 | %11 | %7 | %24 | 0,989 | ×14 / ×3,4 |
-| 10.000 | %7,5 | %7,5 | %11 | 0,996 | ×7,4 / ×1,4 |
-| **15.000** (varsayılan) | **%0,3** | **%1,6** | **%1,7** | **0,999** | **×6,1 / ×1,7** |
-| 20.000 | %0,1 | %0,5 | %0,5 | 0,998 | ×4,2 / ×1,0 |
-| 50.000 | %0 | %0 | %1,1 | 0,999 | ×2,1 / ×0,4 |
-| 138.639 (tam) | 0 | 0 | 0 | 1,000 | ×1,2 / ×0,14 |
+| 2.000 | %29 | %75 | %98 | 0,743 | ×65 / ×28 |
+| 5.000 | %13 | %20 | %23 | 0,993 | ×27 / ×7,0 |
+| 10.000 | %9 | %6 | %10 | 0,997 | ×20 / ×4,4 |
+| **15.000** (varsayılan) | **%0,6** | **%5,4** | **%0,8** | **0,999** | **×11 / ×2,1** |
+| 20.000 | %0,1 | %0,5 | %1,2 | 1,000 | ×5,7 / ×1,7 |
+| 50.000 | %0 | %0 | %0,9 | 0,999 | ×4,0 / ×0,5 |
+| 138.639 (tam) | 0 | 0 | 0 | 1,000 | ×2,5 / ×0,4 |
+
+Tablo, dokunma girdisi eklenip sıralama yeniden kurulduktan sonra yeniden ölçüldü (5.000'in geri yürüme hatası %7 → %20,
+15.000'inki %1,6 → %5,4); hız sütunu ölçüm anındaki makine yüküne göre oynuyor.
 
 Yalnız looming ile ölçüldüğünde 2.000 nöron %99,9 doğruydu; geri yürüme ve yön eklenince aktif
 devre büyüdü ve ~15.000 nöron gerekti. **Sınır:** doğruluk yalnız bu üç girdi ailesi için ölçüldü;
@@ -161,7 +164,11 @@ sineğin üstünde) mekanik olduğundan görsel girdi açıkken de imleç konumu
 ağır: 2560x1440'ta tam ekran 58 ms, 600x600'lük bölge 14 ms (`tools/capture_cost.py`); ayrı süreç gerekecek.
 
 **Sınırlar.** İmleç düz bir düzlemde uzakta ince bir şerit olur, looming yalnız yakında belirgin
-(göz yüksekliği ayarı ve imleç halesi bunu dengeler). Optik lob simüle edilmiyor. Katman doğruluğu görüntüyle
+(göz yüksekliği ayarı ve imleç halesi bunu dengeler). Göz yükseldikçe imleç diski büyütülür, genişleme çıkışı
+ve yön sürücüsü ölçeklenir: 250 px'ten yukarıda 30 px'lik disk bir sütundan küçük kalıyor ve sinek hiç
+kaçmıyordu. 100 ile 250 px arasında yavaş/orta/hızlı yaklaşma aynı davranışı veriyor (15.000 nöron ve tam
+beyin GPU'da); 350 px'te hızlı yaklaşma kalkış veriyor, orta hızlı yaklaşma geri çekilme vermiyor. Optik lob
+simüle edilmiyor. Katman doğruluğu görüntüyle
 (mekânsal olarak seyrek) yeniden ölçülmedi; senaryolar 5.000 ve 15.000 katmanda denendi (5.000'de eşiklere
 daha az pay var: kalkışta Giant Fiber ~23 Hz, eşik 15). 15.000 katmanda şiddetli kaçış sırasında (yüz binlerce
 spike/sn) ve makine yüklüyken bir ölçümde gerçek zamanın altına (×0,8) inildi; 5.000'de ×7,4.
