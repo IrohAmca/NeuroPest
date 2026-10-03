@@ -48,20 +48,33 @@ Ham dosyalar git'e girmez (`data/raw/`, `data/circuits/` yok sayılır). Kaynakl
 | `Supplemental_file1_neuron_annotations.tsv` | github.com/flyconnectome/flywire_annotations (`supplemental_files/`) | 31,7 MB | `02e72f6c8161d3465f77fec0edf96c5d98027a9e` |
 
 ```bash
-mkdir -p data/raw && git clone --no-checkout --depth 1 --filter=blob:none https://github.com/philshiu/Drosophila_brain_model.git /tmp/shiu
-(cd /tmp/shiu && git fetch origin d386555d1a5f40ebfa1380bcb05b1fab044855fd && git checkout HEAD -- Connectivity_783.parquet Completeness_783.csv)
-mv /tmp/shiu/Connectivity_783.parquet /tmp/shiu/Completeness_783.csv data/raw/
-gh api -H "Accept: application/vnd.github.raw" repos/flyconnectome/flywire_annotations/contents/supplemental_files/Supplemental_file1_neuron_annotations.tsv > data/raw/Supplemental_file1_neuron_annotations.tsv
+mkdir -p data/raw
+git clone --depth 1 https://github.com/philshiu/Drosophila_brain_model.git /tmp/shiu          # ~190 MB
+git clone --depth 1 https://github.com/flyconnectome/flywire_annotations.git /tmp/fwann
+cp /tmp/shiu/Connectivity_783.parquet /tmp/shiu/Completeness_783.csv data/raw/
+cp /tmp/fwann/supplemental_files/Supplemental_file1_neuron_annotations.tsv data/raw/
+git hash-object data/raw/*               # tablodaki SHA-1'lerle aynı olmalı
 uv run python tools/build_flywire.py     # ~30 s: data/circuits/flywire_v783.npz (125 MB)
+uv run python tools/build_eye.py         # göz verisi: data/circuits/eye.npz ve field.npz (görsel girdi için)
 uv run python tools/fidelity.py          # ~5 dk: data/circuits/tiers.json (arayüzdeki doğruluk/hız bilgisi)
 ```
 
-(`gh api` ile 100 MB'lık dosya akışı yarıda kesiliyor, bu yüzden büyük dosya git ile alınır.
-`sez_neurons.pickle` indirilmez: pickle kod çalıştırabilir, devre için gerekmiyor.)
+Düz sığ klon yeterli: dosyalar bu depolarda LFS değil, normal git nesnesi. Eski tarif `git fetch origin <blob özeti>`
+kullanıyordu; GitHub bir blob'u özetiyle fetch etmeye izin vermez ("bad revision"), bu yüzden kaldırıldı. `gh api` ile
+100 MB'lık dosya akışı yarıda kesiliyor. `sez_neurons.pickle` indirilmez: pickle kod çalıştırabilir, devre için gerekmiyor.
 
-**Lisans ve atıf.** Kod: Shiu ve ark. deposu MIT. FlyWire verisi CC-BY 4.0, atıf gerekir:
-Dorkenwald ve ark. 2024 (*Nature*, FlyWire bağlantısı), Schlegel ve ark. 2024 (*Nature*, hücre
-tipleri), Shiu ve ark. 2024 (*Nature*, tüm-beyin LIF modeli).
+**`tiers.json` makineye özeldir.** Hata sütunları (kalkış, geri yürüme, yön, DN korelasyonu) devre ve sürücü
+için geçerlidir. "Hız" sütunları ise `tools/fidelity.py`'nin koştuğu makinedeki tek çekirdek ölçümüdür ve ölçüm anındaki yüke göre
+oynar; başka bir CPU'da yeniden koşturun. Dosya hangi makinede üretildiğini `machine` alanında taşır ve arayüz ipucu
+metninde gösterir. Hız ayrıca sürücüye bağlıdır: bu tablo tekdüze grup sürücüsüyle ölçüldü, görüntü yolu
+nöronları tek tek 150 Hz'e kadar sürer ve en kötü durumda daha yavaş koşar.
+
+**Lisans ve atıf.** Kod: Shiu ve ark. deposu MIT. **FlyWire verisi CC BY-NC 4.0** (atıf gerekir, ticari
+kullanım yok): flywire.ai/guidelines "FlyWire's public release data is made available under license CC BY-NC 4.0"
+diyor (2026-10-03'te doğrulandı). Makaleler CC BY 4.0'dır ama veri o lisansta değildir; önceki sürümde bu yanlış
+yazılmıştı. Bu proje yalnız ticari olmayan kullanım için dağıtılabilir; ticari bir kullanım FlyWire'dan izin ister.
+Atıf: Dorkenwald ve ark. 2024 (*Nature*, FlyWire bağlantısı), Schlegel ve ark. 2024 (*Nature*, hücre tipleri),
+Shiu ve ark. 2024 (*Nature*, tüm-beyin LIF modeli).
 
 **Devre.** 138.639 nöron, 15,1 milyon sinaps (kenar), işaret × sinaps sayısı × 0,275 mV. İmleç üç
 girdi grubuna çevrilir (Poisson ateşleme), çıktılar descending nöronlardan okunur:

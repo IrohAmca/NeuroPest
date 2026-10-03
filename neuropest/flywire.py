@@ -1,7 +1,7 @@
 """FlyWire v783 connectome -> `Network`, with named neuron groups and a relevance ranking.
 
 Raw files (not in git, see README): data/raw/
-  Connectivity_783.parquet   Shiu et al. 2024 packaging of FlyWire v783 (Dorkenwald et al. 2024, CC-BY 4.0)
+  Connectivity_783.parquet   Shiu et al. 2024 packaging of FlyWire v783 (Dorkenwald et al. 2024; data license CC BY-NC 4.0, flywire.ai/guidelines)
   Completeness_783.csv       neuron index -> FlyWire root id
   Supplemental_file1_neuron_annotations.tsv   cell types (Schlegel et al. 2024)
 
@@ -19,7 +19,7 @@ import numpy as np
 from .engine import LIFParams, Network
 from .paths import CACHE, RAW_DIR
 
-SOURCE = "FlyWire v783 (Dorkenwald et al. 2024; Schlegel et al. 2024), CC-BY 4.0, via Shiu et al. 2024"
+SOURCE = "FlyWire v783 (Dorkenwald et al. 2024; Schlegel et al. 2024), CC BY-NC 4.0, via Shiu et al. 2024"
 
 # Anchor descending neurons and what the literature says they do. Used to read behavior out of the
 # simulation and as targets of the relevance ranking. Hemibrain type names, as the papers use them.
