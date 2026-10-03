@@ -155,8 +155,9 @@ def main():
     runner = Runner()
     app.aboutToQuit.connect(runner.stop)
     overlay = Overlay(runner)
-    overlay.show()
     ctrl = Control(overlay, runner)
+    if ctrl.visible.isChecked():
+        overlay.show()
     ctrl.show()
     tray = Tray(app, ctrl, runner)
     tray.show()

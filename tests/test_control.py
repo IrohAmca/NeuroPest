@@ -34,7 +34,7 @@ class FakeOverlay:
     home = None
 
     def __init__(self):
-        self.shown = True
+        self.shown = False
 
     def setVisible(self, v):
         self.shown = v
