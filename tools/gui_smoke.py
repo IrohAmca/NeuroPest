@@ -10,7 +10,8 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtWidgets import QApplication
 
-from neuropest.app import FLYWIRE_SIZES, Control, Overlay
+from neuropest.app import Overlay
+from neuropest.control import FLYWIRE_SIZES, Control
 from neuropest.runner import Runner
 
 

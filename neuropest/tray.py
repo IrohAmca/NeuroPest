@@ -1,0 +1,56 @@
+"""Tray icon and menu: the icon's eyes follow the fly's behaviour state."""
+from __future__ import annotations
+
+from PySide6.QtCore import QTimer
+from PySide6.QtGui import QAction
+from PySide6.QtWidgets import QApplication, QMenu, QSystemTrayIcon
+
+from .theme import STATE_STYLE, fly_icon
+
+
+class Tray(QSystemTrayIcon):
+    def __init__(self, app: QApplication, ctrl, runner):
+        super().__init__(fly_icon(), app)
+        self.ctrl, self.runner = ctrl, runner
+        self._icons = {s: fly_icon(s) for s in STATE_STYLE}
+        self._shown = None
+
+        menu = QMenu()
+        self.status = QAction("NeuroPest", menu, enabled=False)
+        menu.addAction(self.status)
+        menu.addSeparator()
+        self.show_ctrl = QAction("Kontrol penceresini aç", menu, triggered=self._open_control)
+        menu.addAction(self.show_ctrl)
+        self.visible = QAction("Sinek görünür", menu, checkable=True, checked=ctrl.visible.isChecked())
+        self.visible.toggled.connect(ctrl.visible.setChecked)     # keep tray and window in step
+        ctrl.visible.toggled.connect(self.visible.setChecked)
+        menu.addAction(self.visible)
+        menu.addSeparator()
+        menu.addAction(QAction("Çıkış", menu, triggered=app.quit))
+        self.menu = menu                    # QSystemTrayIcon does not own the menu
+        self.setContextMenu(menu)
+        self.activated.connect(self._clicked)
+
+        self._t = QTimer(self, timeout=self._refresh, interval=250)
+        self._t.start()
+        self._refresh()
+
+    def _open_control(self):
+        self.ctrl.showNormal()
+        self.ctrl.raise_()
+        self.ctrl.activateWindow()
+
+    def _clicked(self, reason):
+        if reason in (QSystemTrayIcon.Trigger, QSystemTrayIcon.DoubleClick):   # left click opens the window
+            self._open_control()
+
+    def _refresh(self):
+        r = self.runner
+        state = r.state if r.ready and r.alive else None
+        if state == self._shown:
+            return
+        self._shown = state
+        name = STATE_STYLE[state][1] if state in STATE_STYLE else ("Başlıyor" if r.alive else "Durdu")
+        self.setIcon(self._icons.get(state, self._icons["stand"]))
+        self.setToolTip(f"NeuroPest · {name}")
+        self.status.setText(f"Sinek: {name}")
