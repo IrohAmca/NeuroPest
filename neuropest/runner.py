@@ -31,6 +31,17 @@ class EngineConfig:
 
 
 def _worker_main(cfg: EngineConfig, inp, out, stop) -> None:
+    try:
+        _run(cfg, inp, out, stop)
+    except BaseException:
+        import traceback
+
+        traceback.print_exc()
+        out[O_READY] = -1.0              # the GUI shows "engine error"
+        raise
+
+
+def _run(cfg: EngineConfig, inp, out, stop) -> None:
     from .brain import Brain
     from .toy_circuit import build
 
@@ -119,6 +130,10 @@ class Runner:
     @property
     def ready(self) -> bool:
         return self.out[O_READY] > 0
+
+    @property
+    def failed(self) -> bool:
+        return self.out[O_READY] < 0
 
     @property
     def alive(self) -> bool:

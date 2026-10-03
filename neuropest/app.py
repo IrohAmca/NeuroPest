@@ -148,8 +148,9 @@ class Control(QWidget):
     def _refresh(self):
         r = self.runner
         st = r.stats()
-        if not r.alive:
-            self.telemetry.setText("Motor durdu.")
+        if r.failed or not r.alive:
+            self.telemetry.setText("Motor hata verdi ya da durdu (ayrıntı konsolda). "
+                                   "Daha küçük bir boyut seçmeyi dene.")
             return
         if not st["ready"]:
             self.telemetry.setText("Motor başlıyor (ilk açılışta derleme birkaç sn sürer)…")
