@@ -23,11 +23,9 @@ def main():
                "DNa02": np.concatenate([g["DNa02_L"], g["DNa02_R"]]), "DNa01": np.concatenate([g["DNa01_L"], g["DNa01_R"]])}
     rows = []
     every = np.arange(net.n)
+    by_id = np.argsort(net.ids)
     for ct, sub in vpn.groupby("cell_type"):
-        idx = np.flatnonzero(net.ids[:, None].ravel().searchsorted(sub.index.values) >= 0)  # placeholder, replaced below
-        idx = np.searchsorted(np.sort(net.ids), sub.index.values)
-        order = np.argsort(net.ids)
-        idx = order[idx].astype(np.int32)
+        idx = by_id[np.searchsorted(net.ids[by_id], sub.index.values)].astype(np.int32)   # root id -> index
         if len(idx) < 4:
             continue
         e = LIFEngine(net, dt=0.5, seed=7)
