@@ -8,8 +8,6 @@ dependencies = [
     "PySide6>=6.7",
     "numpy>=1.26",
     "scipy>=1.11",
-    "pandas>=2.0",
-    "pyarrow>=15",
     "numba>=0.68.0",
 ]
 
@@ -32,3 +30,12 @@ packages = ["neuropest"]
 dev = [
     "pytest>=9.1.1",
 ]
+# only tools/build_flywire.py (and the tests that build a tiny dataset) read parquet; the running app never does.
+# Installed by default (see default-groups); `uv sync --no-group build` leaves them out.
+build = [
+    "pandas>=2.0",
+    "pyarrow>=15",
+]
+
+[tool.uv]
+default-groups = ["dev", "build"]

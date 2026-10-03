@@ -8,6 +8,7 @@ behind, and `lag_ms` / `rt` in the telemetry say so (the fly then moves in slow 
 from __future__ import annotations
 
 import multiprocessing as mp
+import threading
 import time
 from dataclasses import dataclass
 
@@ -81,7 +82,7 @@ def build_network(cfg: EngineConfig):
     if cfg.circuit == "flywire":
         from . import flywire
 
-        return flywire.load_cache().prefix(cfg.n)
+        return flywire.load_tier(cfg.n)
     from .toy_circuit import build
 
     return build(cfg.n, cfg.seed)
@@ -174,6 +175,8 @@ class _Eye:
     def __init__(self, net):
         self.net = net
         self.drive = None               # visual.VisionDrive, built on first use (loads eye.npz / field.npz)
+        self.missing = False            # the eye data is not there
+        self._builder = None
         self.on = False
         self.failed = False             # asked for, but not available here: do not retry until switched off
         self.next_ms = self.last_ms = 0.0
@@ -188,20 +191,34 @@ class _Eye:
         if self.on and sim_ms >= self.next_ms:
             self._frame(brain, inp, sim_ms)
 
+    def _build(self) -> None:
+        """Runs in a thread: loading the eye files and building the detectors takes ~0.5 s (scipy import, dense
+        column matrices), which would freeze the simulation loop if it happened there."""
+        try:
+            from .visual import VisionDrive
+
+            self.drive = VisionDrive(self.net)
+        except FileNotFoundError:
+            self.missing = True                             # eye.npz / field.npz not built (tools/build_eye.py)
+
     def _switch(self, want: bool, brain, out, sim_ms: float) -> None:
         if not want:
             brain.clear_vision()
             self.on = False
             out[O_VISION] = 0.0
             return
-        from .visual import VisionDrive
-
-        if self.drive is None:
-            try:
-                self.drive = VisionDrive(self.net)
-            except FileNotFoundError:
-                self.failed, out[O_VISION] = True, -1.0     # eye.npz / field.npz not built (tools/build_eye.py)
-                return
+        if self.drive is None and not self.missing:
+            if self._builder is None:
+                self._builder = threading.Thread(target=self._build, daemon=True, name="neuropest-eye")
+                self._builder.start()
+            if self._builder.is_alive():
+                return                                      # still building: stay off, look again next iteration
+            if self.drive is None and not self.missing:
+                self._builder = None                        # the thread died on something else: report unusable
+                self.missing = True
+        if self.missing:
+            self.failed, out[O_VISION] = True, -1.0
+            return
         if not self.drive.usable:
             self.failed, out[O_VISION] = True, -1.0         # this circuit has no LPLC2 / LC4 with receptive fields
             return
@@ -228,14 +245,20 @@ class _Eye:
 
 
 class Runner:
-    """GUI-side handle to the worker process."""
+    """GUI-side handle to the worker process.
+
+    `start` returns at once: the old worker is shut down and the new one launched on a helper thread (one swap at a
+    time, so a worker is never loading its circuit while another still holds its memory). Each start gets fresh shared
+    arrays, so a worker that is still shutting down cannot write into its successor's telemetry."""
 
     def __init__(self, cfg: EngineConfig | None = None):
         self._ctx = mp.get_context("spawn")
-        self.inp = self._ctx.Array("d", 16, lock=False)
-        self.out = self._ctx.Array("d", 24, lock=False)
+        self.inp = self.out = None
         self._proc = None
         self._stop = None
+        self._swap_lock = threading.Lock()      # serialises retire-then-launch
+        self._gen = 0                           # bumped by every start/stop; a swap that is no longer current gives up
+        self._starting = False
         self.bias = 0.65          # walking drive, 0..1
         self.skittish = 1.0       # looming sensitivity multiplier
         self.vision = False       # see the screen (funnel view, retinotopic detectors) instead of cursor numbers
@@ -244,25 +267,38 @@ class Runner:
         self.start(self.cfg)
 
     def start(self, cfg: EngineConfig) -> None:
-        self.stop()
         self.cfg = cfg
-        for i in range(len(self.out)):
-            self.out[i] = 0.0
+        self._gen += 1
+        gen = self._gen
+        inp, out = self._ctx.Array("d", 16, lock=False), self._ctx.Array("d", 24, lock=False)
+        old = (self._proc, self._stop)
+        self._proc = self._stop = None
+        self.inp, self.out = inp, out
         self.send(1e6, 0.0)
-        self._stop = self._ctx.Event()
-        self._proc = self._ctx.Process(target=_worker_main, args=(cfg, self.inp, self.out, self._stop),
-                                       daemon=True, name="neuropest-engine")
-        self._proc.start()
+        self._starting = True
+        threading.Thread(target=self._swap, args=(gen, cfg, inp, out, old), daemon=True, name="neuropest-swap").start()
+
+    def _swap(self, gen: int, cfg: EngineConfig, inp, out, old) -> None:
+        with self._swap_lock:
+            _retire(*old)
+            if gen != self._gen:
+                return                          # a newer start (or stop) took over while this one waited
+            stop = self._ctx.Event()
+            proc = self._ctx.Process(target=_worker_main, args=(cfg, inp, out, stop), daemon=True,
+                                     name="neuropest-engine")
+            proc.start()
+            if gen != self._gen:                # ... while the process was being spawned
+                _retire(proc, stop)
+                return
+            self._proc, self._stop, self._starting = proc, stop, False
 
     def stop(self) -> None:
-        if self._proc is None:
-            return
-        self._stop.set()
-        self._proc.join(2.0)
-        if self._proc.is_alive():
-            self._proc.terminate()
-            self._proc.join(1.0)
-        self._proc = None
+        """Shut the worker down and wait for it (the application is quitting)."""
+        self._gen += 1                          # cancels a swap that has not launched yet
+        with self._swap_lock:                   # waits for one that is launching right now
+            proc, stop, self._proc, self._stop = self._proc, self._stop, None, None
+            self._starting = False
+            _retire(proc, stop)
 
     def send(self, dist: float, closing: float, bearing: float = 0.0, touch: float = 0.0,
              pose=(0.0, 0.0, 0.0), cursor=(0.0, 0.0)) -> None:
@@ -289,7 +325,8 @@ class Runner:
 
     @property
     def alive(self) -> bool:
-        return self._proc is not None and self._proc.is_alive()
+        """The worker runs, or is about to (a restart in progress is not a failure)."""
+        return self._starting or (self._proc is not None and self._proc.is_alive())
 
     @property
     def state(self) -> str:
@@ -301,3 +338,14 @@ class Runner:
                     lag_ms=o[O_LAG], gf=o[O_GF], walk=o[O_WALK], rest=o[O_REST], mdn=o[O_MDN],
                     steer=o[O_STEER], groom=o[O_GROOM], sim_s=o[O_SIM_S], spikes=o[O_SPIKES],
                     vision=o[O_VISION])
+
+
+def _retire(proc, stop) -> None:
+    """Ask a worker to stop, then terminate it if it does not within 2 s."""
+    if proc is None:
+        return
+    stop.set()
+    proc.join(2.0)
+    if proc.is_alive():
+        proc.terminate()
+        proc.join(1.0)

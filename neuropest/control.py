@@ -17,6 +17,7 @@ from .theme import ERROR, FAINT, MUTED, STATE_STYLE, fly_icon
 FLYWIRE_SIZES = [2_000, 5_000, 10_000, 15_000, 20_000, 50_000, 138_639]
 FLYWIRE_DEFAULT = 15_000
 TOY_SIZES = [146, 500, 2_000, 5_000, 10_000, 25_000, 50_000, 100_000, 139_000]
+SCAN_ITEM = "GPU'ları ara…"
 DTS = [("Hassas (0.1 ms)", 0.1), ("Dengeli (0.5 ms)", 0.5), ("Hızlı (1 ms)", 1.0)]
 
 
@@ -250,12 +251,18 @@ class Control(QWidget):
         card.body.addWidget(self.hw)
         self.gpus: list[dict] = []
         self._gpu_result: list | None = None
-        if importlib.util.find_spec("wgpu") is not None:            # GPUs are found in a helper process
-            self.gpu_note = _label("GPU'lar aranıyor…", "Faint")
+        self._gpu_scanned = False
+        self._gpu_scanning = False
+        self._apply_pending = False                                 # a size that needs the GPU list waits for the scan
+        self.has_wgpu = importlib.util.find_spec("wgpu") is not None
+        if self.has_wgpu:
+            # Listing adapters costs ~1 s and ~100 MB in a helper process, so it happens only when asked for:
+            # the entry below, or an automatic choice big enough to want a GPU.
+            self.hw.addItem(SCAN_ITEM)
+            self.hw.activated.connect(self._hw_activated)
+            self.gpu_note = _label("GPU'lar arama isteğiyle bulunur (~1 s, ~100 MB)", "Faint")
             card.body.addWidget(self.gpu_note)
-            threading.Thread(target=lambda: setattr(self, "_gpu_result", list_gpus()), daemon=True).start()
-            self._gpu_poll = QTimer(self, timeout=self._gpus_found, interval=500)
-            self._gpu_poll.start()
+            self._gpu_poll = QTimer(self, timeout=self._gpus_found, interval=250)
         else:
             card.body.addWidget(_label("GPU desteği için: uv sync --extra gpu", "Hint", wrap=True))
         self.page.addWidget(card)
@@ -320,20 +327,39 @@ class Control(QWidget):
                                    "yalnız hesaplama maliyetini dener.")
         self.tier_info.setVisible(bool(self.tier_info.text()))
 
+    def _hw_activated(self, i: int):
+        if not self._gpu_scanned and self.hw.itemText(i) == SCAN_ITEM:
+            self.hw.setCurrentIndex(0)                              # back to "Otomatik" while the list is built
+            self._scan_gpus()
+
+    def _scan_gpus(self):
+        if self._gpu_scanned or self._gpu_scanning or not self.has_wgpu:
+            return
+        self._gpu_scanning = True
+        self.gpu_note.setText("GPU'lar aranıyor…")
+        threading.Thread(target=lambda: setattr(self, "_gpu_result", list_gpus()), daemon=True).start()
+        self._gpu_poll.start()
+
     def _gpus_found(self):
         if self._gpu_result is None:
             return
         self._gpu_poll.stop()
+        self._gpu_scanning, self._gpu_scanned = False, True
         self.gpus = self._gpu_result
         self.hw.blockSignals(True)
+        if self.hw.itemText(2) == SCAN_ITEM:
+            self.hw.removeItem(2)
         self.hw.addItems([f"GPU: {g['name']} ({g['backend']})" for g in self.gpus])
         self.hw.blockSignals(False)
         self.gpu_note.setText(f"{len(self.gpus)} GPU bulundu" if self.gpus else "Kullanılabilir GPU bulunamadı")
+        if self._apply_pending:
+            self._apply_pending = False
+            self._apply()
 
     def _hardware(self, n: int) -> tuple[str, int | None]:
         """(backend, adapter) for the chosen 'Hesaplama' entry; automatic = GPU for big tiers."""
         i = self.hw.currentIndex()
-        if i >= 2:
+        if i >= 2 and self._gpu_scanned:
             return "gpu", self.gpus[i - 2]["index"]
         if i == 0 and self.gpus and n >= GPU_AUTO_MIN_NEURONS:
             return "gpu", pick_gpu(self.gpus)
@@ -341,6 +367,10 @@ class Control(QWidget):
 
     def _apply(self):
         n = self._sizes()[self.size.value()]
+        if self.hw.currentIndex() == 0 and n >= GPU_AUTO_MIN_NEURONS and self.has_wgpu and not self._gpu_scanned:
+            self._apply_pending = True                              # "Otomatik" needs to know the GPUs first
+            self._scan_gpus()
+            return
         backend, adapter = self._hardware(n)
         cfg = EngineConfig(self._kind(), n, DTS[self.dt.currentIndex()][1], backend=backend, adapter=adapter)
         if cfg != self.runner.cfg:

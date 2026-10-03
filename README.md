@@ -52,7 +52,7 @@ mkdir -p data/raw && git clone --no-checkout --depth 1 --filter=blob:none https:
 (cd /tmp/shiu && git fetch origin d386555d1a5f40ebfa1380bcb05b1fab044855fd && git checkout HEAD -- Connectivity_783.parquet Completeness_783.csv)
 mv /tmp/shiu/Connectivity_783.parquet /tmp/shiu/Completeness_783.csv data/raw/
 gh api -H "Accept: application/vnd.github.raw" repos/flyconnectome/flywire_annotations/contents/supplemental_files/Supplemental_file1_neuron_annotations.tsv > data/raw/Supplemental_file1_neuron_annotations.tsv
-uv run python tools/build_flywire.py     # ~30 s: data/circuits/flywire_v783.npz (125 MB)
+uv run python tools/build_flywire.py     # ~30 s: data/circuits/flywire_v783.npz (125 MB) + data/circuits/tiers/ (katman başına küçük dosya)
 uv run python tools/fidelity.py          # ~5 dk: data/circuits/tiers.json (arayüzdeki doğruluk/hız bilgisi)
 ```
 
