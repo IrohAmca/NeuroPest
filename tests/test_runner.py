@@ -110,20 +110,23 @@ def test_vision_switch_is_harmless_on_a_circuit_without_receptive_fields():
 
 
 @pytest.mark.skipif(not CACHE.exists(), reason="needs the FlyWire cache (tools/build_flywire.py)")
-def test_touch_calms_a_moderate_approach_but_not_a_fast_one():
-    """Real connectome, 15,000 neurons: head touch drives aDN1/aDN2 and suppresses the Giant Fiber."""
+def test_touch_suppresses_take_off_but_retreat_outranks_grooming():
+    """Real connectome, 15,000 neurons: head touch drives aDN1/aDN2 and suppresses the Giant Fiber; a retreat input
+    now interrupts grooming (priority take-off, retreat, freeze, groom), so only a still hover grooms."""
     from neuropest import flywire
     from neuropest.brain import Brain
 
     net = flywire.load_cache().prefix(15_000)
     seen = {}
-    for tag, closing, touch in (("moderate", 1000, 0.0), ("moderate+touch", 1000, 1.0), ("fast+touch", 3000, 1.0)):
+    for tag, closing, dist, touch in (("moderate", 1000, 150, 0.0), ("moderate+touch", 1000, 150, 1.0),
+                                      ("fast+touch", 3000, 150, 1.0), ("hover", 0, 10, 1.0)):
         b = Brain(net)
-        b.set_stimulus(150, closing, 0.0, bearing=0.5, touch=touch)
+        b.set_stimulus(dist, closing, 0.0, bearing=0.5, touch=touch)
         seen[tag] = {b.advance(4.0) for _ in range(250)}
     assert "fly" in seen["moderate"]
-    assert "groom" in seen["moderate+touch"] and "fly" not in seen["moderate+touch"]
+    assert "retreat" in seen["moderate+touch"] and "fly" not in seen["moderate+touch"]     # touch still calms the take-off
     assert "fly" in seen["fast+touch"]
+    assert "groom" in seen["hover"] and not seen["hover"] & {"fly", "retreat", "freeze"}
 
 
 def test_restart_returns_at_once_and_the_last_request_wins():

@@ -284,7 +284,7 @@ class _Eye:
             idx, rates = d.step(cursor_scene(cursor[0], cursor[1], d.halo_px, p.background),
                                 cursor_scene(prev[0], prev[1], d.halo_px, p.background),
                                 inp[I_X], inp[I_Y], inp[I_HEAD], dt)
-        brain.set_vision(idx, rates)
+        brain.set_vision(idx, rates, d.expansion)
         self.cursor, self.last_ms, self.stamp = cursor, sim_ms, stamp
         self.next_ms = sim_ms + VISION_PERIOD_MS
 

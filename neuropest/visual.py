@@ -29,6 +29,7 @@ def cursor_scene(cx: float, cy: float, radius: float, background: float = 0.5):
 class VisionDrive:
     def __init__(self, net, params: VisionParams = VisionParams(), field: VisualField | None = None):
         self.params = params
+        self.expansion = 0.0
         self.field = field or VisualField.load()
         self.retina = self.field.as_retina()
         self.features = Features(self.field)
@@ -94,6 +95,7 @@ class VisionDrive:
             self._fresh = False
         f = self.features.update(lum_now, lum_prev, dt, self.loom_rows, self.obj_rows)
         e, o, eye = g * f["expansion_pooled"], f["object_pooled"], g * f["expansion_eye"]
+        self.expansion = float(e[self.loom_col].max()) if len(self.loom_col) else 0.0   # for the brain's freeze rule
         ee = eye[self.ret_col]
         retreat = np.minimum(self.skittish * p.gain_retreat * ee, p.max_retreat) * np.clip(
             (p.flee_hi - ee) / (p.flee_hi - p.flee_lo), 0.0, 1.0)

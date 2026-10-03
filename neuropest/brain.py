@@ -1,7 +1,7 @@
 """Glue between the outside world and the engine.
 
 stimulus (cursor) -> Poisson drive on named neuron groups
-spikes of output groups -> smoothed rates -> behavior state (stand / walk / fly / retreat) and a steering signal
+spikes of output groups -> smoothed rates -> behavior state (stand / walk / fly / retreat / groom / freeze) and a steering signal
 
 Stimulus-to-rate maps live in a `BrainSpec`, one per circuit kind, because each circuit has its
 own units: the toy circuit's weights are arbitrary, the FlyWire one is calibrated against the
@@ -16,7 +16,7 @@ from dataclasses import dataclass
 import numpy as np
 
 from .engine import Network, create_engine
-from .states import FLY, GROOM, RETREAT, STAND, STATES, WALK  # noqa: F401  (re-exported)
+from .states import FLY, FREEZE, GROOM, RETREAT, STAND, STATES, WALK  # noqa: F401  (re-exported)
 
 
 @dataclass(frozen=True)
@@ -46,7 +46,16 @@ class BrainSpec:
     min_fly_ms: float = 300.0
     min_retreat_ms: float = 400.0
     min_groom_ms: float = 800.0
+    # freeze: a DESIGNED rule on the looming input, not a connectome readout (the model has no neuron that stops the
+    # fly). A looming that is too weak for retreat or take-off stops a walking fly for a while (most walking flies freeze
+    # to a loom and few jump: Zacarias et al. 2018). `freeze_on` is the smoothed expansion rate of the nearest object (1/s,
+    # the same number the looming drive is made of, about 2 for the retreat and 7 for the take-off threshold); 0 = off.
+    freeze_on: float = 0.0
+    freeze_off: float = 0.3
+    min_freeze_ms: float = 1200.0
 
+
+FREEZE_ON = 0.7         # see BrainSpec.freeze_on; tools/vision_calibrate.py (image) and the cursor numbers agree on it
 
 # Toy circuit: calibrated with tools/calibrate.py
 TOY = BrainSpec(loom_gain=10.0, loom_max_hz=250.0, vis_max_hz=60.0, rest_drive=(500.0, 3.0), bulk_hz=150.0,
@@ -62,7 +71,7 @@ TOY = BrainSpec(loom_gain=10.0, loom_max_hz=250.0, vis_max_hz=60.0, rest_drive=(
 # So retreat input saturates at 20 Hz (MDN ~15 Hz), and take-off wins only when the looming input is
 # strong: retreat from about 2 /s of expansion, take-off from about 7 /s.
 FLYWIRE = BrainSpec(loom_gain=3.0, loom_max_hz=150.0, retreat_gain=8.0, retreat_max_hz=20.0,
-                    steer_max_hz=20.0, touch_hz=120.0)
+                    steer_max_hz=20.0, touch_hz=120.0, freeze_on=FREEZE_ON)
 
 
 def spec_for(net: Network) -> BrainSpec:
@@ -90,17 +99,22 @@ class Brain:
         self.walk_bias = 0.0
         self.skittish = 1.0
         self._stim = (1e6, 0.0, 0.0, 0.0)
+        self._vision_expansion = 0.0
         self._vision = None        # (neuron indices, rates in Hz) from the image, replaces the cursor numbers
+        self._loom_in = 0.0        # expansion rate (1/s) of the nearest object now, from the cursor numbers or the image
+        self.loom = 0.0            # the same, smoothed like the rates: what the freeze rule reads
         self._drive()
 
     def group(self, name: str) -> np.ndarray:
         return self.g.get(name, np.zeros(0, np.int32))
 
-    def set_vision(self, idx: np.ndarray, rates: np.ndarray):
+    def set_vision(self, idx: np.ndarray, rates: np.ndarray, expansion: float = 0.0):
         """Forced spike rates of individual projection neurons computed from the screen image (see vision.py).
 
-        While set, they replace the looming / retreat / bearing drive derived from the cursor position."""
+        While set, they replace the looming / retreat / bearing drive derived from the cursor position.
+        `expansion` is the strongest looming expansion rate in the image (1/s), the input of the freeze rule."""
         self._vision = (np.asarray(idx, np.int32), np.asarray(rates, np.float32))
+        self._vision_expansion = float(expansion)
         self._drive()
 
     def clear_vision(self):
@@ -139,6 +153,9 @@ class Brain:
         side = math.sin(bearing)                         # >0: cursor to the right
         e = self.engine
         fi, fr = [], []
+        # an object in contact is not approaching: a cursor wiggling over the head must not freeze the grooming fly
+        self._loom_in = 0.0 if touch > 0 else (self._vision_expansion if self._vision is not None
+                                               else max(0.0, closing) / max(dist, 30.0)) * self.skittish
         if self._vision is not None:                     # the image replaces the visual part of the cursor drive
             fi.append(self._vision[0])
             fr.append(self._vision[1])
@@ -174,6 +191,7 @@ class Brain:
             if hi > lo:
                 inst = (cs[hi] - cs[lo]) / ((hi - lo) * ms / 1000.0)
                 self.rates[k] += a * (inst - self.rates[k])
+        self.loom += a * (self._loom_in - self.loom)
         self._track_gf_spikes(ms, int(cs[self._mon_edges[self._gf_slot + 1]] - cs[self._mon_edges[self._gf_slot]]))
         self._decode(ms)
         return self.state
@@ -187,7 +205,8 @@ class Brain:
             self.gf_window -= h.popleft()[1]
 
     def _decode(self, ms: float):
-        """Priority: take-off, then grooming, then retreat, then walk / stand."""
+        """Priority: take-off, retreat, freeze, grooming, then walk / stand (a higher one interrupts a lower one at
+        once; leaving a state needs its hysteresis and minimum duration)."""
         s = self.spec
         gf, mdn = self.rates["GF"], self.rates["MDN"]
         walk, rest = self.rates["WALK"], self.rates["REST"]
@@ -195,6 +214,15 @@ class Brain:
         cur = self.state
         new = cur
         groom = self.rates["GROOM"]
+        retreat_on = mdn > s.mdn_on_hz
+        freeze_on = s.freeze_on > 0 and self.loom > s.freeze_on
+        groom_on = s.groom_on_hz > 0 and groom > s.groom_on_hz
+        quiet = WALK if walk > max(s.walk_min_hz, rest * 1.2) else STAND
+
+        def settle(skip=()):
+            return next((st for st, on in ((RETREAT, retreat_on), (FREEZE, freeze_on), (GROOM, groom_on))
+                         if on and st not in skip), quiet)
+
         # take-off is an event, not a rate: a few GF spikes in ~10 ms (the animal takes off on one or two); the
         # smoothed rate stays as the second path and as the way out of the state
         event = s.gf_event_spikes > 0 and self.gf_window >= s.gf_event_spikes
@@ -202,19 +230,23 @@ class Brain:
             new = FLY                                   # escape: immediate
         elif cur == FLY:
             if gf < s.gf_off_hz and self._dwell >= s.min_fly_ms:
-                new = (GROOM if groom > s.groom_on_hz else RETREAT if mdn > s.mdn_on_hz
-                       else WALK if walk > max(rest, s.walk_min_hz) else STAND)
-        elif cur == GROOM:
-            if groom < s.groom_off_hz and self._dwell >= s.min_groom_ms:
-                new = RETREAT if mdn > s.mdn_on_hz else (WALK if walk > max(s.walk_min_hz, rest * 1.2) else STAND)
-        elif s.groom_on_hz > 0 and groom > s.groom_on_hz:
-            new = GROOM
+                new = settle()
         elif cur == RETREAT:
             if mdn < s.mdn_off_hz and self._dwell >= s.min_retreat_ms:
-                new = WALK if walk > max(s.walk_min_hz, rest * 1.2) else STAND
-        elif mdn > s.mdn_on_hz:
+                new = settle(skip=(RETREAT,))
+        elif retreat_on:
             new = RETREAT
+        elif cur == FREEZE:
+            if self.loom < s.freeze_off and self._dwell >= s.min_freeze_ms:
+                new = GROOM if groom_on else quiet
+        elif freeze_on:
+            new = FREEZE
+        elif cur == GROOM:
+            if groom < s.groom_off_hz and self._dwell >= s.min_groom_ms:
+                new = quiet
+        elif groom_on:
+            new = GROOM
         elif self._dwell >= s.min_dwell_ms:             # debounce stand <-> walk
-            new = WALK if walk > max(s.walk_min_hz, rest * 1.2) else STAND
+            new = quiet
         if new != cur:
             self.state, self._dwell = new, 0.0

@@ -1,3 +1,4 @@
+import math
 import random
 
 from neuropest.brain import FLY, STAND, WALK
@@ -73,3 +74,13 @@ def test_grooming_fly_stays_in_place():
     for _ in range(60):
         fly.update(1 / 60, GROOM, (500, 500), RECT)
     assert (fly.x, fly.y) == (x, y) and abs(fly.heading - heading) < 1e-9 and fly.phase != 0.0
+
+
+def test_frozen_fly_stays_in_place():
+    from neuropest.states import FREEZE
+
+    fly = Fly(500, 500)
+    x, y, heading = fly.x, fly.y, fly.heading
+    for _ in range(60):
+        fly.update(1 / 60, FREEZE, (900, 500), RECT)
+    assert (fly.x, fly.y) == (x, y) and abs(math.remainder(fly.heading - heading, math.tau)) < 1e-9 and fly.phase == 0.0
