@@ -31,11 +31,8 @@ class VisionDrive:
         self.params = params
         self.field = field or VisualField.load()
         self.retina = self.field.as_retina()
-        self.features = Features(self.field, rf_sigma_deg=params.rf_sigma_deg)
-        lplc2_idx, lplc2_col = self.field.neurons(net, ["LPLC2"])
-        lc4_idx, lc4_col = self.field.neurons(net, ["LC4"])
-        self.n_lplc2 = len(lplc2_idx)                    # loom_idx = the LPLC2 neurons, then the LC4 ones
-        self.loom_idx, self.loom_col = np.concatenate([lplc2_idx, lc4_idx]), np.concatenate([lplc2_col, lc4_col])
+        self.features = Features(self.field)
+        self.loom_idx, self.loom_col = self.field.neurons(net, ["LPLC2", "LC4"])
         self.ret_idx, self.ret_col = self.field.neurons(net, ["LPC1"])
         self.obj_idx, self.obj_col = self.field.neurons(net, ["LC10a", "LC10c-2", "LC10d"])
         self.idx = np.concatenate([self.loom_idx, self.ret_idx, self.obj_idx]).astype(np.int32)
@@ -97,13 +94,9 @@ class VisionDrive:
             self._fresh = False
         f = self.features.update(lum_now, lum_prev, dt, self.loom_rows, self.obj_rows)
         e, o, eye = g * f["expansion_pooled"], f["object_pooled"], g * f["expansion_eye"]
-        el = e[self.loom_col]
-        if p.loom_split:                                    # LPLC2 reads size (times looming), LC4 the expansion speed
-            size = np.clip((f["size_pooled"][self.loom_col[:self.n_lplc2]] - p.size_lo) / (p.size_hi - p.size_lo), 0.0, 1.0)
-            el = np.concatenate([el[:self.n_lplc2] * size, el[self.n_lplc2:]])
         ee = eye[self.ret_col]
         retreat = np.minimum(self.skittish * p.gain_retreat * ee, p.max_retreat) * np.clip(
             (p.flee_hi - ee) / (p.flee_hi - p.flee_lo), 0.0, 1.0)
-        rates = np.concatenate([np.minimum(self.skittish * p.gain_loom * el, p.max_loom), retreat,
+        rates = np.concatenate([np.minimum(self.skittish * p.gain_loom * e[self.loom_col], p.max_loom), retreat,
                                 np.minimum(go * p.gain_object * o[self.obj_col], go * p.max_object)])
         return self.idx, rates.astype(np.float32)
