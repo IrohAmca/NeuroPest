@@ -5,3 +5,5 @@ data/*.parquet
 data/*.csv
 data/*.pickle
 sprites_preview.png
+data/raw/
+data/circuits/

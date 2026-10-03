@@ -11,10 +11,11 @@ import multiprocessing as mp
 import time
 from dataclasses import dataclass
 
+from .paths import CACHE
 from .states import STAND, STATES
 
 # input slots
-I_DIST, I_CLOSING, I_BIAS = 0, 1, 2
+I_DIST, I_CLOSING, I_BIAS, I_SKITTISH = 0, 1, 2, 3
 # output slots
 O_READY, O_STATE, O_GF, O_WALK, O_REST, O_RT, O_ACTIVE, O_N, O_CPU, O_LAG, O_SIM_S, O_BEAT = range(12)
 
@@ -25,9 +26,25 @@ MAX_LAG_S = 0.25            # beyond this the backlog is dropped (slow motion in
 
 @dataclass(frozen=True)
 class EngineConfig:
+    circuit: str = "toy"    # "toy" (hand-built, plus synthetic load) or "flywire" (real connectome tiers)
     n: int = 146            # neurons in the circuit
     dt: float = 0.5         # integration step, ms
     seed: int = 1
+
+
+def default_config() -> EngineConfig:
+    """The real connectome at 2,000 neurons when its cache has been built, else the toy circuit."""
+    return EngineConfig("flywire", 2_000) if CACHE.exists() else EngineConfig()
+
+
+def build_network(cfg: EngineConfig):
+    if cfg.circuit == "flywire":
+        from . import flywire
+
+        return flywire.load_cache().prefix(cfg.n)
+    from .toy_circuit import build
+
+    return build(cfg.n, cfg.seed)
 
 
 def _worker_main(cfg: EngineConfig, inp, out, stop) -> None:
@@ -43,9 +60,8 @@ def _worker_main(cfg: EngineConfig, inp, out, stop) -> None:
 
 def _run(cfg: EngineConfig, inp, out, stop) -> None:
     from .brain import Brain
-    from .toy_circuit import build
 
-    net = build(cfg.n, cfg.seed)
+    net = build_network(cfg)
     brain = Brain(net, dt=cfg.dt, seed=cfg.seed)
     brain.advance(cfg.dt * 4)                       # triggers/loads the compiled kernel
     out[O_N] = net.n
@@ -56,9 +72,9 @@ def _run(cfg: EngineConfig, inp, out, stop) -> None:
     sim_ms = 0.0
     w_wall, w_cpu, w_comp, w_sim, w_active, w_iters = t0, time.process_time(), 0.0, 0.0, 0.0, 0
     while not stop.is_set():
-        cur = (inp[I_DIST], inp[I_CLOSING], inp[I_BIAS])
+        cur = (inp[I_DIST], inp[I_CLOSING], inp[I_BIAS], inp[I_SKITTISH])
         if cur != last_in:
-            brain.set_stimulus(cur[0], cur[1], cur[2])
+            brain.set_stimulus(*cur)
             last_in = cur
         t = time.perf_counter()
         state = brain.advance(CHUNK_MS)
@@ -93,22 +109,23 @@ def _run(cfg: EngineConfig, inp, out, stop) -> None:
 class Runner:
     """GUI-side handle to the worker process."""
 
-    def __init__(self, cfg: EngineConfig = EngineConfig()):
+    def __init__(self, cfg: EngineConfig | None = None):
         self._ctx = mp.get_context("spawn")
         self.inp = self._ctx.Array("d", 8, lock=False)
         self.out = self._ctx.Array("d", 16, lock=False)
-        self.cfg = cfg
         self._proc = None
         self._stop = None
-        self.bias = 0.65
-        self.start(cfg)
+        self.bias = 0.65          # walking drive, 0..1
+        self.skittish = 1.0       # looming sensitivity multiplier
+        self.cfg = cfg or default_config()
+        self.start(self.cfg)
 
     def start(self, cfg: EngineConfig) -> None:
         self.stop()
         self.cfg = cfg
         for i in range(len(self.out)):
             self.out[i] = 0.0
-        self.inp[I_DIST], self.inp[I_CLOSING], self.inp[I_BIAS] = 1e6, 0.0, self.bias
+        self.send(1e6, 0.0)
         self._stop = self._ctx.Event()
         self._proc = self._ctx.Process(target=_worker_main, args=(cfg, self.inp, self.out, self._stop),
                                        daemon=True, name="neuropest-engine")
@@ -125,7 +142,8 @@ class Runner:
         self._proc = None
 
     def send(self, dist: float, closing: float) -> None:
-        self.inp[I_DIST], self.inp[I_CLOSING], self.inp[I_BIAS] = dist, closing, self.bias
+        inp = self.inp
+        inp[I_DIST], inp[I_CLOSING], inp[I_BIAS], inp[I_SKITTISH] = dist, closing, self.bias, self.skittish
 
     @property
     def ready(self) -> bool:

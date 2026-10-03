@@ -1,4 +1,4 @@
-"""Offscreen GUI check: overlay + control + worker process, then switch circuit size.
+"""Offscreen GUI check: overlay + control + worker process, then switch tier and circuit.
 
 Run: uv run python tools/gui_smoke.py
 """
@@ -7,10 +7,10 @@ import sys
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PySide6.QtCore import QTimer
+from PySide6.QtCore import Qt, QTimer
 from PySide6.QtWidgets import QApplication
 
-from neuropest.app import SIZES, Control, Overlay
+from neuropest.app import FLYWIRE_SIZES, Control, Overlay
 from neuropest.runner import Runner
 
 
@@ -22,15 +22,26 @@ def main():
     log = []
 
     def snap(tag):
-        log.append(f"--- {tag}\n{ctrl.telemetry.text()}\n{ctrl.warn.text()}\nstate={runner.state} "
-                   f"fly=({overlay.fly.x:.0f},{overlay.fly.y:.0f}) rect={tuple(int(v) for v in overlay.play_rect())}")
+        log.append(f"--- {tag} (circuit={runner.cfg.circuit}, n={runner.cfg.n})\n{ctrl.size_label.text()}\n"
+                   f"{ctrl.tier_info.text()}\n{ctrl.telemetry.text()}\n{ctrl.warn.text()}\n"
+                   f"state={runner.state} fly=({overlay.fly.x:.0f},{overlay.fly.y:.0f}) "
+                   f"rect={tuple(int(v) for v in overlay.play_rect())}")
 
-    QTimer.singleShot(8000, lambda: snap("146 neurons"))
-    QTimer.singleShot(8100, lambda: ctrl.size.setValue(SIZES.index(50_000)))
-    QTimer.singleShot(22000, lambda: snap("50k neurons, dt 0.5"))
-    QTimer.singleShot(22100, lambda: ctrl.dt.setCurrentIndex(0))        # dt 0.1 ms: heavier
-    QTimer.singleShot(36000, lambda: snap("50k neurons, dt 0.1"))
-    QTimer.singleShot(36500, app.quit)
+    timers = []
+
+    def at(ms, fn):
+        t = QTimer(singleShot=True, interval=ms)          # coarse timers can fire out of order
+        t.setTimerType(Qt.PreciseTimer)
+        t.timeout.connect(fn)
+        t.start()
+        timers.append(t)
+
+    at(10000, lambda: snap("start"))
+    at(10100, lambda: ctrl.size.setValue(FLYWIRE_SIZES.index(20_000)))
+    at(18000, lambda: snap("after size change"))
+    at(18100, lambda: ctrl.circ.setCurrentIndex(len(ctrl.circuits) - 1))   # toy circuit
+    at(26000, lambda: snap("toy circuit"))
+    at(26500, app.quit)
     app.exec()
     runner.stop()
     print("\n".join(log))
