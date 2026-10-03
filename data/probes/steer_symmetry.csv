@@ -1,0 +1,7 @@
+machine,lc10_rate_hz,driven,dna02_l_hz,dna02_r_hz,n_lc10_l,n_lc10_r,n_dna02_l,n_dna02_r
+"Intel(R) Xeon(R) Processor @ 2.10GHz, Linux",18.000,LC10_L,83.000,0.000,263,260,1,1
+"Intel(R) Xeon(R) Processor @ 2.10GHz, Linux",18.000,LC10_R,0.000,20.500,263,260,1,1
+"Intel(R) Xeon(R) Processor @ 2.10GHz, Linux",35.000,LC10_L,120.500,0.000,263,260,1,1
+"Intel(R) Xeon(R) Processor @ 2.10GHz, Linux",35.000,LC10_R,0.000,7.000,263,260,1,1
+"Intel(R) Xeon(R) Processor @ 2.10GHz, Linux",75.000,LC10_L,184.000,0.000,263,260,1,1
+"Intel(R) Xeon(R) Processor @ 2.10GHz, Linux",75.000,LC10_R,0.000,76.500,263,260,1,1

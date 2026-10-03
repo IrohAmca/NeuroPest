@@ -332,7 +332,9 @@ class Control(QWidget):
                     f"Tam beyne göre sapma: kalkış %{t['gf_err']:.0f} · geri yürüme %{t['mdn_err']:.0f} · "
                     f"yön %{t['steer_err']:.0f}\nDescending korelasyonu {t['dn_corr']:.3f} · ölçülen hız "
                     f"×{t['realtime']:.1f} (en kötü ×{t['rt_min']:.1f})")
-                self.tier_info.setToolTip("FlyWire'daki ateşleme sırasına göre seçilen iç içe katman. "
+                pinned = (f"Sayıdaki ilk {t['pinned']:,} nöron her katmanda sabit olan girdi ve çıktı nöronlarıdır; "
+                          f"sıralamayla seçilen {t['free']:,}. " if t.get("pinned") else "")
+                self.tier_info.setToolTip("FlyWire'daki ateşleme sırasına göre seçilen iç içe katman. " + pinned +
                                           "Sapma yalnız yaklaşan nesne, geri çekilme ve yön girdileri "
                                           "için ölçüldü (tools/fidelity.py). Hız, ölçümün yapıldığı "
                                           f"makineye özeldir ({self.tier_machine}).")
