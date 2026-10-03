@@ -17,9 +17,11 @@ from .states import STAND, STATES
 # input slots
 I_DIST, I_CLOSING, I_BIAS, I_SKITTISH, I_BEARING = 0, 1, 2, 3, 4
 # output slots
-O_READY, O_STATE, O_GF, O_WALK, O_REST, O_RT, O_ACTIVE, O_N, O_CPU, O_LAG, O_SIM_S, O_BEAT, O_MDN, O_STEER = range(14)
+(O_READY, O_STATE, O_GF, O_WALK, O_REST, O_RT, O_ACTIVE, O_N, O_CPU, O_LAG, O_SIM_S, O_BEAT, O_MDN, O_STEER,
+ O_SPIKES) = range(15)
 
 CHUNK_MS = 4.0              # simulated time advanced per loop iteration
+CHUNK_MS_GPU = 12.0         # a GPU read-back costs ~1 ms regardless of size; measured x1.8 -> x2.8-4 on a GTX 1650
 STATS_EVERY_S = 0.25
 MAX_LAG_S = 0.25            # beyond this the backlog is dropped (slow motion instead of catching up)
 
@@ -30,6 +32,41 @@ class EngineConfig:
     n: int = 146            # neurons in the circuit
     dt: float = 0.5         # integration step, ms
     seed: int = 1
+    backend: str = "cpu"    # "cpu" (event-driven numba) or "gpu" (WebGPU, needs `uv sync --extra gpu`)
+    adapter: int | None = None   # GPU adapter index (see list_gpus); None = first discrete GPU
+
+
+GPU_AUTO_MIN_NEURONS = 50_000   # "auto" uses a GPU from this tier on: the CPU holds smaller ones in real time
+
+
+def list_gpus(timeout: float = 40.0) -> list[dict]:
+    """GPUs WebGPU can use, found in a short-lived process (enumerating adapters commits ~100 MB)."""
+    ctx = mp.get_context("spawn")
+    parent, child = ctx.Pipe(duplex=False)
+    proc = ctx.Process(target=_list_gpus_worker, args=(child,), daemon=True)
+    proc.start()
+    out = []
+    if parent.poll(timeout):
+        out = parent.recv()
+    proc.join(1.0)
+    if proc.is_alive():
+        proc.terminate()
+    return out
+
+
+def _list_gpus_worker(conn) -> None:
+    try:
+        from .engine.lif_wgpu import list_adapters
+
+        conn.send([a for a in list_adapters() if a["type"] in ("DiscreteGPU", "IntegratedGPU")])
+    except Exception:           # noqa: BLE001  (wgpu not installed or no adapter)
+        conn.send([])
+
+
+def pick_gpu(gpus: list[dict]) -> int | None:
+    """Best adapter: a discrete GPU first; among equals Vulkan (it was faster than D3D12 on Intel)."""
+    ranked = sorted(gpus, key=lambda g: (g["type"] != "DiscreteGPU", g["backend"] != "Vulkan", g["index"]))
+    return ranked[0]["index"] if ranked else None
 
 
 def default_config() -> EngineConfig:
@@ -63,14 +100,25 @@ def _run(cfg: EngineConfig, inp, out, stop) -> None:
     from .brain import Brain
 
     net = build_network(cfg)
-    brain = Brain(net, dt=cfg.dt, seed=cfg.seed)
+    brain = Brain(net, dt=cfg.dt, seed=cfg.seed, backend=cfg.backend, adapter=cfg.adapter)
+    try:
+        _loop(cfg, brain, net, inp, out, stop)
+    finally:
+        close = getattr(brain.engine, "close", None)
+        if close:
+            close()                                 # free the GPU buffers
+
+
+def _loop(cfg: EngineConfig, brain, net, inp, out, stop) -> None:
     brain.advance(cfg.dt * 4)                       # triggers/loads the compiled kernel
     out[O_N] = net.n
     out[O_READY] = 1.0
 
+    chunk = CHUNK_MS if cfg.backend == "cpu" else CHUNK_MS_GPU
     last_in = None
     t0 = time.perf_counter()
     sim_ms = 0.0
+    spikes0 = brain.engine.total_spikes
     w_wall, w_cpu, w_comp, w_sim, w_active, w_iters = t0, time.process_time(), 0.0, 0.0, 0.0, 0
     while not stop.is_set():
         cur = (inp[I_DIST], inp[I_CLOSING], inp[I_BIAS], inp[I_SKITTISH], round(inp[I_BEARING], 2))
@@ -78,13 +126,15 @@ def _run(cfg: EngineConfig, inp, out, stop) -> None:
             brain.set_stimulus(*cur)
             last_in = cur
         t = time.perf_counter()
-        state = brain.advance(CHUNK_MS)
+        state = brain.advance(chunk)
         spent = time.perf_counter() - t
         w_comp += spent
-        w_sim += CHUNK_MS
-        w_active += brain.engine.n_active
+        w_sim += chunk
+        w_active += brain.engine.n_active if w_active >= 0 else 0
+        if brain.engine.n_active < 0:
+            w_active = -1.0                         # GPU engine: every neuron is updated every step
         w_iters += 1
-        sim_ms += CHUNK_MS
+        sim_ms += chunk
         out[O_STATE] = float(STATES.index(state))
         out[O_GF], out[O_WALK], out[O_REST] = (brain.rates["GF"], brain.rates["WALK"], brain.rates["REST"])
         out[O_MDN], out[O_STEER] = brain.rates["MDN"], brain.steer
@@ -100,7 +150,10 @@ def _run(cfg: EngineConfig, inp, out, stop) -> None:
         if now - w_wall >= STATS_EVERY_S:
             cpu = time.process_time()
             out[O_RT] = (w_sim / 1000.0) / w_comp if w_comp > 0 else 0.0
-            out[O_ACTIVE] = w_active / max(w_iters, 1)
+            out[O_ACTIVE] = w_active / max(w_iters, 1) if w_active >= 0 else -1.0     # -1: GPU, not tracked
+            spikes = brain.engine.total_spikes
+            out[O_SPIKES] = (spikes - spikes0) / (now - w_wall)
+            spikes0 = spikes
             out[O_CPU] = (cpu - w_cpu) / (now - w_wall)
             out[O_LAG] = lag * 1000.0
             out[O_SIM_S] = sim_ms / 1000.0
@@ -173,4 +226,4 @@ class Runner:
         o = self.out
         return dict(ready=self.ready, n=int(o[O_N]), rt=o[O_RT], active=o[O_ACTIVE], cpu=o[O_CPU],
                     lag_ms=o[O_LAG], gf=o[O_GF], walk=o[O_WALK], rest=o[O_REST], mdn=o[O_MDN],
-                    steer=o[O_STEER], sim_s=o[O_SIM_S])
+                    steer=o[O_STEER], sim_s=o[O_SIM_S], spikes=o[O_SPIKES])

@@ -14,7 +14,7 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from .engine import LIFEngine, Network
+from .engine import Network, create_engine
 from .states import FLY, RETREAT, STAND, STATES, WALK  # noqa: F401  (re-exported)
 
 
@@ -60,13 +60,17 @@ def spec_for(net: Network) -> BrainSpec:
 
 class Brain:
     def __init__(self, net: Network, dt: float = 0.5, seed: int = 0, ema_ms: float = 80.0,
-                 spec: BrainSpec | None = None):
+                 spec: BrainSpec | None = None, backend: str = "cpu", adapter: int | None = None):
         self.net = net
         self.spec = spec or spec_for(net)
-        self.engine = LIFEngine(net, dt=dt, seed=seed)
+        self.engine = create_engine(net, dt=dt, seed=seed, backend=backend, adapter=adapter)
         self.g = net.groups
         self.ema_ms = ema_ms
         self.rates = {k: 0.0 for k in ("GF", "WALK", "REST", "MDN", "DNa02_L", "DNa02_R")}
+        # all output groups are read with one call per chunk (on a GPU every read waits for the device)
+        parts = [self.group(k) for k in self.rates]
+        self._mon_idx = np.concatenate(parts).astype(np.int32)
+        self._mon_edges = np.cumsum([0] + [len(p) for p in parts])
         self.state = STAND
         self._dwell = 0.0
         self.walk_bias = 0.0
@@ -130,10 +134,11 @@ class Brain:
         e = self.engine
         e.advance(ms)
         a = 1.0 - math.exp(-ms / self.ema_ms)
-        for k in self.rates:
-            idx = self.group(k)
-            if len(idx):
-                inst = e.pop_counts(idx).sum() / (len(idx) * ms / 1000.0)
+        cs = np.concatenate([[0], np.cumsum(e.pop_counts(self._mon_idx), dtype=np.int64)])
+        for j, k in enumerate(self.rates):
+            lo, hi = self._mon_edges[j], self._mon_edges[j + 1]
+            if hi > lo:
+                inst = (cs[hi] - cs[lo]) / ((hi - lo) * ms / 1000.0)
                 self.rates[k] += a * (inst - self.rates[k])
         self._decode(ms)
         return self.state

@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import importlib.util
 import json
 import sys
+import threading
 import time
 
 from PySide6.QtCore import Qt, QTimer
@@ -12,7 +14,7 @@ from PySide6.QtWidgets import (QApplication, QCheckBox, QComboBox, QLabel, QMenu
 from .fly import Fly
 from .paths import CACHE, TIERS
 from .render import draw_fly
-from .runner import EngineConfig, Runner
+from .runner import GPU_AUTO_MIN_NEURONS, EngineConfig, Runner, list_gpus, pick_gpu
 
 # circuit sizes offered in the UI (neurons). FlyWire sizes are tiers measured by tools/fidelity.py.
 FLYWIRE_SIZES = [2_000, 5_000, 10_000, 15_000, 20_000, 50_000, 138_639]
@@ -138,6 +140,19 @@ class Control(QWidget):
         self.dt.setCurrentIndex([d for _, d in DTS].index(runner.cfg.dt))
         lay.addWidget(self.dt)
 
+        lay.addWidget(QLabel("Hesaplama"))
+        self.hw = QComboBox()
+        self.hw.addItems(["Otomatik", "CPU"])
+        lay.addWidget(self.hw)
+        self.gpus: list[dict] = []
+        self._gpu_result: list | None = None
+        if importlib.util.find_spec("wgpu") is not None:            # GPUs are found in a helper process
+            threading.Thread(target=lambda: setattr(self, "_gpu_result", list_gpus()), daemon=True).start()
+            self._gpu_poll = QTimer(self, timeout=self._gpus_found, interval=500)
+            self._gpu_poll.start()
+        else:
+            lay.addWidget(QLabel("GPU desteği için: uv sync --extra gpu"))
+
         self.telemetry = QLabel()
         lay.addWidget(self.telemetry)
         self.warn = QLabel()
@@ -162,6 +177,7 @@ class Control(QWidget):
         self.circ.currentIndexChanged.connect(self._circuit_changed)
         self.size.valueChanged.connect(self._size_moved)
         self.dt.currentIndexChanged.connect(lambda _: self._debounce.start())
+        self.hw.currentIndexChanged.connect(lambda _: self._debounce.start())
         self._t = QTimer(self, timeout=self._refresh, interval=250)
         self._t.start()
 
@@ -206,8 +222,28 @@ class Control(QWidget):
             self.size_label.setText(f"Devre boyutu: {n:,} nöron{extra}")
             self.tier_info.setText("")
 
+    def _gpus_found(self):
+        if self._gpu_result is None:
+            return
+        self._gpu_poll.stop()
+        self.gpus = self._gpu_result
+        self.hw.blockSignals(True)
+        self.hw.addItems([f"GPU: {g['name']} ({g['backend']})" for g in self.gpus])
+        self.hw.blockSignals(False)
+
+    def _hardware(self, n: int) -> tuple[str, int | None]:
+        """(backend, adapter) for the chosen 'Hesaplama' entry; automatic = GPU for big tiers."""
+        i = self.hw.currentIndex()
+        if i >= 2:
+            return "gpu", self.gpus[i - 2]["index"]
+        if i == 0 and self.gpus and n >= GPU_AUTO_MIN_NEURONS:
+            return "gpu", pick_gpu(self.gpus)
+        return "cpu", None
+
     def _apply(self):
-        cfg = EngineConfig(self._kind(), self._sizes()[self.size.value()], DTS[self.dt.currentIndex()][1])
+        n = self._sizes()[self.size.value()]
+        backend, adapter = self._hardware(n)
+        cfg = EngineConfig(self._kind(), n, DTS[self.dt.currentIndex()][1], backend=backend, adapter=adapter)
         if cfg != self.runner.cfg:
             self.runner.start(cfg)
 
@@ -223,10 +259,16 @@ class Control(QWidget):
             self.telemetry.setText("Motor başlıyor (ilk açılışta derleme birkaç sn sürer)…")
             self.warn.setText("")
             return
+        where = "CPU"
+        if r.cfg.backend == "gpu":
+            g = next((g for g in self.gpus if g["index"] == r.cfg.adapter), None)
+            where = f"GPU {g['name']} ({g['backend']})" if g else "GPU"
+        active = f"Aktif nöron: {st['active']:,.0f} / {st['n']:,}" if st["active"] >= 0 \
+            else f"Nöron: {st['n']:,} (GPU hepsini her adımda günceller)"
         self.telemetry.setText(
             f"Durum: {r.state}   GF {st['gf']:.0f} Hz   MDN {st['mdn']:.0f} Hz   yön {st['steer']:+.0f}\n"
-            f"Gerçek zaman çarpanı: ×{st['rt']:.1f}   CPU: %{100 * st['cpu']:.0f} (tek çekirdek)\n"
-            f"Aktif nöron: {st['active']:,.0f} / {st['n']:,}")
+            f"{where}: gerçek zaman çarpanı ×{st['rt']:.1f}, işlemci %{100 * st['cpu']:.0f} (tek çekirdek)\n"
+            f"{active}   Spike/sn: {st['spikes']:,.0f}")
         slow = st["rt"] < 1.0 or st["lag_ms"] > 100
         self.warn.setText("Bu ayar bu bilgisayar için ağır: sinek yavaş çekimde. "
                           "Boyutu küçült ya da zaman adımını büyüt." if slow else "")

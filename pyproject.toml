@@ -16,6 +16,11 @@ dependencies = [
 [project.scripts]
 neuropest = "neuropest.app:main"
 
+[project.optional-dependencies]
+gpu = [
+    "wgpu>=0.32.0",
+]
+
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"

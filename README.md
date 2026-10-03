@@ -100,19 +100,57 @@ yeni bir uyaran eklenirse sıralama onunla yeniden kurulmalı (`flywire.train_pr
 - `LIFEngine`: numba, olay tabanlı. Her adımda yalnız **aktif** nöronlar güncellenir; maliyet ≈ aktif
   nöron × adım sayısı + sinaptik olaylar, toplam nöron sayısı değil.
 - `ReferenceEngine`: yoğun NumPy sürümü, test kâhini (`tests/test_engine.py` ikisini karşılaştırır).
+- `WGPUEngine` (`lif_wgpu.py`): aynı model GPU'da, WebGPU (wgpu) ile; aşağıdaki "GPU" bölümüne bak.
 - Motor ayrı süreçte çalışır (`runner.py`), arayüz yük altında donmaz; gerçek zamana göre hızını
   ayarlar, yetişemezse "yavaş çekim" uyarısı çıkar.
-- Araçlar (`tools/`): `bench_engine.py`, `bench_brain.py` (hız), `probe_circuit.py` (bir girdi grubu →
+- Araçlar (`tools/`): `bench_engine.py`, `bench_brain.py`, `bench_gpu.py` (hız), `gpu_probe.py` (hangi
+  GPU'lar kullanılabilir), `probe_retina.py` (fotoreseptör sürülünce yük), `explore_retina.py`,
+  `probe_circuit.py` (bir girdi grubu →
   DN yanıtı), `probe_inputs.py`, `probe_side.py`, `probe_combo.py` (hangi girdi hangi çıkışı sürer),
   `fidelity.py` (katman doğruluğu), `calibrate.py` (davranış ayarı), `inspect_flywire.py`,
   `explore_types.py` (hücre tipi arama), `startup_time.py`.
 
 Az boş bellekli makinelerde (sayfa dosyası yoksa) numpy/BLAS iş parçacıkları başlarken bellek ayırmayı
-başaramayabilir; paket bunu `OPENBLAS_NUM_THREADS=1` ile önler. Tam beyin katmanı ~0,4 GB ister.
+başaramayabilir; paket bunu `OPENBLAS_NUM_THREADS=1` ile önler. Tam beyin katmanı CPU'da ~0,4 GB,
+GPU'da ~0,6 GB (sürücü + tamponlar) ister.
+
+## GPU (isteğe bağlı)
+
+```bash
+uv sync --extra gpu        # wgpu, 3,3 MB; NVIDIA, AMD, Intel ve Apple GPU'larında çalışır, CUDA gerekmez
+uv run neuropest           # kontrol penceresinde "Hesaplama": Otomatik / CPU / GPU adları
+```
+
+Kontrol penceresi GPU'ları ayrı bir süreçte bulur (adaptör taraması ~100 MB bellek ister). "Otomatik",
+50.000 nöron ve üstü katmanlarda GPU kullanır, daha küçüklerde CPU: olay tabanlı CPU motoru boşta ya da
+hafif yükte hızlıdır, GPU her adımda tüm nöronları günceller (hız yüke bağlı değil, sabit).
+
+Tam beyin (138.639 nöron, 15,1 milyon sinaps), dt 0,5 ms, fotoreseptörlerin (R1-8, 10.582) rastgele bir
+kısmı Poisson ile sürülürken, gerçek zamana göre hız (`tools/bench_gpu.py`; CPU değerleri ölçümler
+arasında makine yüküne göre oynadı):
+
+| Yük (spike/sn) | CPU (numba) | GTX 1650 (Vulkan) | Intel UHD (Vulkan) |
+|---|---:|---:|---:|
+| retina %10 @20 Hz (21 bin) | ×9–11 | ×12,8 | ×3,4 |
+| retina %50 @20 Hz (105 bin) | ×1,9 | ×13,7 | ×3,0 |
+| retina %50 @50 Hz (265 bin) | ×1,0–1,4 | ×11,7 | ×3,1 |
+| retina %100 @50 Hz (538 bin) | ×0,5 | ×9,1 | ×2,5 |
+| retina %100 @100 Hz (1,1 milyon) | ×0,2–0,3 | ×7,0 | ×2,1 |
+| looming 50 Hz (33 bin) | ×0,4 | ×8,6 | ×2,7 |
+
+GPU ve CPU motorları tam beyin ölçeğinde aynı spike sayısını veriyor (ör. 537.701 ve 538 bin
+spike/sn). GPU çekirdeği bellek bant genişliğine bağlı: durum diziye bölündü ve yalnız değişince
+yazılıyor (hız 2× arttı); sinaps girdisi sabit noktalı (1/4096 mV) ve atomik toplanıyor, Poisson üreteci
+hash tabanlı (istatistiksel olarak aynı). `n_active` GPU'da izlenmez. Gerçek çalışma döngüsünde (12 ms'lik
+parçalar, gerçek zamana hızlanma bekleyerek) GTX 1650'de tam beyin ×5, işlemcinin ~%19'u; Intel UHD'de
+~×1,3. Python tarafı adım başına ~14 µs (tek dağıtım).
 
 ## Sıradaki işler
 
-1. Daha fazla görsel nöron tipi ve davranış (küçük nesne LC11, yaklaşma yerine kaçınma ya da takip);
+1. Görsel girdi: ekranı "huni" geometrisiyle (bakış açısı → ekran düzlemi) ommatidia örneklerine çevirmek,
+   fotoreseptörleri sürmek; optik lobu LIF ile mi, derecelendirilmiş (rate) modelle mi, yoksa projeksiyon
+   nöronlarını retinotopik doğrudan sürerek mi simüle edeceğimizi deneyle seçmek.
+2. Daha fazla görsel nöron tipi ve davranış (küçük nesne LC11, yaklaşma yerine kaçınma ya da takip);
    her biri için sıralamayı yeniden kurmak.
-2. Otomatik boyut seçimi (makineyi ölç, gerçek zamanı tutan en büyük katman).
-3. Gerçek sprite'lar ve daha iyi yürüme/uçma/geri yürüme animasyonu.
+3. Otomatik boyut/donanım seçimi (makineyi ölç, gerçek zamanı tutan en küçük maliyet).
+4. Gerçek sprite'lar ve daha iyi yürüme/uçma/geri yürüme animasyonu.

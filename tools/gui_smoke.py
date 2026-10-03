@@ -1,6 +1,6 @@
-"""Offscreen GUI check: overlay + control + worker process, then switch tier and circuit.
+"""Offscreen GUI check: overlay + control + worker process; switch tier, circuit and CPU/GPU.
 
-Run: uv run python tools/gui_smoke.py
+Run: uv run --extra gpu python tools/gui_smoke.py
 """
 import os
 import sys
@@ -22,10 +22,10 @@ def main():
     log = []
 
     def snap(tag):
-        log.append(f"--- {tag} (circuit={runner.cfg.circuit}, n={runner.cfg.n})\n{ctrl.size_label.text()}\n"
-                   f"{ctrl.tier_info.text()}\n{ctrl.telemetry.text()}\n{ctrl.warn.text()}\n"
-                   f"state={runner.state} fly=({overlay.fly.x:.0f},{overlay.fly.y:.0f}) "
-                   f"rect={tuple(int(v) for v in overlay.play_rect())}")
+        log.append(f"--- {tag} (circuit={runner.cfg.circuit}, n={runner.cfg.n}, backend={runner.cfg.backend}, "
+                   f"adapter={runner.cfg.adapter}; hardware choices: {[ctrl.hw.itemText(i) for i in range(ctrl.hw.count())]})\n"
+                   f"{ctrl.size_label.text()}\n{ctrl.tier_info.text()}\n{ctrl.telemetry.text()}\n{ctrl.warn.text()}\n"
+                   f"state={runner.state} fly=({overlay.fly.x:.0f},{overlay.fly.y:.0f})")
 
     timers = []
 
@@ -37,11 +37,11 @@ def main():
         timers.append(t)
 
     at(10000, lambda: snap("start"))
-    at(10100, lambda: ctrl.size.setValue(FLYWIRE_SIZES.index(5_000)))
-    at(18000, lambda: snap("after size change"))
-    at(18100, lambda: ctrl.circ.setCurrentIndex(len(ctrl.circuits) - 1))   # toy circuit
-    at(26000, lambda: snap("toy circuit"))
-    at(26500, app.quit)
+    at(10100, lambda: ctrl.size.setValue(len(FLYWIRE_SIZES) - 1))        # full brain: automatic picks the GPU
+    at(24000, lambda: snap("full brain, automatic hardware"))
+    at(24100, lambda: ctrl.hw.setCurrentIndex(1))                         # force CPU
+    at(36000, lambda: snap("full brain on the CPU"))
+    at(36500, app.quit)
     app.exec()
     runner.stop()
     print("\n".join(log))
