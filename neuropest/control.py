@@ -27,6 +27,14 @@ def load_tiers() -> dict[int, dict]:
         return {}
 
 
+def load_tier_machine() -> str:
+    """Machine tools/fidelity.py measured the tier speeds on (its `machine` field), for the tooltip."""
+    try:
+        return str(json.loads(TIERS.read_text()).get("machine") or "bilinmeyen makine")
+    except (OSError, ValueError):
+        return "bilinmeyen makine"
+
+
 def _label(text: str = "", name: str | None = None, wrap: bool = False) -> QLabel:
     lab = QLabel(text)
     if name:
@@ -92,6 +100,7 @@ class Control(QWidget):
         super().__init__()
         self.runner, self.overlay = runner, overlay
         self.tiers = load_tiers()
+        self.tier_machine = load_tier_machine()
         self.setObjectName("Control")
         self.setWindowTitle("NeuroPest")
         self.setWindowIcon(fly_icon())
@@ -118,7 +127,7 @@ class Control(QWidget):
         self._view_card()
         self.page.addStretch(1)
         self.page.addWidget(_label("Bağlantı verisi: FlyWire v783 (Dorkenwald ve ark.; Schlegel ve ark., "
-                                   "Nature 2024), CC-BY 4.0. Nöron modeli: Shiu ve ark. 2024.", "Faint", wrap=True))
+                                   "Nature 2024), CC BY-NC 4.0 (ticari olmayan kullanım). Nöron modeli: Shiu ve ark. 2024.", "Faint", wrap=True))
 
         self._load_sizes(runner.cfg.n)
         self._debounce = QTimer(self, singleShot=True, interval=500, timeout=self._apply)
@@ -312,7 +321,8 @@ class Control(QWidget):
                     f"×{t['realtime']:.1f} (en kötü ×{t['rt_min']:.1f})")
                 self.tier_info.setToolTip("FlyWire'daki ateşleme sırasına göre seçilen iç içe katman. "
                                           "Sapma yalnız yaklaşan nesne, geri çekilme ve yön girdileri "
-                                          "için ölçüldü (tools/fidelity.py).")
+                                          "için ölçüldü (tools/fidelity.py). Hız, ölçümün yapıldığı "
+                                          f"makineye özeldir ({self.tier_machine}).")
             else:
                 self.tier_info.setText("Bu boyut için ölçüm yok.")
         else:
