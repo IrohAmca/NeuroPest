@@ -288,11 +288,21 @@ taşınmıyordu. 15.000 nöron, çıkış = durum / ilk görüldüğü an:
 
 | Göz yüksekliği | Model | 150 px/s | 400 px/s | 800 px/s | 1500 px/s | yandan 800 (60° sağ / 100° sol) |
 |---|---|---|---|---|---|---|
-| 20-300 px (hepsinde aynı) | **küre (varsayılan)** | dur | geri 0,86 s | kaç 0,44 s | kaç 0,24 s | kaç 0,36 / 0,38 s |
+| 20-300 px (hepsinde aynı) | **küre (varsayılan)** | dur | geri 0,76 s | kaç 0,48 s | kaç 0,24 s | kaç 0,42 / 0,48 s |
 | 20 px | düzlem diski | geri (2,4 s) | kaç (0,90 s) | kaç 0,46 s | kaç 0,26 s | kaç 0,44 / 0,46 s |
 | 100 px | düzlem diski | dur | geri 0,86 s | kaç 0,44 s | kaç 0,26 s | kaç 0,50 s / dur |
 | 200 px | düzlem diski | dur | geri 0,76 s | kaç 0,48 s | kaç 0,24 s | geri 0,52 s / dur |
 | 300 px | düzlem diski | dur | geri 0,64 s | geri 0,34 s | kaç 0,18 s | geri 0,46 s / dur |
+
+**LPLC2 boyutu, LC4 hızı okur.** İlk sürümde ikisi de aynı hızı alıyordu; oysa LC4 genişleyen kenarın açısal
+*hızını*, LPLC2 nesnenin açısal *boyutunu* kodlar (von Reyn 2017, Ache 2019). Şimdi (`VisionParams.loom_split`)
+genişleme çıktısı LC4'e olduğu gibi gider; LPLC2'ye alıcı alanının (30° havuz) ne kadarının nesneyle kaplı olduğuyla
+çarpılarak (`size_lo` 0,10 → 0, `size_hi` 0,80 → tam) gider. Küçük (15 px) hızlı bir disk için tepe hızlar LC4 112 Hz,
+LPLC2 61 Hz; varsayılan 30 px diskte 800 px/s'de 141 / 125 Hz; kayan diskte 23 / 2 Hz. `gain_loom` 25 → 30 (LPLC2
+kısılınca Giant Fiber'in kalkış eşiği için). Küçük disk 800 px/s'de artık kalkmıyor, geri yürüyor; büyük (60 px)
+disk 400 px/s'de geri yürüyor, 800'de kalkıyor. Düzlem modeli (`DISK_PLANE`) eski davranışta (`loom_split=False`,
+`gain_loom` 25). `rf_sigma_deg` (alıcı alanı ağırlığı, varsayılan 0 = düz havuz) denendi ve **kapalı bırakıldı**: 8-12°'de toplam girdi
+düşüyor, 800 px/s'de kalkış kayboluyor (`gain_loom` 60'a çıksa da), yani ağırlıklı havuz için ayrı bir kalibrasyon gerekir.
 
 Küre modelinde ayrıca duran, kayan (400 px/s, 150 px'ten), uzaklaşan ve 3 s yakında durup uzaklaşan imleç sineği
 durduruyor; 250 px/s yaklaşma 1,36 s'de geri yürüme, 100 px/s yaklaşma ancak imleç 50 px'e girince (3,5 s) geri
