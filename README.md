@@ -3,7 +3,7 @@
 Masaüstünde gezen, fare imlecine tepki veren bir sinek. Davranışı, gerçek sinek beyni
 bağlantısından (FlyWire) çıkarılan bir devrenin simülasyonundan gelir (leaky integrate-and-fire).
 
-**Durum (v0.5):** imleç sinek için üç girdiye dönüşür ve gerçek bağlantı bunları davranışa çevirir:
+**Durum (v0.6):** imleç sinek için üç girdiye dönüşür ve gerçek bağlantı bunları davranışa çevirir:
 yaklaşma hızı → hafifse **geri yürüme** (MDN), çok hızlıysa **uçarak kaçış** (Giant Fiber); imlecin
 yönü → sağ/sol **dönüş** (DNa02). Yürüme komut nöronlarına (DNp09/P9) tonik sürücü verilince yürür.
 Devrenin boyutu arayüzden seçilir; her boyutun tam beyne göre doğruluğu ve hızı ölçülmüştür.
@@ -72,6 +72,7 @@ girdi grubuna çevrilir (Poisson ateşleme), çıktılar descending nöronlardan
 | yaklaşma hızı, hafif | LPC1 | MDN | geri yürüme (MDN işlevi: Bidaye 2014) |
 | yön (sağ/sol) ve yakınlık | LC10a/c-2/d, aynı taraf | DNa02, aynı taraf | o tarafa dönüş (Rayshubskiy ve ark.) |
 | "Hareketlilik" kaydırıcısı | tonik akım | DNp09 / P9 | ileri yürüme (Bidaye 2020) |
+| imleç sineğin üstünde (hover), dokunulan taraf | kafa kıl duyu nöronları (BM_*, taramalar hariç) + Johnston organı C/E, aynı taraf | DNg62 (aDN1) ve DNge078 (aDN2) | kafa/anten temizlenmesi (Hampel 2015; Shiu 2024) |
 
 Hangi girdi tipinin hangi çıkışı sürdüğü literatürden değil **modelden** okundu (`tools/probe_inputs.py`,
 `tools/probe_side.py`): örneğin MDN'yi en güçlü LPC1 sürüyor, literatürdeki LC16 sürmüyor; LC10'lar
@@ -102,6 +103,14 @@ Yalnız looming ile ölçüldüğünde 2.000 nöron %99,9 doğruydu; geri yürü
 devre büyüdü ve ~15.000 nöron gerekti. **Sınır:** doğruluk yalnız bu üç girdi ailesi için ölçüldü;
 yeni bir uyaran eklenirse sıralama onunla yeniden kurulmalı (`flywire.train_protocols`,
 `tools/build_flywire.py`, `tools/fidelity.py`). Uyaran yokken CPU ≈ 0; yük yalnız imleç yakınken artar.
+
+**Dokunma.** Overlay tıklamayı geçirdiği için "dokunma" imlecin sineğin merkezine `14 px × boyut`
+yaklaşmasıdır. Beyin bağlantısında yalnız **kafanın** mekanik duyu nöronları var (gövde ve bacak kılları
+ventral sinir kordonuna girer, o veri bu bağlantıda yok), bu yüzden dokunma = kafa dokunması. Model
+(`tools/probe_touch.py`, tam beyin): kafa kılları + JO-C/E tek tarafta 100 Hz'de aDN1/aDN2'yi 25-40 Hz
+sürer (50 Hz'de ~5 Hz, 25 Hz'de ~0); kalkış (GF) ve geri yürüme (MDN) **hiç** sürülmez. Dokunma
+orta şiddetli yaklaşmada GF'yi bastırır (looming 20 Hz: GF 59 → 3 Hz), çok hızlı yaklaşmada bastıramaz
+(50 Hz: 164 → 96 Hz). Sinek `groom` durumuna girer: durur, ön bacaklar kafaya sürülür.
 
 ## Görsel girdi (huni görüşü)
 
@@ -144,7 +153,8 @@ ve LC10 (yön) nöronunun kendi alıcı alanındaki değeri zorlanmış ateşlem
 ile verir; bu sırada imleç sayılarının yerine geçerler. Kazançlar ve eşikler `tools/vision_calibrate.py --grid`
 ile bulundu: yavaş yaklaşma (150 px/s) dur, orta (400) geri yürü, hızlı (800, 1500) kalk; kayan, uzaklaşan
 ve duran disk dur. Yavaş taban çizgisi 8 s (`tau_adapt`): 2 s iken uzun süre yakında duran imleç
-uzaklaşırken bıraktığı açık iz büyüyen açık nesne gibi okunuyor, sahte geri çekilme çıkıyordu.
+uzaklaşırken bıraktığı açık iz büyüyen açık nesne gibi okunuyor, sahte geri çekilme çıkıyordu. Dokunma (imleç
+sineğin üstünde) mekanik olduğundan görsel girdi açıkken de imleç konumundan gelir.
 
 **Maliyet.** Dedektör kare başına ~1,6 ms (60 Hz, numba), motorla aynı süreçte; merkezi beyin değişmez
 (girdi nöronları her katmanda var). Ekran yakalama (gerçek ekran için) Qt `grabWindow` ile GUI iş parçacığına
@@ -153,8 +163,8 @@ ağır: 2560x1440'ta tam ekran 58 ms, 600x600'lük bölge 14 ms (`tools/capture_
 **Sınırlar.** İmleç düz bir düzlemde uzakta ince bir şerit olur, looming yalnız yakında belirgin
 (göz yüksekliği ayarı ve imleç halesi bunu dengeler). Optik lob simüle edilmiyor. Katman doğruluğu görüntüyle
 (mekânsal olarak seyrek) yeniden ölçülmedi; senaryolar 5.000 ve 15.000 katmanda denendi (5.000'de eşiklere
-daha az pay var: kalkışta Giant Fiber ~23 Hz, eşik 15). 15.000 katman şiddetli kaçış sırasında bu makinede
-gerçek zamanın altına inebiliyor.
+daha az pay var: kalkışta Giant Fiber ~23 Hz, eşik 15). 15.000 katmanda şiddetli kaçış sırasında (yüz binlerce
+spike/sn) ve makine yüklüyken bir ölçümde gerçek zamanın altına (×0,8) inildi; 5.000'de ×7,4.
 
 ## Motor (`neuropest/engine`)
 
@@ -168,7 +178,7 @@ gerçek zamanın altına inebiliyor.
   ayarlar, yetişemezse "yavaş çekim" uyarısı çıkar.
 - Araçlar (`tools/`): `bench_engine.py`, `bench_brain.py`, `bench_gpu.py` (hız), `gpu_probe.py` (hangi
   GPU'lar kullanılabilir), `probe_retina.py` (fotoreseptör sürülünce yük), `explore_retina.py`,
-  `probe_circuit.py` (bir girdi grubu →
+  `probe_touch.py` (dokunma girdileri → DN yanıtı), `probe_circuit.py` (bir girdi grubu →
   DN yanıtı), `probe_inputs.py`, `probe_side.py`, `probe_combo.py` (hangi girdi hangi çıkışı sürer),
   `fidelity.py` (katman doğruluğu), `calibrate.py` (davranış ayarı), `inspect_flywire.py`,
   `explore_types.py` (hücre tipi arama), `startup_time.py`. Görsel girdi: `build_eye.py`,

@@ -6,6 +6,7 @@ left/right bearing input, and mixtures), drive the input groups in the full netw
   GF err     looming protocols:  mean |GF_tier - GF_full| / max(GF_full, 5 Hz)       (take-off command)
   MDN err    retreat protocols:  same for MDN                                         (backward walking)
   DNa02 err  bearing protocols:  same for the DNa02 on the driven side                (steering)
+  groom err  touch protocols:    same for the grooming DNs aDN1/aDN2 (GROOM)          (grooming)
   mix err    mixed protocols:    mean over GF, MDN and both DNa02
   DN corr    Pearson correlation of per-DN rates, DNs present in the tier, all protocols pooled
   DN kept    share of the full network's descending-neuron spiking that lies on retained DNs
@@ -27,7 +28,7 @@ from neuropest.engine import LIFEngine
 
 DEFAULT_TIERS = (1000, 2000, 3000, 5000, 7500, 10000, 15000, 20000, 30000, 50000, 100000)
 DT = 0.5
-ANCHORS = ("GF", "MDN", "DNa02_L", "DNa02_R")
+ANCHORS = ("GF", "MDN", "DNa02_L", "DNa02_R", "GROOM")
 
 
 def run(net, protocols, warm_ms=300.0, run_ms=1000.0):
@@ -61,7 +62,7 @@ def rel_err(tier, full):
 
 def main():
     protocols = flywire.test_protocols()
-    fam = {k: [i for i, p in enumerate(protocols) if list(p) == [k]] for k in ("LOOM", "RETREAT_IN", "LC10_L", "LC10_R")}
+    fam = {k: [i for i, p in enumerate(protocols) if list(p) == [k]] for k in ("LOOM", "RETREAT_IN", "LC10_L", "LC10_R", "TOUCH_L", "TOUCH_R")}
     mixed = [i for i, p in enumerate(protocols) if len(p) > 1]
     full = flywire.load_cache()
     tiers = [int(a) for a in sys.argv[1:]] or [n for n in DEFAULT_TIERS if n < full.n]
@@ -76,15 +77,16 @@ def main():
             gf_err=100 * float(e[fam["LOOM"], 0].mean()),
             mdn_err=100 * float(e[fam["RETREAT_IN"], 1].mean()),
             steer_err=100 * float(np.mean([e[fam["LC10_L"], 2].mean(), e[fam["LC10_R"], 3].mean()])),
+            groom_err=100 * float(e[fam["TOUCH_L"] + fam["TOUCH_R"], 4].mean()),
             mix_err=100 * float(e[mixed].mean()))
 
     rts = [r["rt"] for r in ref]
     out = [dict(n=full.n, edges=int(full.nnz), **errors(a_full), dn_corr=1.0, dn_kept=1.0,
                 active=float(np.mean([r["active"] for r in ref])), realtime=float(np.mean(rts)), rt_min=float(min(rts)))]
-    head = (f"{'neurons':>8} {'edges':>9} | {'GF %':>6} {'MDN %':>6} {'DNa02 %':>7} {'mix %':>6} | {'DN corr':>7} "
+    head = (f"{'neurons':>8} {'edges':>9} | {'GF %':>6} {'MDN %':>6} {'DNa02 %':>7} {'groom %':>7} {'mix %':>6} | {'DN corr':>7} "
             f"{'DN kept %':>9} | {'active %':>8} {'x mean':>7} {'x worst':>7}")
     print(head)
-    print(f"{full.n:>8} {full.nnz:>9} | {0:>6.1f} {0:>6.1f} {0:>7.1f} {0:>6.1f} | {1:>7.3f} {100:>9.1f} | "
+    print(f"{full.n:>8} {full.nnz:>9} | {0:>6.1f} {0:>6.1f} {0:>7.1f} {0:>7.1f} {0:>6.1f} | {1:>7.3f} {100:>9.1f} | "
           f"{out[0]['active']:>8.1f} {out[0]['realtime']:>7.2f} {out[0]['rt_min']:>7.2f}  (full brain)", flush=True)
     for n in tiers:
         sub = full.prefix(n)
@@ -101,7 +103,7 @@ def main():
         row = dict(n=n, edges=int(sub.nnz), **err, dn_corr=corr, dn_kept=kept,
                    active=float(np.mean([r["active"] for r in res])), realtime=float(np.mean(rts)), rt_min=float(min(rts)))
         out.append(row)
-        print(f"{n:>8} {sub.nnz:>9} | {err['gf_err']:>6.1f} {err['mdn_err']:>6.1f} {err['steer_err']:>7.1f} {err['mix_err']:>6.1f} | "
+        print(f"{n:>8} {sub.nnz:>9} | {err['gf_err']:>6.1f} {err['mdn_err']:>6.1f} {err['steer_err']:>7.1f} {err['groom_err']:>7.1f} {err['mix_err']:>6.1f} | "
               f"{corr:>7.3f} {100 * kept:>9.1f} | {row['active']:>8.1f} {row['realtime']:>7.2f} {row['rt_min']:>7.2f}", flush=True)
     paths.TIERS.write_text(json.dumps(dict(dt=DT, protocols=protocols, tiers=sorted(out, key=lambda r: r["n"])), indent=1))
     print("wrote", paths.TIERS)

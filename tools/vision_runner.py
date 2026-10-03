@@ -39,7 +39,7 @@ def run(r: Runner, kind: str, seconds: float):
     while (t := time.perf_counter() - t0) < seconds:
         cx, cy = cursor_path(kind, t)
         d = ((cx - FLY[0]) ** 2 + (cy - FLY[1]) ** 2) ** 0.5
-        r.send(d, 0.0, 0.0, FLY, (cx, cy))
+        r.send(d, 0.0, 0.0, pose=FLY, cursor=(cx, cy))
         st = r.stats()
         seen[r.state] = seen.get(r.state, 0) + 1
         if t >= 0.5:
@@ -73,19 +73,19 @@ def main():
         r.bias = 0.0
         r.eye_height = a.h
         r.vision = True
-        r.send(1e6, 0.0, 0.0, FLY, cursor_path("far", 0))
+        r.send(1e6, 0.0, 0.0, pose=FLY, cursor=cursor_path("far", 0))
         time.sleep(1.5)
         print(f"vision flag in the worker: {r.stats()['vision']:+.0f} (1 = on, -1 = unusable)")
         for kind in ("far", "approach slow", "approach medium", "approach fast", "slide", "recede"):
             if a.only and a.only not in kind:
                 continue
             r.vision = False                                    # off and on again: the eye starts every scenario fresh
-            r.send(1e6, 0.0, 0.0, FLY, cursor_path("far", 0))
+            r.send(1e6, 0.0, 0.0, pose=FLY, cursor=cursor_path("far", 0))
             time.sleep(2.0)                                     # let the previous event fade in the brain
             x0, y0 = cursor_path(kind, 0.0)                     # the scene is already in place when the eye opens
-            r.send(1e6, 0.0, 0.0, FLY, (x0, y0))
+            r.send(1e6, 0.0, 0.0, pose=FLY, cursor=(x0, y0))
             r.vision = True
-            r.send(1e6, 0.0, 0.0, FLY, (x0, y0))
+            r.send(1e6, 0.0, 0.0, pose=FLY, cursor=(x0, y0))
             time.sleep(0.8)
             run(r, kind, a.seconds)
         st = r.stats()

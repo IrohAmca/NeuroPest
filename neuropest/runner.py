@@ -15,11 +15,11 @@ from .paths import CACHE
 from .states import STAND, STATES
 
 # input slots
-I_DIST, I_CLOSING, I_BIAS, I_SKITTISH, I_BEARING = 0, 1, 2, 3, 4
-I_X, I_Y, I_HEAD, I_CX, I_CY, I_VISION, I_HEIGHT = 5, 6, 7, 8, 9, 10, 11     # pose, cursor, vision switch
+I_DIST, I_CLOSING, I_BIAS, I_SKITTISH, I_BEARING, I_TOUCH = 0, 1, 2, 3, 4, 5
+I_X, I_Y, I_HEAD, I_CX, I_CY, I_VISION, I_HEIGHT = 6, 7, 8, 9, 10, 11, 12     # fly pose, cursor, vision switch
 # output slots
 (O_READY, O_STATE, O_GF, O_WALK, O_REST, O_RT, O_ACTIVE, O_N, O_CPU, O_LAG, O_SIM_S, O_BEAT, O_MDN, O_STEER,
- O_SPIKES, O_VISION) = range(16)
+ O_SPIKES, O_GROOM, O_VISION) = range(17)
 
 CHUNK_MS = 4.0              # simulated time advanced per loop iteration
 CHUNK_MS_GPU = 12.0         # a GPU read-back costs ~1 ms regardless of size; measured x1.8 -> x2.8-4 on a GTX 1650
@@ -126,9 +126,9 @@ def _loop(cfg: EngineConfig, brain, net, inp, out, stop) -> None:
     while not stop.is_set():
         t = time.perf_counter()
         eye.update(brain, inp, out, sim_ms)
-        cur = (inp[I_DIST], inp[I_CLOSING], inp[I_BIAS], inp[I_SKITTISH], round(inp[I_BEARING], 2))
-        if eye.on:
-            cur = (1e6, 0.0, cur[2], cur[3], 0.0)   # the image, not cursor numbers, drives the looming inputs
+        cur = (inp[I_DIST], inp[I_CLOSING], inp[I_BIAS], inp[I_SKITTISH], round(inp[I_BEARING], 2), inp[I_TOUCH])
+        if eye.on:                                      # the image, not cursor numbers, drives the looming inputs;
+            cur = (1e6, 0.0, cur[2], cur[3], cur[4] if cur[5] else 0.0, cur[5])    # touch still needs its side
         if cur != last_in:
             brain.set_stimulus(*cur)
             last_in = cur
@@ -143,7 +143,7 @@ def _loop(cfg: EngineConfig, brain, net, inp, out, stop) -> None:
         sim_ms += chunk
         out[O_STATE] = float(STATES.index(state))
         out[O_GF], out[O_WALK], out[O_REST] = (brain.rates["GF"], brain.rates["WALK"], brain.rates["REST"])
-        out[O_MDN], out[O_STEER] = brain.rates["MDN"], brain.steer
+        out[O_MDN], out[O_STEER], out[O_GROOM] = brain.rates["MDN"], brain.steer, brain.rates["GROOM"]
 
         ahead = t0 + sim_ms / 1000.0 - time.perf_counter()
         if ahead > 0:
@@ -233,7 +233,7 @@ class Runner:
     def __init__(self, cfg: EngineConfig | None = None):
         self._ctx = mp.get_context("spawn")
         self.inp = self._ctx.Array("d", 16, lock=False)
-        self.out = self._ctx.Array("d", 16, lock=False)
+        self.out = self._ctx.Array("d", 24, lock=False)
         self._proc = None
         self._stop = None
         self.bias = 0.65          # walking drive, 0..1
@@ -264,11 +264,12 @@ class Runner:
             self._proc.join(1.0)
         self._proc = None
 
-    def send(self, dist: float, closing: float, bearing: float = 0.0, pose=(0.0, 0.0, 0.0), cursor=(0.0, 0.0)) -> None:
-        """Per-frame input. pose = fly (x, y, heading) and cursor = (x, y) in screen px, used by the vision pipeline."""
+    def send(self, dist: float, closing: float, bearing: float = 0.0, touch: float = 0.0,
+             pose=(0.0, 0.0, 0.0), cursor=(0.0, 0.0)) -> None:
+        """Per-frame input. pose = fly (x, y, heading) and cursor = (x, y) in screen px feed the visual input."""
         inp = self.inp
         inp[I_DIST], inp[I_CLOSING], inp[I_BIAS], inp[I_SKITTISH] = dist, closing, self.bias, self.skittish
-        inp[I_BEARING] = bearing
+        inp[I_BEARING], inp[I_TOUCH] = bearing, touch
         inp[I_X], inp[I_Y], inp[I_HEAD] = pose
         inp[I_CX], inp[I_CY] = cursor
         inp[I_VISION], inp[I_HEIGHT] = float(self.vision), self.eye_height
@@ -298,4 +299,5 @@ class Runner:
         o = self.out
         return dict(ready=self.ready, n=int(o[O_N]), rt=o[O_RT], active=o[O_ACTIVE], cpu=o[O_CPU],
                     lag_ms=o[O_LAG], gf=o[O_GF], walk=o[O_WALK], rest=o[O_REST], mdn=o[O_MDN],
-                    steer=o[O_STEER], sim_s=o[O_SIM_S], spikes=o[O_SPIKES], vision=o[O_VISION])
+                    steer=o[O_STEER], groom=o[O_GROOM], sim_s=o[O_SIM_S], spikes=o[O_SPIKES],
+                    vision=o[O_VISION])
