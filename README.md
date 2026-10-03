@@ -69,18 +69,43 @@ girdi grubuna çevrilir (Poisson ateşleme), çıktılar descending nöronlardan
 | İmleç | Girdi nöronları | Çıktı | Davranış |
 |---|---|---|---|
 | yaklaşma hızı (genişleme) | LPLC2 (boyut) + LC4 (hız) | DNp01 Giant Fiber | uçarak kaçış (Ache 2019, von Reyn 2017) |
-| yaklaşma hızı, hafif | LPC1 | MDN | geri yürüme (MDN işlevi: Bidaye 2014) |
+| yaklaşma hızı, hafif | LPC1 (**işlevsel yer tutucu**, aşağıya bak) | MDN | geri yürüme (MDN işlevi: Bidaye 2014) |
 | yön (sağ/sol) ve yakınlık | LC10a/c-2/d, aynı taraf | DNa02, aynı taraf | o tarafa dönüş (Rayshubskiy ve ark.) |
 | "Hareketlilik" kaydırıcısı | tonik akım | DNp09 / P9 | ileri yürüme (Bidaye 2020) |
 | imleç sineğin üstünde (hover), dokunulan taraf | kafa kıl duyu nöronları (BM_*, taramalar hariç) + Johnston organı C/E, aynı taraf | DNg62 (aDN1) ve DNge078 (aDN2) | kafa/anten temizlenmesi (Hampel 2015; Shiu 2024) |
 
 Hangi girdi tipinin hangi çıkışı sürdüğü literatürden değil **modelden** okundu (`tools/probe_inputs.py`,
-`tools/probe_side.py`): örneğin MDN'yi en güçlü LPC1 sürüyor, literatürdeki LC16 sürmüyor; LC10'lar
-aynı taraftaki DNa02'yi sürüyor. LPC1 girdisi Giant Fiber'ı baskılıyor (`tools/probe_combo.py`), bu
+`tools/probe_side.py`): LC10'lar aynı taraftaki DNa02'yi sürüyor. LPC1 girdisi Giant Fiber'ı baskılıyor (`tools/probe_combo.py`), bu
 yüzden geri çekilme girdisi 20 Hz'de doyuyor ve kalkış yalnız yaklaşma çok hızlıysa kazanıyor: geri
 yürüme ~2 /s genişlemeden, kalkış ~7 /s'den başlıyor. Eşikler ve kazançlar benim tasarım seçimim
 (`neuropest/brain.py`). Optik lob (77,5 bin nöron, %56) simüle edilmez: görsel girdi doğrudan
 projeksiyon nöronlarına verilir.
+
+**LPC1 bir işlevsel yer tutucudur.** Literatürde LPC1 bir looming dedektörü değil, T4b/T5b girdisi alan geriden-öne
+translasyonel optik akış dedektörüdür; aktive edilince sinek yavaşlar ve durur, geri yürümez (Isaacson ve ark. 2023).
+MDN'nin görsel girdisi LC16'dır ve bağlantı polisinaptiktir (Sen ve ark. 2017; Wu ve ark. 2016). Modelde LPC1'in MDN'yi
+sürmesi bu yüzden biyolojik bir bulgu olarak okunmamalı: tekdüze Poisson sürücüsü ve sıfır bazal aktivite altında LPC1
+yolunun ölçülen bir sonucu. Tam beyinde yeniden prob edildi (`tools/probe_retreat.py`, ham tablolar
+`data/probes/retreat_sim.csv` ve `retreat_wiring.csv` depoda; 123 VPN tipi (≥4 nöron; tüm 326 tipin bağlantı tablosu ayrıca), 4 hız düzeyi, tümü ve yalnız ön görüş alanındaki
+nöronlar):
+
+| Tip | n | MDN 25 Hz'de | MDN 50 Hz'de | MDN 100 Hz'de | GF (en çok) | Not |
+|---|---:|---:|---:|---:|---:|---|
+| **LPC1** | 164 | 19 | 36,5 | 55 | 0 | ön yarı: 0 / 10 / 28 Hz |
+| **LC16** | 151 | 0 | 0 | 23,5 | 0 | ön yarı (48 nöron): 100 Hz'de bile 0 |
+| LC6 | 125 | 0 | 3,8 | 35 | 194 | MDN'den çok GF'yi sürüyor (kalkış girdisi) |
+| LPLC1 | 140 | 0 | 0 | 0 | 12 | 25 Hz'de 10 bin nöronluk çığ var, MDN yok |
+| LT82b, LC22, LPLC4, LC9 | 4-179 | 0 | 0-4 | 6-23,5 | 0 | zayıf, tekdüze sürücüde |
+
+Okuma: (1) **LC16 gerçekten MDN'yi sürüyor** (literatür modelde de doğrulanıyor), ama eşiği yüksek: tüm 151 nöron ≥100 Hz,
+LPC1 25 Hz'de başlıyor; dedektör görüntüden bu kadar yüksek oran üretmedikçe LC16 yolu geri çekilmeyi sürmez. (2) LC6 ve LPLC1
+geri yürüme girdisi değil: LC6 GF'yi sürüyor, LPLC1 hiç MDN sürmüyor. (3) MDN'ye hiçbir VPN tipi tek sinapsla bağlı değil
+(en güçlü tek sinaps -1,9 mV, LC33); iki sıçramalı işaretli ağırlık LPC1 için +8844 mV (sırada 2.), LC16 için -144 mV
+(sırada 294.), yani LC16'nın etkisi doğrusal iki sıçramadan değil daha uzun/özyinelemeli yollardan geliyor. (4) LC10a/d iki
+sıçramada MDN'yi baskılıyor (-16.000 mV civarı): dönüş girdisi geri yürümeyi sürmüyor, tutarlı. LPC1 modelde tutuldu çünkü
+düşük girdide çalışan tek yol ve GF baskılaması geri çekilme/kalkış ayrımını sağlıyor; bunu bir davranış tasarımı olarak
+okuyun. LC16'ya geçmek (retreat girdisi + sıralama + kalibrasyon + tiers yeniden kurma) ayrı bir karar: önerilen sürücü tüm
+LC16'yı ≥100 Hz'e çıkaran, GF'yi baskılamayan bir dedektör.
 
 **Katmanlar.** Modelde kendiliğinden aktivite yoktur: hiç ateşlemeyen bir nöron diğerlerini
 etkilemez, atılması hiçbir şeyi değiştirmez. Nöronlar, tam beyin simülasyonunda üç girdi ailesi
