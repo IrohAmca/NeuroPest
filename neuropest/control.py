@@ -205,11 +205,10 @@ class Control(QWidget):
         # for it; the slider is for the funnel view of a screen image (screen capture, not built yet) and the legacy
         # plane-disk model.
         hgt = QSlider(Qt.Horizontal, minimum=40, maximum=300, value=int(self.runner.eye_height),
-                      enabled=self.has_eye and VisionParams().cursor_model != "sphere")
+                      enabled=self.has_eye)
         hgt.valueChanged.connect(lambda v: setattr(self.runner, "eye_height", float(v)))
         slider_row(card, "Göz yüksekliği", "Ekran düzleminin kaç px üstünden bakıyor: büyük = daha dikey (tepeden) bakış. "
-                   "İmleç göz hizasında bir disk olarak çizildiği için imleç için etkisiz; ekran görüntüsü "
-                   "yakalama gelince (funnel görüşü) kullanılacak.", hgt, lambda v: f"{v} px")
+                   "Gerçek ekran görüntüsünün huni (funnel) bakış açısını ayarlar.", hgt, lambda v: f"{v} px")
         self.vision_info = _label("", "Faint", wrap=True)
         card.body.addWidget(self.vision_info)
         self.page.addWidget(card)
@@ -220,8 +219,8 @@ class Control(QWidget):
         if not self.has_eye:
             text = "Göz verisi yok: uv run python tools/build_eye.py (ham veri gerekir, README'ye bak)."
         elif state > 0:
-            text = ("Sinek imleci kendi gözünden, göz hizasında koyu bir disk olarak görüyor (yaklaştıkça büyür); "
-                    "yaklaşma ve yön bilgisi retinotopik dedektörlerden geliyor.")
+            text = ("Gerçek ekran yakalama aktif: Sinek masaüstünü 480 px huni görüşüyle görüyor; "
+                    "kaçış (uçuş), geri yürüme, donma ve yönelme kararları ekrandaki gerçek piksellerden geliyor.")
         elif state < 0 and self.vision.isChecked():
             text = "Bu devrede görsel girdi yok (alıcı alanı olan LPLC2/LC4 gerekir): imleç sayılarıyla çalışılıyor."
         else:
