@@ -99,6 +99,31 @@ kalkış 20 /s genişlemede 16 yerine 8 ms, 10 /s'de 22 yerine 14 ms, 7 /s'de 24
 ilk spike 18 ms). Kalkış eşiği ~5 /s'den ~4 /s genişlemeye iniyor (4 /s'de 12 tohumun 9'unda uçuyor). Beyin içi gecikmenin büyük kısmı zaten spike'ın kendisi; GUI yoklaması ve kare hızı ayrı kalemler. Optik lob (77,5 bin nöron, %56) simüle edilmez: görsel girdi doğrudan
 projeksiyon nöronlarına verilir.
 
+**Durumlar ve öncelik.** Altı durum: dur, yürü, uç, geri çekil, temizlen (groom), **don** (freeze). Öncelik: kalkış >
+geri çekilme > donma > temizlenme > yürü/dur; üst basamak alttakini hemen keser, bir durumdan çıkış kendi histerezisini ve
+asgari süresini ister. Temizlenme eskiden geri çekilmeden önce geliyordu, yani dokunulan sinek hiç geri yürümüyordu. Şimdi **kımıldayan** bir imleç (kafa üstünde yaklaşma hızı ~2 /s'yi geçince, 14 px dokunma yarıçapında
+~60 px/s) geri çekilmeyi tetikler, hareketsiz hover hâlâ temizletir; dokunma GF'yi baskılamaya devam eder (kalkış yok).
+**Donma bağlantıdan okunmaz, tasarlanmış bir kuraldır:** modelde sineği durduran bir nöron yok. En yakın nesnenin
+genişleme hızı (1/s; görüntü yolunda dedektör çıkışı, imleç sayıları yolunda yaklaşma hızı / mesafe) 80 ms üstel
+ortalamayla 0,7'yi (`FREEZE_ON`) geçerse ve geri çekilme ya da kalkış tetiklenmediyse sinek en az 1,2 sn donar, genişleme
+0,3'ün altına inince çıkar. Eşik `tools/vision_calibrate.py --verbose` ile seçildi (küre modeli, 20-300 px'te aynı):
+yavaş yaklaşma (150 px/s) tepe 0,89 /s → donar; kayan disk 0,49, uzaklaşan ~0, duran 0 → durur; 400 px/s geri yürür, 800 ve
+1500 uçar (donma bunlarda yalnız 0-0,6 sn sürer, sonra kalkış ya da geri çekilme keser). Temas halindeki nesne yaklaşıyor sayılmaz (dokunma varken
+donma girdisi 0). Literatürde yürüyen sineklerin çoğu looming'e donarak yanıt verir, az bir kısmı zıplar (Zacarias 2018);
+bu kural o oranı ayarlamaz, yalnız "zayıf looming → dur" davranışını ekler. `BrainSpec.freeze_on = 0` kuralı kapatır.
+Kendiliğinden durma ve kalkış (uyaransız) bu kuralın dışında, ayrı bir karar olarak açık.
+
+**Kaçış yönü** (`tools/probe_escape.py`, `data/probes/escape_direction.csv`; tam beyin, gerçek `VisionDrive`, 800 px/s
+yaklaşma, 9 yönden). Sinek şimdi kaçış yönünü imleç vektöründen (`imleç yönü + π`, `fly.py`) yazıyor; Dombrovski 2023'e göre
+yön DNp02/DNp11'in tarafa bağlı LC4 gradyanıyla kodlanır. Modelde DNp02 ve DNp11 (her tipten yanda tek nöron) gerçekten
+**aynı taraftaki** uyaranla ateşliyor: soldan 120°-60° yaklaşmada DNp02_L 8-13 spike, DNp02_R 0; sağdan 60°-90°'de DNp02_R
+5-7, DNp02_L 0; DNp11 yalnız ön ±30° bölgesinde (L 9 / R 0 solda, 7 sağda). (R - L, yön) korelasyonu DNp02 için +0,84,
+DNp11 için +0,25, Giant Fiber için +0,46. Ama bu bir **işaret** bilgisi: 1,5 sn'de 0-13 spike, kalkış kararı ise ilk 10 ms'de
+verilir; tam karşıdan yaklaşmada (0°) DNp11_L 9 spike, DNp11_R 0 (soldan sapma, LC10-DNa02 asimetrisiyle aynı yönde). Bu
+yüzden kaçış yönü beyinden okunacaksa en fazla "uyaranın hangi yanında" (üç sınıf) kararı için kullanılabilir ve
+DNp02/DNp11'i `ANCHOR_GROUPS`'a ve sıralamaya almak gerekir (önbellek ve katmanların yeniden kurulması, doğruluk tablosunun
+yeniden ölçülmesi). **Yapılmadı:** yön hâlâ imleç vektöründen; bu bir ölçüm ve karar bekleyen öneri.
+
 **LPC1 bir işlevsel yer tutucudur.** Literatürde LPC1 bir looming dedektörü değil, T4b/T5b girdisi alan geriden-öne
 translasyonel optik akış dedektörüdür; aktive edilince sinek yavaşlar ve durur, geri yürümez (Isaacson ve ark. 2023).
 MDN'nin görsel girdisi LC16'dır ve bağlantı polisinaptiktir (Sen ve ark. 2017; Wu ve ark. 2016). Modelde LPC1'in MDN'yi

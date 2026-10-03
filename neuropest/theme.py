@@ -8,7 +8,7 @@ from PySide6.QtGui import QColor, QIcon, QPainter, QPalette, QPen, QPixmap
 from PySide6.QtWidgets import QApplication
 
 from .paths import ROOT
-from .states import FLY, RETREAT, STAND, WALK
+from .states import FLY, FREEZE, GROOM, RETREAT, STAND, WALK
 
 ASSETS = (ROOT / "neuropest" / "assets").as_posix()
 
@@ -30,6 +30,8 @@ STATE_STYLE = {
     WALK: ("#3ddc97", "Yürüyor"),
     RETREAT: (WARN, "Geri çekiliyor"),
     FLY: (ERROR, "Uçarak kaçıyor"),
+    GROOM: ("#7dd3fc", "Temizleniyor"),
+    FREEZE: ("#c4b5fd", "Donuyor"),
 }
 
 QSS = f"""

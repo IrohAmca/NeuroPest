@@ -8,7 +8,7 @@ import pytest
 from neuropest import flywire
 from dataclasses import replace
 
-from neuropest.brain import FLY, FLYWIRE, GROOM, RETREAT, STAND, Brain
+from neuropest.brain import FLY, FLYWIRE, FREEZE, GROOM, RETREAT, STAND, Brain
 from neuropest.engine import LIFEngine
 
 N = 400
@@ -237,6 +237,54 @@ def test_brain_hover_makes_the_fly_groom_and_calms_a_take_off(tier):
     off = Brain(tier)
     off.set_stimulus(5, 0, 0.0, bearing=0.5, touch=0.0)  # near but not touching: no grooming
     assert GROOM not in {off.advance(4.0) for _ in range(250)}
+
+
+def _decide(b, ms=2000, **rates):
+    """Hold the smoothed rates / looming at the given values for `ms` and return the states passed through."""
+    loom = rates.pop("loom", None)
+    b.rates.update({k: float(v) for k, v in rates.items()})
+    if loom is not None:
+        b.loom = float(loom)
+    seen = []
+    for _ in range(int(ms / 4)):
+        b._decode(4.0)
+        if not seen or seen[-1] != b.state:
+            seen.append(b.state)
+    return seen
+
+
+def test_brain_priority_is_take_off_retreat_freeze_groom_then_walk_or_stand(tier):
+    assert _decide(Brain(tier), loom=1.0) == [FREEZE]                     # weak looming alone: freeze
+    assert _decide(Brain(tier), loom=1.0, MDN=10.0) == [RETREAT]          # retreat outranks freeze
+    assert _decide(Brain(tier), GROOM=20.0, MDN=10.0) == [RETREAT]        # ... and grooming
+    assert _decide(Brain(tier), GROOM=20.0, loom=1.0) == [FREEZE]
+    assert _decide(Brain(tier), GROOM=20.0) == [GROOM]
+    assert _decide(Brain(tier), GF=20.0, GROOM=20.0, MDN=10.0, loom=1.0) == [FLY]
+    b = Brain(tier)
+    assert _decide(b, GROOM=20.0) == [GROOM] and b.state == GROOM
+    assert _decide(b, 8, MDN=10.0) == [RETREAT]                           # a retreat input interrupts grooming at once
+    assert _decide(b, MDN=0.0, GROOM=20.0, loom=1.0) == [RETREAT, FREEZE]   # leaving retreat falls to the next priority
+
+
+def test_brain_freeze_lasts_its_minimum_and_ends_when_the_looming_has_passed(tier):
+    b = Brain(tier)
+    assert _decide(b, 100, loom=1.0) == [FREEZE]
+    assert _decide(b, 1000, loom=0.0) == [FREEZE]                         # still frozen: the minimum is 1.2 s
+    assert _decide(b, 400, loom=0.0)[-1] == STAND                         # then it ends (walk bias 0: stand)
+    off = Brain(tier, spec=replace(FLYWIRE, freeze_on=0.0))
+    assert FREEZE not in _decide(off, loom=5.0)
+
+
+def test_brain_contact_is_not_looming_and_a_slow_approach_freezes_a_standing_fly(tier):
+    touching = Brain(tier)
+    touching.set_stimulus(10, 2000, 0.0, touch=1.0)                       # cursor on the fly, moving
+    assert touching._loom_in == 0.0
+    b = Brain(tier)
+    b.set_stimulus(200, 200, 0.0)                                         # 1 /s: above the freeze rule, far below retreat
+    assert FREEZE in {b.advance(4.0) for _ in range(250)}
+    calm = Brain(tier)
+    calm.set_stimulus(300, 60, 0.0)                                       # 0.2 /s: a cursor drifting closer, no reaction
+    assert FREEZE not in {calm.advance(4.0) for _ in range(250)}
 
 
 def test_tier_cache_is_written_once_and_follows_the_full_cache(raw, tmp_path):

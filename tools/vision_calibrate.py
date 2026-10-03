@@ -54,7 +54,7 @@ def run_scenario(net, drive, path, duration, height):
     drive.reset()
     drive.eye_height = height
     seen, first = Counter(), {}
-    peak = dict(GF=0.0, MDN=0.0, steer=0.0, steer_min=0.0)
+    peak = dict(GF=0.0, MDN=0.0, steer=0.0, steer_min=0.0, loom=0.0)
     sphere = drive.params.cursor_model == "sphere"
     for f in range(int(duration / FRAME_S)):
         t = f * FRAME_S
@@ -65,25 +65,26 @@ def run_scenario(net, drive, path, duration, height):
             r = drive.halo_px
             idx, rates = drive.step(cursor_scene(*now, r, drive.params.background),
                                     cursor_scene(*prev, r, drive.params.background), 0.0, 0.0, 0.0, FRAME_S)
-        brain.set_vision(idx, rates)
+        brain.set_vision(idx, rates, drive.expansion)
         for _ in range(int(FRAME_S * 1000 / CHUNK_MS)):
             state = brain.advance(CHUNK_MS)
             seen[state] += 1
             if t >= EVENT_S and state not in first:
                 first[state] = t - EVENT_S
+            peak["loom"] = max(peak["loom"], brain.loom)
             peak["GF"] = max(peak["GF"], brain.rates["GF"])
             peak["MDN"] = max(peak["MDN"], brain.rates["MDN"])
             peak["steer"], peak["steer_min"] = max(peak["steer"], brain.steer), min(peak["steer_min"], brain.steer)
-    outcome = "fly" if "fly" in first else ("retreat" if "retreat" in first else "stand")
+    outcome = next((o for o in ("fly", "retreat", "freeze") if o in first), "stand")
     return outcome, first, seen, peak
 
 
 TARGET = {"still, ahead, 150 px": "stand", "slide 400 px/s at 150 px": "stand", "recede 400 px/s": "stand",
-          "recede after 3 s near": "stand", "approach 150 px/s": "stand", "approach 400 px/s": "retreat",
+          "recede after 3 s near": "stand", "approach 150 px/s": "freeze", "approach 400 px/s": "retreat",
           "approach 800 px/s": "fly", "approach 1500 px/s": "fly"}
 
 
-def scan(net, field, params, heights, scen, label=""):
+def scan(net, field, params, heights, scen, label="", verbose=False):
     drive = VisionDrive(net, params, field)
     print(f"\n== {label} (loom {params.gain_loom:g} max {params.max_loom:g}, retreat {params.gain_retreat:g} max "
           f"{params.max_retreat:g}, flee {params.flee_lo:g}-{params.flee_hi:g}, object {params.gain_object:g}) ==")
@@ -96,11 +97,14 @@ def scan(net, field, params, heights, scen, label=""):
         for name in names:
             path, dur = scen[name]
             outcome, first, seen, peak = run_scenario(net, drive, path, dur, h)
-            at = first.get("fly" if outcome == "fly" else "retreat")
+            at = first.get(outcome)
             ok = TARGET.get(name) in (None, outcome)
             score += TARGET.get(name) == outcome
             cells.append(f"{outcome + (f' {at:.2f}s' if at is not None else ''):>16}{'' if ok else ' !!'}"[:20].rjust(20))
             results[(h, name)] = (outcome, at, peak)
+            if verbose:
+                print(f"      {name:36s} peak loom {peak['loom']:5.2f} /s  GF {peak['GF']:5.0f}  MDN {peak['MDN']:4.0f}  "
+                      f"freeze {seen['freeze'] * CHUNK_MS / 1000:4.1f} s")
         print(f"{h:5.0f} | " + " | ".join(cells), flush=True)
     return score, results
 
@@ -112,6 +116,7 @@ def main():
     ap.add_argument("--h", type=float, nargs="+", default=[20.0, 40.0, 100.0, 200.0, 300.0])
     ap.add_argument("--speeds", type=float, nargs="+", default=[150.0, 400.0, 800.0, 1500.0])
     ap.add_argument("--only", default="")
+    ap.add_argument("--verbose", action="store_true", help="also print the peak smoothed expansion, GF and MDN of every scenario")
     ap.add_argument("--grid", action="store_true", help="search gain_loom, gain_retreat and the flee range for the best score")
     for f in fields(VisionParams):
         if f.type in ("float", float):
@@ -128,7 +133,7 @@ def main():
     for model in models:
         base = replace(VisionParams() if model == "sphere" else DISK_PLANE, **over)
         if not a.grid:
-            scan(net, field, base, a.h, scen, label=f"cursor model {model}")
+            scan(net, field, base, a.h, scen, label=f"cursor model {model}", verbose=a.verbose)
             continue
         best = []
         for gl in (15.0, 25.0, 40.0):
