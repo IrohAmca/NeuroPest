@@ -8,8 +8,8 @@ simülasyonundan çıkar (leaky integrate-and-fire).
 ## Çalıştırma
 
 ```bash
-pip install -r requirements.txt
-python -m neuropest
+uv sync
+uv run neuropest
 ```
 
 - İmleç hızla yaklaşırsa "looming" → Giant Fiber ateşler → sinek **uçarak kaçar**.
