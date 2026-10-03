@@ -27,7 +27,7 @@ class Overlay(QWidget):
         self.setAttribute(Qt.WA_TranslucentBackground)
         self.setGeometry(QApplication.primaryScreen().virtualGeometry())
         self.runner = runner
-        self.scale = 1.4
+        self.scale = 1.0
         self.home = QApplication.primaryScreen()
         c = self.home.availableGeometry().center()
         self.fly = Fly(c.x(), c.y())
