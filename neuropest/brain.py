@@ -53,7 +53,8 @@ TOY = BrainSpec(loom_gain=10.0, loom_max_hz=250.0, vis_max_hz=60.0, rest_drive=(
                gf_event_spikes=0)
 # FlyWire circuit (15,000-neuron tier, within ~2% of the full brain; tools/probe_circuit.py, probe_combo.py):
 #   LPLC2 + LC4 -> GF: 15 Hz at ~6 Hz of input, 63 Hz at 20 Hz, 200 Hz at 80 Hz
-#   LPC1 -> MDN: ~0 up to 12 Hz of input, 15 Hz at 20 Hz, 26 Hz at 30 Hz
+#   LPC1 -> MDN: ~0 up to 12 Hz of input, 15 Hz at 20 Hz, 26 Hz at 30 Hz  (LPC1 is a functional placeholder for
+#   the retreat input: see flywire.make_groups and tools/probe_retreat.py)
 #   LC10 on one side -> DNa02 on that side: 24 Hz at 10 Hz of input, 79 Hz at 20 Hz
 #   LPC1 input suppresses GF: at 20 Hz of LPC1 the take-off needs ~20+ Hz of LPLC2/LC4 input.
 #   TOUCH (head bristles + Johnston's organ C/E) on one side -> aDN1/aDN2 (GROOM): ~0 at 25 Hz, ~5 Hz
