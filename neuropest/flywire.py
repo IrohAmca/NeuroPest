@@ -30,7 +30,9 @@ SOURCE = "FlyWire v783 (Dorkenwald et al. 2024; Schlegel et al. 2024), CC-BY 4.0
 #   MDN  backward walking ("moonwalker") -- Bidaye et al. 2014; visually evoked retreat, Sen et al. 2017
 #   DNa01 / DNa02: steering during walking, turning ~ right-left difference
 #        -- Rayshubskiy et al., eLife 2025
-ANCHOR_GROUPS = ("GF", "WALK", "MDN", "DNa01_L", "DNa01_R", "DNa02_L", "DNa02_R")
+#   GROOM (FlyWire DNg62 = aDN1, DNge078 = aDN2): antennal / anterior grooming -- Hampel et al. 2015;
+#        named by root id in Shiu et al. 2024 (figures.ipynb)
+ANCHOR_GROUPS = ("GF", "WALK", "MDN", "DNa01_L", "DNa01_R", "DNa02_L", "DNa02_R", "GROOM")
 
 
 # --------------------------------------------------------------------------- loading
@@ -70,7 +72,7 @@ def load_annotations(ids: np.ndarray, raw_dir: Path = RAW_DIR) -> pd.DataFrame:
     """Annotation rows aligned to neuron index (NaN rows for the few ids without annotation)."""
     import pandas as pd
 
-    cols =["root_id", "flow", "super_class", "cell_class", "cell_type", "hemibrain_type", "side"]
+    cols = ["root_id", "flow", "super_class", "cell_class", "cell_type", "hemibrain_type", "side"]
     ann = pd.read_csv(raw_dir / "Supplemental_file1_neuron_annotations.tsv", sep="\t", usecols=cols,
                       low_memory=False).drop_duplicates("root_id").set_index("root_id")
     return ann.reindex(ids)
@@ -79,6 +81,7 @@ def load_annotations(ids: np.ndarray, raw_dir: Path = RAW_DIR) -> pd.DataFrame:
 def make_groups(meta: pd.DataFrame) -> dict[str, np.ndarray]:
     """Named neuron groups (int32 indices) from the annotation table."""
     ct, hb, sc, side = (meta[c].fillna("") for c in ("cell_type", "hemibrain_type", "super_class", "side"))
+    cc = meta["cell_class"].fillna("")
 
     def idx(mask) -> np.ndarray:
         return np.flatnonzero(np.asarray(mask)).astype(np.int32)
@@ -106,6 +109,14 @@ def make_groups(meta: pd.DataFrame) -> dict[str, np.ndarray]:
     lc10 = ct.isin(["LC10a", "LC10c-2", "LC10d"])
     g["LC10_L"] = idx(lc10 & (side == "left"))
     g["LC10_R"] = idx(lc10 & (side == "right"))
+    # Touch: the brain holds only the head's mechanosensory neurons (body and leg bristles enter the
+    # ventral nerve cord, which is not in the brain connectome): head bristles (BM_*, taste bristles
+    # excluded) and Johnston's organ C/E neurons (antennal deflection, Hampel et al. 2015), per side.
+    # In the model they drive the grooming DNs aDN1/aDN2 (tools/probe_touch.py).
+    touch = ((cc == "mechanosensory") & ct.str.startswith("BM_") & (ct != "BM_Taste")) | ct.str.match(r"JO-[CE]")
+    g["TOUCH_L"] = idx(touch & (side == "left"))
+    g["TOUCH_R"] = idx(touch & (side == "right"))
+    g["GROOM"] = idx(ct.isin(["DNg62", "DNge078"]))
     return g
 
 
@@ -181,7 +192,7 @@ def _spread_backward(indptr, indices, data, row_sum, y):
 
 # Stimulus protocols the activity ranking is measured at: {group: Poisson rate in Hz}. The cursor
 # produces looming input, retreat input and a left/right bearing input, alone or together.
-INPUT_GROUPS = ("LOOM", "RETREAT_IN", "LC10_L", "LC10_R")
+INPUT_GROUPS = ("LOOM", "RETREAT_IN", "LC10_L", "LC10_R", "TOUCH_L", "TOUCH_R")
 
 
 def train_protocols() -> list[dict[str, float]]:
@@ -189,7 +200,10 @@ def train_protocols() -> list[dict[str, float]]:
     p += [{"RETREAT_IN": r} for r in (5.0, 10.0, 25.0, 50.0, 80.0)]
     for side in ("LC10_L", "LC10_R"):
         p += [{side: r} for r in (5.0, 10.0, 25.0, 50.0, 100.0)]
+    for side in ("TOUCH_L", "TOUCH_R"):
+        p += [{side: r} for r in (25.0, 50.0, 100.0, 150.0)]
     p += [{"LOOM": 3.0, "RETREAT_IN": 20.0, "LC10_L": 30.0}, {"LOOM": 6.0, "RETREAT_IN": 40.0, "LC10_R": 60.0}]
+    p += [{"TOUCH_L": 100.0, "LOOM": 10.0}, {"TOUCH_R": 80.0, "RETREAT_IN": 20.0}]
     return p
 
 
@@ -199,7 +213,10 @@ def test_protocols() -> list[dict[str, float]]:
     p += [{"RETREAT_IN": r} for r in (7.0, 18.0, 35.0, 65.0)]
     for side in ("LC10_L", "LC10_R"):
         p += [{side: r} for r in (7.0, 18.0, 35.0, 75.0)]
+    for side in ("TOUCH_L", "TOUCH_R"):
+        p += [{side: r} for r in (40.0, 75.0, 125.0)]
     p += [{"LOOM": 4.0, "RETREAT_IN": 30.0, "LC10_R": 40.0}, {"LOOM": 2.0, "RETREAT_IN": 12.0, "LC10_L": 20.0}]
+    p += [{"TOUCH_R": 100.0, "LOOM": 20.0}]
     return p
 
 

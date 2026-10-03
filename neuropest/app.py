@@ -14,6 +14,8 @@ from .runner import Runner
 from .theme import apply_theme
 from .tray import Tray
 
+TOUCH_RADIUS_PX = 14.0     # cursor this close to the fly center (times its scale) touches it
+
 
 class Overlay(QWidget):
     """Transparent, frameless, click-through, always-on-top canvas over all screens."""
@@ -63,7 +65,8 @@ class Overlay(QWidget):
         dist = ((cur.x() - self.fly.x) ** 2 + (cur.y() - self.fly.y) ** 2) ** 0.5
         closing = 0.0 if self.prev_dist is None else (self.prev_dist - dist) / max(dt, 1e-3)
         self.prev_dist = dist
-        self.runner.send(dist, closing, self.fly.bearing_of((cur.x(), cur.y())))
+        touch = 1.0 if dist < TOUCH_RADIUS_PX * self.scale else 0.0      # click-through overlay: hover = cursor over the fly
+        self.runner.send(dist, closing, self.fly.bearing_of((cur.x(), cur.y())), touch)
         self.fly.update(dt, self.runner.state, (cur.x(), cur.y()), self.play_rect(), self.runner.steer)
         self.update()
 

@@ -6,7 +6,7 @@ import math
 from PySide6.QtCore import QPointF, Qt
 from PySide6.QtGui import QColor, QPainter, QPen
 
-from .states import FLY, RETREAT, WALK
+from .states import FLY, GROOM, RETREAT, WALK
 
 INK = QColor(235, 235, 235, 235)
 
@@ -45,14 +45,19 @@ def draw_fly(p: QPainter, x: float, y: float, heading: float, state: str,
     else:
         for s in (-1, 1):  # folded wings
             p.drawLine(QPointF(-1, s * 3), QPointF(-22, s * 5))
-        _legs(p, phase if state in (WALK, RETREAT) else 0.0, tucked=False)
+        _legs(p, phase if state in (WALK, RETREAT) else 0.0, tucked=False, groom=phase if state == GROOM else None)
     p.restore()
 
 
-def _legs(p: QPainter, phase: float, tucked: bool):
-    # three leg pairs; alternating tripod gait while walking
+def _legs(p: QPainter, phase: float, tucked: bool, groom: float | None = None):
+    # three leg pairs; alternating tripod gait while walking; while grooming the front legs rub the head
     for i, ax in enumerate((6, 0, -6)):
         for s in (-1, 1):
+            if groom is not None and i == 0:
+                rub = math.sin(groom + (math.pi if s > 0 else 0))
+                p.drawLine(QPointF(ax, s * 4), QPointF(9, s * 8))
+                p.drawLine(QPointF(9, s * 8), QPointF(13 + 1.5 * rub, s * (3 + 1.5 * rub)))
+                continue
             sw = math.sin(phase + (math.pi if (i + (s > 0)) % 2 else 0)) * 5
             if tucked:
                 end = QPointF(ax - 5, s * 8)

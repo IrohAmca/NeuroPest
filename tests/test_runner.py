@@ -49,3 +49,38 @@ def test_worker_process_reacts_to_looming_and_reports_telemetry():
     finally:
         r.stop()
     assert not r.alive
+
+
+@pytest.mark.skipif(not CACHE.exists(), reason="needs the FlyWire cache (tools/build_flywire.py)")
+def test_worker_grooms_when_the_cursor_touches_the_fly():
+    r = Runner(EngineConfig("flywire", 15_000, 0.5))
+    try:
+        assert _wait(lambda: r.ready, 120), "worker did not become ready"
+        r.bias = 0.0
+        r.send(900, 0)
+        time.sleep(1.0)
+        assert r.state == "stand"
+        r.send(5, 0, 0.5, touch=1.0)            # hover on the fly: head touch -> aDN1/aDN2
+        assert _wait(lambda: r.state == "groom", 4.0)
+        assert r.stats()["groom"] > 8
+        r.send(900, 0)
+        assert _wait(lambda: r.state == "stand", 6.0)
+    finally:
+        r.stop()
+
+
+@pytest.mark.skipif(not CACHE.exists(), reason="needs the FlyWire cache (tools/build_flywire.py)")
+def test_touch_calms_a_moderate_approach_but_not_a_fast_one():
+    """Real connectome, 15,000 neurons: head touch drives aDN1/aDN2 and suppresses the Giant Fiber."""
+    from neuropest import flywire
+    from neuropest.brain import Brain
+
+    net = flywire.load_cache().prefix(15_000)
+    seen = {}
+    for tag, closing, touch in (("moderate", 1000, 0.0), ("moderate+touch", 1000, 1.0), ("fast+touch", 3000, 1.0)):
+        b = Brain(net)
+        b.set_stimulus(150, closing, 0.0, bearing=0.5, touch=touch)
+        seen[tag] = {b.advance(4.0) for _ in range(250)}
+    assert "fly" in seen["moderate"]
+    assert "groom" in seen["moderate+touch"] and "fly" not in seen["moderate+touch"]
+    assert "fly" in seen["fast+touch"]
