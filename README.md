@@ -23,8 +23,13 @@ uv run neuropest
   sayılır (motor boşta kalır).
 - "Hareketlilik" yürüme sürücüsünü ayarlar: düşükse durur, ortada arada yürür, yüksekse yürür.
 - Sinek, seçilen monitörün görev çubuğunun üstündeki alanda kalır. Overlay tıklamayı geçirir.
-- Kontrol penceresi: devre, boyut (seçilen katmanın ölçülmüş doğruluğu ve hızıyla), zaman adımı,
-  gerçek zaman çarpanı, aktif nöron sayısı, CPU.
+- Kontrol penceresi (koyu tema, kartlar halinde): sineğin anlık durumu, canlı ölçümler (Giant Fiber,
+  MDN, yön, gerçek zaman çarpanı, CPU, aktif nöron), davranış ayarları, devre ve boyut (seçilen katmanın
+  ölçülmüş doğruluğu ve hızıyla), zaman adımı, hesaplama donanımı, görünüm. Pencereyi kapatmak yalnız
+  gizler; tepsi simgesine tıklayınca geri gelir, çıkış tepsi menüsünden.
+- Tepsi simgesi: sineğin gözleri durumuna göre renk alır (yürüme yeşil, geri çekilme turuncu, kaçış
+  kırmızı); menüde durum, pencereyi açma, sineği gizleme ve çıkış var.
+- `uv run python tools/ui_preview.py` arayüzü motor çalıştırmadan PNG olarak çizer.
 
 ## Gerçek veri (FlyWire v783)
 
