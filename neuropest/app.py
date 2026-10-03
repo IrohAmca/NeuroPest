@@ -26,6 +26,15 @@ class Overlay(QWidget):
                             | Qt.Tool | Qt.WindowTransparentForInput)
         self.setAttribute(Qt.WA_TranslucentBackground)
         self.setGeometry(QApplication.primaryScreen().virtualGeometry())
+
+        # Exclude this overlay window from screen capture (GDI/DWM BitBlt) so the fly doesn't see itself
+        if sys.platform == "win32":
+            try:
+                import ctypes
+                ctypes.windll.user32.SetWindowDisplayAffinity(int(self.winId()), 0x11)
+            except Exception:
+                pass
+
         self.runner = runner
         self.scale = 1.0
         self.home = QApplication.primaryScreen()
@@ -57,6 +66,18 @@ class Overlay(QWidget):
         m = 18 * self.scale
         return (a.left() + m, a.top() + m, a.right() - m, a.bottom() - m)
 
+    def to_physical(self, x: float, y: float) -> tuple[float, float]:
+        """Maps Qt logical coordinates to physical screen coordinates for multi-monitor GDI capture."""
+        from PySide6.QtCore import QPoint
+        s = QApplication.screenAt(QPoint(int(x), int(y)))
+        if s is None:
+            return x, y
+        dpr = s.devicePixelRatio()
+        if dpr == 1.0:
+            return x, y
+        g = s.geometry()
+        return g.x() + (x - g.x()) * dpr, g.y() + (y - g.y()) * dpr
+
     def tick(self):
         now = time.perf_counter()
         elapsed = now - self.last
@@ -68,8 +89,10 @@ class Overlay(QWidget):
         self.prev_dist = dist
         touch = 1.0 if dist < TOUCH_RADIUS_PX * self.scale else 0.0      # click-through overlay: hover = cursor over the fly
         # pose and cursor in screen px feed the visual input (runner.vision); the numbers feed the cursor drive
+        cap_pos = self.to_physical(self.fly.x, self.fly.y)
         self.runner.send(dist, closing, self.fly.bearing_of((cur.x(), cur.y())), touch,
-                         (self.fly.x, self.fly.y, self.fly.heading), (cur.x(), cur.y()), stamp=now)
+                         (self.fly.x, self.fly.y, self.fly.heading), (cur.x(), cur.y()), stamp=now,
+                         capture_pos=cap_pos)
         self.fly.update(dt, self.runner.state, (cur.x(), cur.y()), self.play_rect(), self.runner.steer)
         self.update()
 

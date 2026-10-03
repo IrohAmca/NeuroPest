@@ -122,17 +122,24 @@ def sphere_luminance(col_dir: np.ndarray, cursor: tuple[float, float], x: float,
     return (background + (dark - background) * cover).astype(np.float32)
 
 
-def image_scene(gray: np.ndarray, outside: float = 0.5):
-    """Scene function over a grayscale image (rows = y, columns = x), bilinear, `outside` beyond its edges."""
+def image_scene(gray: np.ndarray, origin: tuple[float, float] = (0.0, 0.0), outside: float = 0.5):
+    """Scene function over a grayscale image (rows = y, columns = x), bilinear, `outside` beyond its edges.
+    `origin` (ox, oy) is the top-left coordinate of the image in world/screen space."""
     from scipy.ndimage import map_coordinates
 
     h, w = gray.shape
+    ox, oy = origin
+
+    # Convert uint8 to float32 in [0, 1] if needed
+    img_data = gray.astype(np.float32) * (1.0 / 255.0) if gray.dtype == np.uint8 else gray
 
     def scene(px, py):
-        inside = (px >= 0) & (px <= w - 1) & (py >= 0) & (py <= h - 1)
+        lx = px - ox if ox != 0.0 else px
+        ly = py - oy if oy != 0.0 else py
+        inside = (lx >= 0) & (lx <= w - 1) & (ly >= 0) & (ly <= h - 1)
         out = np.full(px.shape, outside, np.float32)
         if inside.any():
-            out[inside] = map_coordinates(gray, [py[inside], px[inside]], order=1, mode="nearest")
+            out[inside] = map_coordinates(img_data, [ly[inside], lx[inside]], order=1, mode="nearest")
         return out
 
     return scene

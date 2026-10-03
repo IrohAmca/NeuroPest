@@ -277,9 +277,13 @@ ve duran disk dur. Yavaş taban çizgisi 8 s (`tau_adapt`): 2 s iken uzun süre 
 uzaklaşırken bıraktığı açık iz büyüyen açık nesne gibi okunuyor, sahte geri çekilme çıkıyordu. Dokunma (imleç
 sineğin üstünde) mekanik olduğundan görsel girdi açıkken de imleç konumundan gelir.
 
-**Maliyet.** Dedektör kare başına ~1,6 ms (60 Hz, numba), motorla aynı süreçte; merkezi beyin değişmez
-(girdi nöronları her katmanda var). Ekran yakalama (gerçek ekran için) Qt `grabWindow` ile GUI iş parçacığına
-ağır: 2560x1440'ta tam ekran 58 ms, 600x600'lük bölge 14 ms (`tools/capture_cost.py`); ayrı süreç gerekecek.
+**Maliyet ve Gerçek Ekran Yakalama.** Dedektör kare başına ~1,6 ms (60 Hz, numba), motorla aynı süreçte;
+merkezi beyin değişmez (girdi nöronları her katmanda var). Gerçek ekran yakalama `neuropest/capture.py` ile
+ayrı bir süreçte ve kilit gerektirmeyen paylaşımlı bellekle (`ctx.Array`) çalışır:
+- Sineğin etrafındaki 480×480 px bölge doğrudan Windows GDI BitBlt ile yakalanır (~5 ms/kare, numba ile uint8 griye çevrilir).
+- Dinamik kare hızı: Hareketli sahnede 8 fps (CPU çekirdeğinin ~%4'ü), durağan sahnede 2 fps (~%1'i).
+- Çoklu monitör ve DPI: Per-monitor DPI farkındalığıyla sol monitörün negatif koordinatları (`-1920`) dahil tüm sanal masaüstünü destekler.
+- Overlay izolasyonu: `SetWindowDisplayAffinity(hwnd, WDA_EXCLUDEFROMCAPTURE)` (0x11) ile sineğin kendi overlay sprite'ı yakalamadan tamamen gizlenir, sinek kendini görmez.
 
 **Sınırlar.** Kazançlar ve eşikler artık `tools/vision_calibrate.py` ile **gerçek `VisionDrive`** üzerinden
 (halo ve yükseklik ölçeklemesi, `VisionParams` varsayılanları, işçinin 20 ms görüntü adımı ve 4 ms motor parçaları)
@@ -380,8 +384,8 @@ parçalar, gerçek zamana hızlanma bekleyerek) GTX 1650'de tam beyin ×5, işle
 
 ## Sıradaki işler
 
-1. Görsel girdi: imleç yerine gerçek ekran görüntüsü (ayrı süreçte yakalama, kendi overlay'ini dışarıda
-   bırakarak); sineğin çevresindeki bölge ~12-15 fps.
+1. **[Tamamlandı]** Görsel girdi: Gerçek ekran görüntüsü (`capture.py`, GDI BitBlt, ayrı süreç, paylaşımlı bellek,
+   WDA_EXCLUDEFROMCAPTURE ile overlay izolasyonu, 8 fps dinamik / 2 fps durağan, çoklu monitör & per-monitor DPI).
 2. Daha fazla görsel nöron tipi ve davranış (küçük nesne LC11, yaklaşma yerine kaçınma ya da takip);
    her biri için sıralamayı yeniden kurmak.
 3. Otomatik boyut/donanım seçimi (makineyi ölç, gerçek zamanı tutan en küçük maliyet).

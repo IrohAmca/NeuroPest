@@ -91,9 +91,9 @@ def build_network(cfg: EngineConfig):
     return build(cfg.n, cfg.seed)
 
 
-def _worker_main(cfg: EngineConfig, inp, out, stop) -> None:
+def _worker_main(cfg: EngineConfig, inp, out, stop, cap_frame=None, cap_meta=None) -> None:
     try:
-        _run(cfg, inp, out, stop)
+        _run(cfg, inp, out, stop, cap_frame, cap_meta)
     except BaseException:
         import traceback
 
@@ -102,26 +102,26 @@ def _worker_main(cfg: EngineConfig, inp, out, stop) -> None:
         raise
 
 
-def _run(cfg: EngineConfig, inp, out, stop) -> None:
+def _run(cfg: EngineConfig, inp, out, stop, cap_frame=None, cap_meta=None) -> None:
     from .brain import Brain
 
     net = build_network(cfg)
     brain = Brain(net, dt=cfg.dt, seed=cfg.seed, backend=cfg.backend, adapter=cfg.adapter)
     try:
-        _loop(cfg, brain, net, inp, out, stop)
+        _loop(cfg, brain, net, inp, out, stop, cap_frame, cap_meta)
     finally:
         close = getattr(brain.engine, "close", None)
         if close:
             close()                                 # free the GPU buffers
 
 
-def _loop(cfg: EngineConfig, brain, net, inp, out, stop) -> None:
+def _loop(cfg: EngineConfig, brain, net, inp, out, stop, cap_frame=None, cap_meta=None) -> None:
     brain.advance(cfg.dt * 4)                       # triggers/loads the compiled kernel
     out[O_N] = net.n
     out[O_READY] = 1.0
 
     chunk = CHUNK_MS if cfg.backend == "cpu" else CHUNK_MS_GPU
-    eye = _Eye(net)
+    eye = _Eye(net, cap_frame, cap_meta)
     approach = _Approach()
     last_in = None
     t0 = time.perf_counter()
@@ -209,8 +209,10 @@ class _Eye:
     """Worker side of the visual input: while switched on, turns the scene around the fly into projection
     neuron rates about every VISION_PERIOD_MS of simulated time and hands them to the brain."""
 
-    def __init__(self, net):
+    def __init__(self, net, cap_frame=None, cap_meta=None):
         self.net = net
+        self.cap_frame = cap_frame
+        self.cap_meta = cap_meta
         self.drive = None               # visual.VisionDrive, built on first use (loads eye.npz / field.npz)
         self.missing = False            # the eye data is not there
         self._builder = None
@@ -219,6 +221,11 @@ class _Eye:
         self.next_ms = self.last_ms = 0.0
         self.cursor = None              # where the cursor was at the previous frame
         self.stamp = 0.0                # and the GUI clock reading of that sample
+        self.last_seq = -1
+        self.frame_now = None
+        self.frame_prev = None
+        self.origin_now = (0.0, 0.0)
+        self.origin_prev = (0.0, 0.0)
 
     def update(self, brain, inp, out, sim_ms: float) -> None:
         want = inp[I_VISION] > 0.5
@@ -243,6 +250,8 @@ class _Eye:
         if not want:
             brain.clear_vision()
             self.on = False
+            self.frame_now = self.frame_prev = None
+            self.last_seq = -1
             out[O_VISION] = 0.0
             return
         if self.drive is None and not self.missing:
@@ -262,10 +271,16 @@ class _Eye:
             return
         self.drive.reset()
         self.on, self.cursor, self.stamp = True, None, 0.0
+        self.frame_now = self.frame_prev = None
+        self.last_seq = -1
         self.next_ms = self.last_ms = sim_ms
         out[O_VISION] = 1.0
 
     def _frame(self, brain, inp, sim_ms: float) -> None:
+        import numpy as np
+
+        from .capture import CROP_H, CROP_W, META_ORIGIN_X, META_ORIGIN_Y, META_SEQ
+        from .vision import image_scene
         from .visual import cursor_scene
 
         d = self.drive
@@ -278,12 +293,35 @@ class _Eye:
             dt = min(max(stamp - self.stamp, 0.005), MAX_FRAME_GAP_S)   # real time between the two cursor samples
         else:
             dt = max(sim_ms - self.last_ms, 1.0) / 1000.0                 # no stamps (tests): simulated time
-        if p.cursor_model == "sphere":
-            idx, rates = d.step_cursor(cursor, prev, inp[I_X], inp[I_Y], inp[I_HEAD], dt)
-        else:
-            idx, rates = d.step(cursor_scene(cursor[0], cursor[1], d.halo_px, p.background),
-                                cursor_scene(prev[0], prev[1], d.halo_px, p.background),
-                                inp[I_X], inp[I_Y], inp[I_HEAD], dt)
+
+        used_screen = False
+        if self.cap_frame is not None and self.cap_meta is not None:
+            seq = int(self.cap_meta[META_SEQ])
+            if seq > 0:
+                if seq != self.last_seq:
+                    raw = np.frombuffer(self.cap_frame, dtype=np.uint8).reshape((CROP_H, CROP_W)).copy()
+                    ox = self.cap_meta[META_ORIGIN_X]
+                    oy = self.cap_meta[META_ORIGIN_Y]
+                    self.frame_prev = self.frame_now if self.frame_now is not None else raw
+                    self.origin_prev = self.origin_now if self.frame_now is not None else (ox, oy)
+                    self.frame_now = raw
+                    self.origin_now = (ox, oy)
+                    self.last_seq = seq
+
+                if self.frame_now is not None and self.frame_prev is not None:
+                    scene_now = image_scene(self.frame_now, origin=self.origin_now, outside=p.background)
+                    scene_prev = image_scene(self.frame_prev, origin=self.origin_prev, outside=p.background)
+                    idx, rates = d.step(scene_now, scene_prev, inp[I_X], inp[I_Y], inp[I_HEAD], dt)
+                    used_screen = True
+
+        if not used_screen:
+            if p.cursor_model == "sphere":
+                idx, rates = d.step_cursor(cursor, prev, inp[I_X], inp[I_Y], inp[I_HEAD], dt)
+            else:
+                idx, rates = d.step(cursor_scene(cursor[0], cursor[1], d.halo_px, p.background),
+                                    cursor_scene(prev[0], prev[1], d.halo_px, p.background),
+                                    inp[I_X], inp[I_Y], inp[I_HEAD], dt)
+
         brain.set_vision(idx, rates, d.expansion)
         self.cursor, self.last_ms, self.stamp = cursor, sim_ms, stamp
         self.next_ms = sim_ms + VISION_PERIOD_MS
@@ -297,7 +335,11 @@ class Runner:
     arrays, so a worker that is still shutting down cannot write into its successor's telemetry."""
 
     def __init__(self, cfg: EngineConfig | None = None):
+        from .capture import CaptureProcess
+
         self._ctx = mp.get_context("spawn")
+        self.capture = CaptureProcess(self._ctx)
+        self.capture.start()
         self.inp = self.out = None
         self._proc = None
         self._stop = None
@@ -329,7 +371,9 @@ class Runner:
             if gen != self._gen:
                 return                          # a newer start (or stop) took over while this one waited
             stop = self._ctx.Event()
-            proc = self._ctx.Process(target=_worker_main, args=(cfg, inp, out, stop), daemon=True,
+            proc = self._ctx.Process(target=_worker_main,
+                                     args=(cfg, inp, out, stop, self.capture.frame_raw, self.capture.meta_raw),
+                                     daemon=True,
                                      name="neuropest-engine")
             proc.start()
             if gen != self._gen:                # ... while the process was being spawned
@@ -344,9 +388,12 @@ class Runner:
             proc, stop, self._proc, self._stop = self._proc, self._stop, None, None
             self._starting = False
             _retire(proc, stop)
+        if hasattr(self, "capture") and self.capture is not None:
+            self.capture.stop()
 
     def send(self, dist: float, closing: float, bearing: float = 0.0, touch: float = 0.0,
-             pose=(0.0, 0.0, 0.0), cursor=(0.0, 0.0), stamp: float = 0.0) -> None:
+             pose=(0.0, 0.0, 0.0), cursor=(0.0, 0.0), stamp: float = 0.0,
+             capture_pos=None) -> None:
         """Per-frame input. pose = fly (x, y, heading) and cursor = (x, y) in screen px feed the visual input.
 
         stamp: `time.perf_counter()` of the frame. With it the worker measures the cursor's closing speed itself from
@@ -358,6 +405,10 @@ class Runner:
         inp[I_CX], inp[I_CY] = cursor
         inp[I_STAMP] = stamp
         inp[I_VISION], inp[I_HEIGHT] = float(self.vision), self.eye_height
+
+        if hasattr(self, "capture") and self.capture is not None:
+            cx, cy = capture_pos if capture_pos is not None else (pose[0], pose[1])
+            self.capture.update_target(cx, cy, enabled=self.vision)
 
     @property
     def steer(self) -> float:
