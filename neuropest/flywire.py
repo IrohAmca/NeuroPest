@@ -101,9 +101,11 @@ def make_groups(meta: pd.DataFrame) -> dict[str, np.ndarray]:
         "VPN": idx(sc == "visual_projection"),
     }
     g["LOOM"] = np.union1d(g["LPLC2"], g["LC4"]).astype(np.int32)    # driven by the looming stimulus
-    # LPC1 is the visual projection type that drives MDN most strongly in the model (tools/probe_inputs.py):
-    # the input of the retreat (backward walking) response. Which VPN type feeds MDN is a model finding,
-    # not a literature claim.
+    # LPC1 is the visual projection type that drives MDN most strongly in the model (tools/probe_inputs.py,
+    # tools/probe_retreat.py; raw tables in data/probes/). A FUNCTIONAL PLACEHOLDER, not a biological claim: in the
+    # animal LPC1 is a regressive-flow cell whose activation slows the fly down (Isaacson et al. 2023) and MDN's visual
+    # input is LC16 (Sen et al. 2017). In the model LC16 does drive MDN too (23.5 Hz at 100 Hz on all 151 neurons, 0 below 50 Hz,
+    # 0 when only the frontal ones are driven), LC6 drives the Giant Fiber, LPLC1 drives neither.
     g["RETREAT_IN"] = idx(ct == "LPC1")
     # LC10a/c-2/d drive the DNa02 on their own side (tools/probe_side.py): the bearing input. DNa02 on
     # one side makes the fly turn to that side (Rayshubskiy et al.), so a cursor on the left turns it left.
