@@ -27,7 +27,7 @@ uv run neuropest
   yerine görüntü kullanılır; "Göz yüksekliği" ekranın kaç px üstünden bakıldığını ayarlar. Göz verisi
   (`tools/build_eye.py`) yoksa kutu kapalıdır.
 - "Hareketlilik" yürüme sürücüsünü ayarlar: düşükse durur, ortada arada yürür, yüksekse yürür.
-- Sinek, seçilen monitörün görev çubuğunun üstündeki alanda kalır. Overlay tıklamayı geçirir.
+- Sinek varsayılan olarak bağlı tüm monitörler arasında görev çubuklarının üstünde kesintisiz ve bağımsız gezer (farklı DPI ve çözünürlüklerdeki ekran sınırları portallarla bağlanır); istenirse kontrol penceresinden ("Görünüm" sekmesi) tek bir monitöre sabitlenebilir. Overlay tıklamayı geçirir.
 - Kontrol penceresi (koyu tema, kartlar halinde): sineğin anlık durumu, canlı ölçümler (Giant Fiber,
   MDN, yön, gerçek zaman çarpanı, CPU, aktif nöron), davranış ayarları, devre ve boyut (seçilen katmanın
   ölçülmüş doğruluğu ve hızıyla), zaman adımı, hesaplama donanımı, görünüm. Pencereyi kapatmak yalnız

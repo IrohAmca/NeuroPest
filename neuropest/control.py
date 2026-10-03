@@ -402,9 +402,11 @@ class Control(QWidget):
         screens = QApplication.screens()
         if len(screens) > 1:
             box = QComboBox()
-            box.addItems([f"{i + 1}: {s.name()}" for i, s in enumerate(screens)])
-            box.setCurrentIndex(screens.index(self.overlay.home))
-            box.currentIndexChanged.connect(lambda i: self.overlay.set_home(screens[i]))
+            items = ["Tüm Ekranlar (Bağımsız Gezinme)"] + [f"{i + 1}: {s.name()}" for i, s in enumerate(screens)]
+            box.addItems(items)
+            current_idx = 0 if self.overlay.home is None else (screens.index(self.overlay.home) + 1 if self.overlay.home in screens else 0)
+            box.setCurrentIndex(current_idx)
+            box.currentIndexChanged.connect(lambda i: self.overlay.set_home(None if i == 0 else screens[i - 1]))
             labeled(card, "Sanal Alan / Monitör", box)
         lay.addWidget(card)
 

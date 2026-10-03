@@ -84,3 +84,84 @@ def test_frozen_fly_stays_in_place():
     for _ in range(60):
         fly.update(1 / 60, FREEZE, (900, 500), RECT)
     assert (fly.x, fly.y) == (x, y) and abs(math.remainder(fly.heading - heading, math.tau)) < 1e-9 and fly.phase == 0.0
+
+
+def test_multi_screen_seam_crossing():
+    from neuropest.fly import PlayArea, ScreenBox
+
+    s0 = ScreenBox(
+        id=0, name="Main",
+        raw_l=0.0, raw_t=0.0, raw_r=2560.0, raw_b=1392.0,
+        phys_l=0.0, phys_t=0.0, phys_r=2560.0, phys_b=1392.0,
+        dpr=1.0, margin=18.0,
+    )
+    s1 = ScreenBox(
+        id=1, name="Left",
+        raw_l=-1920.0, raw_t=0.0, raw_r=-384.0, raw_b=816.0,
+        phys_l=-1920.0, phys_t=0.0, phys_r=0.0, phys_b=1020.0,
+        dpr=1.25, margin=18.0,
+    )
+    area = PlayArea([s0, s1])
+
+    # 1. Fly on Screen 0 walking left towards Screen 1 (at physical Y = 500)
+    fly = Fly(10.0, 500.0)
+    fly.heading = math.pi  # facing left
+    fly.turn, fly.turn_t = 0.0, 10.0
+    # Move across seam (speed 70 px/s, dt 0.2s -> delta 14 px left)
+    fly.update(0.2, WALK, (10.0, 500.0), area)
+    # Overshoot past 0 by 4 px -> on s1: raw_r (-384) - 4 / 1.25 = -387.2
+    assert fly.x < -384.0, f"Expected fly on s1, got {fly.x}"
+    # Physical Y (500) translated to s1 logical Y = 500 / 1.25 = 400.0
+    assert abs(fly.y - 400.0) < 0.1, f"Expected y=400, got {fly.y}"
+    assert abs(math.remainder(fly.heading - math.pi, math.tau)) < 0.1  # heading continues left without bouncing
+
+    # 2. Fly on Screen 1 walking right towards Screen 0
+    fly2 = Fly(-390.0, 400.0)
+    fly2.heading = 0.0  # facing right
+    fly2.turn, fly2.turn_t = 0.0, 10.0
+    fly2.update(0.2, WALK, (-390.0, 400.0), area)
+    # Overshoot past -384 by 8 px -> on s0: raw_l (0) + 8 * 1.25 = 10.0
+    assert fly2.x > 0.0, f"Expected fly on s0, got {fly2.x}"
+    # Physical Y (400 * 1.25 = 500) translated to s0 logical Y = 500
+    assert abs(fly2.y - 500.0) < 0.1, f"Expected y=500, got {fly2.y}"
+    assert abs(fly2.heading - 0.0) < 0.1  # heading continues right
+
+
+def test_multi_screen_taskbar_and_void_bounds():
+    from neuropest.fly import PlayArea, ScreenBox
+
+    s0 = ScreenBox(
+        id=0, name="Main",
+        raw_l=0.0, raw_t=0.0, raw_r=2560.0, raw_b=1392.0,
+        phys_l=0.0, phys_t=0.0, phys_r=2560.0, phys_b=1392.0,
+        dpr=1.0, margin=18.0,
+    )
+    s1 = ScreenBox(
+        id=1, name="Left",
+        raw_l=-1920.0, raw_t=0.0, raw_r=-384.0, raw_b=816.0,
+        phys_l=-1920.0, phys_t=0.0, phys_r=0.0, phys_b=1020.0,
+        dpr=1.25, margin=18.0,
+    )
+    area = PlayArea([s0, s1])
+
+    # 1. Fly on Screen 1 hitting bottom taskbar (y = 816 - margin = 798)
+    fly = Fly(-1000.0, 790.0)
+    fly.heading = math.pi / 2  # moving downwards (+y)
+    fly.update(0.5, WALK, (-1000.0, 790.0), area)
+    assert fly.y <= 816.0 - 18.0  # bounced off taskbar
+    assert fly.heading < 0  # bounced upwards
+
+    # 2. Fly on Screen 0 at Y = 1200 (below Screen 1's height of 1020 physical) moving left
+    fly2 = Fly(25.0, 1200.0)
+    fly2.heading = math.pi  # moving left (-x)
+    fly2.update(0.5, WALK, (25.0, 1200.0), area)
+    assert fly2.x >= 18.0  # bounced off solid left edge
+    assert abs(fly2.heading) < math.pi / 2  # bounced rightwards
+
+    # 3. Wall push is 0 on open portal, but positive on solid wall
+    # At Y = 500 (portal exists to left):
+    wx_portal, _ = area.wall_push(25.0, 500.0, 110.0)
+    assert wx_portal == 0.0, f"Expected 0 wall push at open portal, got {wx_portal}"
+    # At Y = 1200 (no portal, void to left):
+    wx_wall, _ = area.wall_push(25.0, 1200.0, 110.0)
+    assert wx_wall > 0.0, f"Expected inward wall push at solid wall, got {wx_wall}"

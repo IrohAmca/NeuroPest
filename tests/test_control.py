@@ -64,6 +64,7 @@ def test_readouts_and_state(app):
 def test_size_change_restarts_engine(app):
     r = FakeRunner()
     c = Control(FakeOverlay(), r)
+    c.hw.setCurrentIndex(1)
     c.size.setValue(c.size.maximum())
     c._apply()
     assert r.started and r.started[-1].n == 139_000
