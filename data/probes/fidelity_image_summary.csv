@@ -1,0 +1,8 @@
+machine,n,gf_err,mdn_err,steer_err
+"Intel(R) Xeon(R) Processor @ 2.10GHz, Linux",noise,9.457,7.652,15.433
+"Intel(R) Xeon(R) Processor @ 2.10GHz, Linux",5000,3.974,22.407,23.277
+"Intel(R) Xeon(R) Processor @ 2.10GHz, Linux",10000,3.332,21.550,39.366
+"Intel(R) Xeon(R) Processor @ 2.10GHz, Linux",15000,3.603,9.202,8.876
+"Intel(R) Xeon(R) Processor @ 2.10GHz, Linux",20000,0.769,6.667,8.994
+"Intel(R) Xeon(R) Processor @ 2.10GHz, Linux",30000,1.111,0.000,1.838
+"Intel(R) Xeon(R) Processor @ 2.10GHz, Linux",50000,0.000,0.000,0.000

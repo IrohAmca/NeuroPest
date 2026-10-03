@@ -1,0 +1,14 @@
+machine,n,dt,gf_err,mdn_err,steer_err,groom_err,mix_err,active,realtime,rt_min
+"Intel(R) Xeon(R) Processor @ 2.10GHz, Linux",noise,0.100,11.619,3.885,13.675,8.415,9.227,17.902,1.541,0.241
+"Intel(R) Xeon(R) Processor @ 2.10GHz, Linux",full,0.100,0.000,0.000,0.000,0.000,0.000,18.041,1.600,0.279
+"Intel(R) Xeon(R) Processor @ 2.10GHz, Linux",full,0.500,10.307,4.058,22.732,12.597,5.174,17.857,5.416,0.984
+"Intel(R) Xeon(R) Processor @ 2.10GHz, Linux",full,1.000,11.295,5.785,19.974,42.408,10.392,17.599,9.568,1.475
+"Intel(R) Xeon(R) Processor @ 2.10GHz, Linux",5000,0.100,4.161,19.190,15.510,6.958,6.145,36.443,9.696,3.217
+"Intel(R) Xeon(R) Processor @ 2.10GHz, Linux",5000,0.500,9.469,20.388,26.021,17.076,16.903,36.734,36.891,9.044
+"Intel(R) Xeon(R) Processor @ 2.10GHz, Linux",5000,1.000,16.023,25.845,25.982,41.300,17.569,36.842,57.239,14.350
+"Intel(R) Xeon(R) Processor @ 2.10GHz, Linux",15000,0.100,3.130,5.630,5.904,2.511,3.107,27.516,5.532,0.806
+"Intel(R) Xeon(R) Processor @ 2.10GHz, Linux",15000,0.500,10.888,6.383,23.443,12.810,6.055,26.760,21.537,5.324
+"Intel(R) Xeon(R) Processor @ 2.10GHz, Linux",15000,1.000,11.066,7.452,20.144,45.639,9.068,27.854,35.467,3.133
+"Intel(R) Xeon(R) Processor @ 2.10GHz, Linux",30000,0.100,0.000,0.000,1.825,1.718,0.635,34.671,2.714,0.718
+"Intel(R) Xeon(R) Processor @ 2.10GHz, Linux",30000,0.500,10.273,4.058,24.215,12.169,5.248,34.401,10.771,2.610
+"Intel(R) Xeon(R) Processor @ 2.10GHz, Linux",30000,1.000,11.228,5.127,18.702,42.622,12.445,34.235,16.191,3.689

@@ -1,0 +1,81 @@
+machine,n,scene,GF,MDN,steer,GROOM,driven
+"Intel(R) Xeon(R) Processor @ 2.10GHz, Linux",138639,"still, ahead, 150 px",0.000,0.000,-1.429,0.000,30
+"Intel(R) Xeon(R) Processor @ 2.10GHz, Linux",138639,"still, right, 150 px",0.000,0.000,8.571,0.000,67
+"Intel(R) Xeon(R) Processor @ 2.10GHz, Linux",138639,approach 150 px/s,0.000,2.500,-10.294,0.000,199
+"Intel(R) Xeon(R) Processor @ 2.10GHz, Linux",138639,approach 400 px/s,0.000,7.500,-11.111,0.000,324
+"Intel(R) Xeon(R) Processor @ 2.10GHz, Linux",138639,approach 800 px/s,32.500,13.750,-14.286,0.000,334
+"Intel(R) Xeon(R) Processor @ 2.10GHz, Linux",138639,approach 1500 px/s,47.500,16.250,-20.000,0.000,334
+"Intel(R) Xeon(R) Processor @ 2.10GHz, Linux",138639,approach 800 px/s from 60 deg right,67.500,0.000,22.222,0.000,276
+"Intel(R) Xeon(R) Processor @ 2.10GHz, Linux",138639,approach 800 px/s from 100 deg left,32.500,0.000,-9.444,0.000,275
+"Intel(R) Xeon(R) Processor @ 2.10GHz, Linux",138639,slide 400 px/s at 150 px,0.000,1.250,-25.500,0.000,197
+"Intel(R) Xeon(R) Processor @ 2.10GHz, Linux",138639,recede after 3 s near,0.000,2.500,-31.000,0.000,105
+"Intel(R) Xeon(R) Processor @ 2.10GHz, Linux",noise,"still, ahead, 150 px",0.000,0.000,-2.857,0.000,30
+"Intel(R) Xeon(R) Processor @ 2.10GHz, Linux",noise,"still, right, 150 px",0.000,0.000,8.571,0.000,67
+"Intel(R) Xeon(R) Processor @ 2.10GHz, Linux",noise,approach 150 px/s,0.000,2.500,-9.706,0.000,199
+"Intel(R) Xeon(R) Processor @ 2.10GHz, Linux",noise,approach 400 px/s,0.000,5.000,-14.444,0.000,324
+"Intel(R) Xeon(R) Processor @ 2.10GHz, Linux",noise,approach 800 px/s,25.000,16.250,-16.429,0.000,334
+"Intel(R) Xeon(R) Processor @ 2.10GHz, Linux",noise,approach 1500 px/s,42.500,16.250,-12.500,0.000,334
+"Intel(R) Xeon(R) Processor @ 2.10GHz, Linux",noise,approach 800 px/s from 60 deg right,57.500,0.000,22.778,0.000,276
+"Intel(R) Xeon(R) Processor @ 2.10GHz, Linux",noise,approach 800 px/s from 100 deg left,47.500,0.000,-8.333,0.000,275
+"Intel(R) Xeon(R) Processor @ 2.10GHz, Linux",noise,slide 400 px/s at 150 px,0.000,0.000,-24.500,0.000,197
+"Intel(R) Xeon(R) Processor @ 2.10GHz, Linux",noise,recede after 3 s near,0.000,2.500,-25.000,0.000,105
+"Intel(R) Xeon(R) Processor @ 2.10GHz, Linux",5000,"still, ahead, 150 px",0.000,0.000,0.000,0.000,30
+"Intel(R) Xeon(R) Processor @ 2.10GHz, Linux",5000,"still, right, 150 px",0.000,0.000,8.571,0.000,67
+"Intel(R) Xeon(R) Processor @ 2.10GHz, Linux",5000,approach 150 px/s,0.000,0.000,-6.765,0.000,199
+"Intel(R) Xeon(R) Processor @ 2.10GHz, Linux",5000,approach 400 px/s,0.000,5.000,-10.556,0.000,324
+"Intel(R) Xeon(R) Processor @ 2.10GHz, Linux",5000,approach 800 px/s,25.000,10.000,-10.000,0.000,334
+"Intel(R) Xeon(R) Processor @ 2.10GHz, Linux",5000,approach 1500 px/s,45.000,10.000,-11.667,0.000,334
+"Intel(R) Xeon(R) Processor @ 2.10GHz, Linux",5000,approach 800 px/s from 60 deg right,70.000,0.000,16.667,0.000,276
+"Intel(R) Xeon(R) Processor @ 2.10GHz, Linux",5000,approach 800 px/s from 100 deg left,35.000,0.000,-11.111,0.000,275
+"Intel(R) Xeon(R) Processor @ 2.10GHz, Linux",5000,slide 400 px/s at 150 px,0.000,0.000,-20.000,0.000,197
+"Intel(R) Xeon(R) Processor @ 2.10GHz, Linux",5000,recede after 3 s near,0.000,0.000,-22.000,0.000,105
+"Intel(R) Xeon(R) Processor @ 2.10GHz, Linux",10000,"still, ahead, 150 px",0.000,0.000,-4.286,0.000,30
+"Intel(R) Xeon(R) Processor @ 2.10GHz, Linux",10000,"still, right, 150 px",0.000,0.000,8.571,0.000,67
+"Intel(R) Xeon(R) Processor @ 2.10GHz, Linux",10000,approach 150 px/s,0.000,1.250,-16.176,0.000,199
+"Intel(R) Xeon(R) Processor @ 2.10GHz, Linux",10000,approach 400 px/s,0.000,1.250,-21.111,0.000,324
+"Intel(R) Xeon(R) Processor @ 2.10GHz, Linux",10000,approach 800 px/s,30.000,15.000,-20.714,0.000,334
+"Intel(R) Xeon(R) Processor @ 2.10GHz, Linux",10000,approach 1500 px/s,42.500,12.500,-29.167,0.000,334
+"Intel(R) Xeon(R) Processor @ 2.10GHz, Linux",10000,approach 800 px/s from 60 deg right,72.500,0.000,18.889,0.000,276
+"Intel(R) Xeon(R) Processor @ 2.10GHz, Linux",10000,approach 800 px/s from 100 deg left,35.000,0.000,-8.889,0.000,275
+"Intel(R) Xeon(R) Processor @ 2.10GHz, Linux",10000,slide 400 px/s at 150 px,0.000,0.000,-27.000,0.000,197
+"Intel(R) Xeon(R) Processor @ 2.10GHz, Linux",10000,recede after 3 s near,0.000,0.000,-53.250,0.000,105
+"Intel(R) Xeon(R) Processor @ 2.10GHz, Linux",15000,"still, ahead, 150 px",0.000,0.000,-1.429,0.000,30
+"Intel(R) Xeon(R) Processor @ 2.10GHz, Linux",15000,"still, right, 150 px",0.000,0.000,8.571,0.000,67
+"Intel(R) Xeon(R) Processor @ 2.10GHz, Linux",15000,approach 150 px/s,0.000,3.750,-11.471,0.000,199
+"Intel(R) Xeon(R) Processor @ 2.10GHz, Linux",15000,approach 400 px/s,0.000,6.250,-12.222,0.000,324
+"Intel(R) Xeon(R) Processor @ 2.10GHz, Linux",15000,approach 800 px/s,27.500,17.500,-16.429,0.000,334
+"Intel(R) Xeon(R) Processor @ 2.10GHz, Linux",15000,approach 1500 px/s,45.000,12.500,-15.000,0.000,334
+"Intel(R) Xeon(R) Processor @ 2.10GHz, Linux",15000,approach 800 px/s from 60 deg right,67.500,0.000,20.556,0.000,276
+"Intel(R) Xeon(R) Processor @ 2.10GHz, Linux",15000,approach 800 px/s from 100 deg left,37.500,0.000,-10.556,0.000,275
+"Intel(R) Xeon(R) Processor @ 2.10GHz, Linux",15000,slide 400 px/s at 150 px,0.000,1.250,-25.500,0.000,197
+"Intel(R) Xeon(R) Processor @ 2.10GHz, Linux",15000,recede after 3 s near,0.000,2.500,-28.500,0.000,105
+"Intel(R) Xeon(R) Processor @ 2.10GHz, Linux",20000,"still, ahead, 150 px",0.000,0.000,-1.429,0.000,30
+"Intel(R) Xeon(R) Processor @ 2.10GHz, Linux",20000,"still, right, 150 px",0.000,0.000,8.571,0.000,67
+"Intel(R) Xeon(R) Processor @ 2.10GHz, Linux",20000,approach 150 px/s,0.000,3.750,-12.353,0.000,199
+"Intel(R) Xeon(R) Processor @ 2.10GHz, Linux",20000,approach 400 px/s,0.000,6.250,-13.889,0.000,324
+"Intel(R) Xeon(R) Processor @ 2.10GHz, Linux",20000,approach 800 px/s,30.000,13.750,-10.714,0.000,334
+"Intel(R) Xeon(R) Processor @ 2.10GHz, Linux",20000,approach 1500 px/s,47.500,16.250,-18.333,0.000,334
+"Intel(R) Xeon(R) Processor @ 2.10GHz, Linux",20000,approach 800 px/s from 60 deg right,67.500,0.000,21.667,0.000,276
+"Intel(R) Xeon(R) Processor @ 2.10GHz, Linux",20000,approach 800 px/s from 100 deg left,32.500,0.000,-8.889,0.000,275
+"Intel(R) Xeon(R) Processor @ 2.10GHz, Linux",20000,slide 400 px/s at 150 px,0.000,1.250,-25.500,0.000,197
+"Intel(R) Xeon(R) Processor @ 2.10GHz, Linux",20000,recede after 3 s near,0.000,3.750,-32.000,0.000,105
+"Intel(R) Xeon(R) Processor @ 2.10GHz, Linux",30000,"still, ahead, 150 px",0.000,0.000,-1.429,0.000,30
+"Intel(R) Xeon(R) Processor @ 2.10GHz, Linux",30000,"still, right, 150 px",0.000,0.000,8.571,0.000,67
+"Intel(R) Xeon(R) Processor @ 2.10GHz, Linux",30000,approach 150 px/s,0.000,2.500,-10.294,0.000,199
+"Intel(R) Xeon(R) Processor @ 2.10GHz, Linux",30000,approach 400 px/s,0.000,7.500,-11.111,0.000,324
+"Intel(R) Xeon(R) Processor @ 2.10GHz, Linux",30000,approach 800 px/s,32.500,13.750,-14.286,0.000,334
+"Intel(R) Xeon(R) Processor @ 2.10GHz, Linux",30000,approach 1500 px/s,47.500,16.250,-20.000,0.000,334
+"Intel(R) Xeon(R) Processor @ 2.10GHz, Linux",30000,approach 800 px/s from 60 deg right,75.000,0.000,25.000,0.000,276
+"Intel(R) Xeon(R) Processor @ 2.10GHz, Linux",30000,approach 800 px/s from 100 deg left,32.500,0.000,-8.889,0.000,275
+"Intel(R) Xeon(R) Processor @ 2.10GHz, Linux",30000,slide 400 px/s at 150 px,0.000,1.250,-25.500,0.000,197
+"Intel(R) Xeon(R) Processor @ 2.10GHz, Linux",30000,recede after 3 s near,0.000,2.500,-31.000,0.000,105
+"Intel(R) Xeon(R) Processor @ 2.10GHz, Linux",50000,"still, ahead, 150 px",0.000,0.000,-1.429,0.000,30
+"Intel(R) Xeon(R) Processor @ 2.10GHz, Linux",50000,"still, right, 150 px",0.000,0.000,8.571,0.000,67
+"Intel(R) Xeon(R) Processor @ 2.10GHz, Linux",50000,approach 150 px/s,0.000,2.500,-10.294,0.000,199
+"Intel(R) Xeon(R) Processor @ 2.10GHz, Linux",50000,approach 400 px/s,0.000,7.500,-11.111,0.000,324
+"Intel(R) Xeon(R) Processor @ 2.10GHz, Linux",50000,approach 800 px/s,32.500,13.750,-14.286,0.000,334
+"Intel(R) Xeon(R) Processor @ 2.10GHz, Linux",50000,approach 1500 px/s,47.500,16.250,-20.000,0.000,334
+"Intel(R) Xeon(R) Processor @ 2.10GHz, Linux",50000,approach 800 px/s from 60 deg right,67.500,0.000,22.222,0.000,276
+"Intel(R) Xeon(R) Processor @ 2.10GHz, Linux",50000,approach 800 px/s from 100 deg left,32.500,0.000,-9.444,0.000,275
+"Intel(R) Xeon(R) Processor @ 2.10GHz, Linux",50000,slide 400 px/s at 150 px,0.000,1.250,-25.500,0.000,197
+"Intel(R) Xeon(R) Processor @ 2.10GHz, Linux",50000,recede after 3 s near,0.000,2.500,-31.000,0.000,105

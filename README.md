@@ -57,6 +57,7 @@ git hash-object data/raw/*               # tablodaki SHA-1'lerle aynı olmalı
 uv run python tools/build_flywire.py     # ~30 s: data/circuits/flywire_v783.npz (125 MB) + data/circuits/tiers/ (katman başına küçük dosya)
 uv run python tools/build_eye.py         # göz verisi: data/circuits/eye.npz ve field.npz (görsel girdi için)
 uv run python tools/fidelity.py          # ~5 dk: data/circuits/tiers.json (arayüzdeki doğruluk/hız bilgisi)
+# isteğe bağlı: tools/fidelity.py 5000 15000 30000 --dt 0.1 0.5 1.0 | --image | --mirror (tablolar data/probes/)
 ```
 
 Düz sığ klon yeterli: dosyalar bu depolarda LFS değil, normal git nesnesi. Eski tarif `git fetch origin <blob özeti>`
@@ -149,6 +150,50 @@ devre büyüdü ve ~15.000 nöron gerekti. **Sınır:** doğruluk yalnız bu ü�
 yeni bir uyaran eklenirse sıralama onunla yeniden kurulmalı (`flywire.train_protocols`,
 `tools/build_flywire.py`, `tools/fidelity.py`). Uyaran yokken CPU ≈ 0; yük yalnız imleç yakınken artar.
 
+**Sabitlenen nöronlar ve katman boyutu.** Katman boyutu N, her katmanda zorunlu olan 2.797 girdi ve çıktı nöronunu
+(altı girdi grubu ve sekiz anchor grubu) **içerir**: "15.000" 12.203 sıralamayla seçilmiş nöron demektir, "5.000" yalnız 2.203.
+`tiers.json` artık `pinned` ve `free` alanlarını taşıyor, arayüzün ipucu metni de gösteriyor. Sabitlenenleri sayıya
+katmadan aile-başına birleşimle küçük katman kurmak (6-10 bin nöronda 15 bin doğruluğu olası) ölçülmedi.
+
+**Görüntü sürücülü ölçüm** (`tools/fidelity.py --image`, ham tablolar `data/probes/fidelity_image*.csv`). Yukarıdaki
+tablo her LPLC2/LC4/LPC1/LC10 nöronunu aynı oranda sürer; gerçek yolda yalnız alıcı alanını nesnenin kapladığı nöronlar,
+zamanla değişen oranlarda ateşler (yaklaşmada 199-334 nöron, 1.001 sürülen nörondan). Aynı sahneler (duran, yaklaşan,
+yandan yaklaşan, kayan, uzaklaşan imleç; küre modeli, gerçek `VisionDrive`) tam beyinde ve katmanlarda koşturuldu.
+GF ve MDN: 200 ms'lik oranın tepesi, yön: sahne boyunca ortalama DNa02 sağ - sol; hata = sahne ortalaması
+|katman - tam| / max(tam, 5 Hz). **Gürültü tabanı** aynı devrenin başka tohumla koşusu:
+
+| Nöron | Kalkış (GF) | Geri yürüme (MDN) | Yön (DNa02) |
+|---:|---:|---:|---:|
+| tam beyin, başka tohum | %9,5 | %7,7 | %15,4 |
+| 5.000 | %4,0 | %22,4 | %23,3 |
+| 10.000 | %3,3 | %21,6 | %39,4 |
+| **15.000** | %3,6 | %9,2 | %8,9 |
+| 20.000 | %0,8 | %6,7 | %9,0 |
+| 30.000 | %1,1 | %0 | %1,8 |
+| 50.000 | %0 | %0 | %0 |
+
+Okuma: grup sürücüsüyle 15.000'de %0,6 / %5,4 / %0,8 çıkan hatalar görüntü sürücüsüyle %3,6 / %9,2 / %8,9; ama bu
+düzeyler tohum gürültüsünün (%9,5 / %7,7 / %15,4) içinde, yani **15.000 görüntü yolunda tam beyinden ayırt edilemiyor**.
+5.000 ve 10.000'in geri yürüme ve yön hataları gürültünün belirgin üstünde (%22 / %21 ve %23 / %39): bu katmanlar
+görüntüyle yalnız kalkışta güvenilir. Tek tohum ve 10 sahne; gürültü tabanı da tek karşılaştırma, kesin değil.
+
+**Entegrasyon adımı dt.** `tools/fidelity.py --dt 0.1 0.5 1.0` (tablo `data/probes/fidelity_dt.csv`): her (katman, dt),
+dt 0,1 ms'lik tam beyne göre; gürültü tabanı aynı devre ve dt 0,1 ile başka tohum (GF %11,6, MDN %3,9, DNa02 %13,7,
+grooming %8,4, karışım %9,2). Tam beyinde dt 0,5: %10,3 / %4,1 / %22,7 / %12,6 / %5,2, yani yön dışında gürültü içinde;
+dt 1: %11,3 / %5,8 / %20,0 / **%42,4** / %10,4, grooming açıkça bozuluyor. 15.000 katmanda dt 0,5 sonuçları da aynı
+(%10,9 / %6,4 / %23,4 / %12,8 / %6,1), dt 0,1'de (referansla aynı adım ve tohum, yalnız katman etkisi) %3,1 / %5,6 / %5,9 / %2,5 / %3,1. Hız (bu makine, tam beyin): dt
+0,1 ×1,6, 0,5 ×5,4, 1 ×9,6 ortalama; yani dt 1 ms hızı ~1,8 katına çıkarır ama grooming'i ve yönü bozar. 0,5 ms
+korundu; 0,1 ms 3,4 kat yavaş ve bu ölçümde 0,5'ten ayırt edilebilir kazanç yok (yön hariç).
+
+**Sol-sağ simetri (yeni bulgu).** `tools/fidelity.py --mirror` (`data/probes/steer_symmetry.csv`): tam beyinde LC10_L
+ve LC10_R'yi eşit oranlarda ayrı ayrı sürünce karşı tarafın DNa02 hızı eşit çıkmıyor: 18 Hz sürücüde LC10_L → DNa02_L 83 Hz,
+LC10_R → DNa02_R 20,5 Hz; 75 Hz'de 184 Hz'e karşı 76,5 Hz (DNa02 her yanda **tek nöron**, orta düzeyde sağ taraf
+tek-nöron gürültüsüyle 7 Hz'e kadar iniyor). Sinek `steer = DNa02_R - DNa02_L` ile döndüğü için tam karşıdan simetrik bir
+yaklaşma bile sola dönüş üretiyor: 400 px/s'de 2 s boyunca sol 41, sağ 14 spike; görüntü sürücülü sahnelerde
+tam karşıdan yaklaşmada ortalama yön -10 ile -20 Hz. Sebep (annotasyondaki LC10 alt tipleri, tarafların bağlantı
+sayıları, DNa02 sağ-sol bağlantı farkı) araştırılmadı; sayım gerçek, yorum değil. Çözüm kararı sizde (örneğin yön
+kazancını taraf başına normalleştirmek, bu bir tasarım katmanı olur).
+
 **Dokunma.** Overlay tıklamayı geçirdiği için "dokunma" imlecin sineğin merkezine `14 px × boyut`
 yaklaşmasıdır. Beyin bağlantısında yalnız **kafanın** mekanik duyu nöronları var (gövde ve bacak kılları
 ventral sinir kordonuna girer, o veri bu bağlantıda yok), bu yüzden dokunma = kafa dokunması. Model
@@ -230,8 +275,8 @@ yürüme veriyor. Düzlem modeli yükseklikle değişiyor (20 px'te 150 px/s ve 
 veriyor, 300 px'te 800 px/s artık kalkış değil geri yürüme veriyor) ve yandan/arkadan yaklaşmaya zayıf. Küre
 modelinde kazanç farkı: geri çekilme kazancı 18 yerine 12 (göz hizasındaki disk yavaş yaklaşmada daha çok
 genişliyor). Küre sineğin arkasını (±120° dışı) görmez: arkadan gelen imleç yalnızca imleç-sayısı sürücüsüyle
-(görsel girdi kapalıyken) tepki verir. Optik lob simüle edilmiyor. Katman doğruluğu görüntüyle (mekânsal olarak
-seyrek) yeniden ölçülmedi. 15.000 katmanda şiddetli kaçış sırasında (yüz binlerce spike/sn) ve makine yüklüyken
+(görsel girdi kapalıyken) tepki verir. Optik lob simüle edilmiyor. Katman doğruluğu görüntü sürücüsüyle ayrıca ölçüldü
+(Katmanlar bölümünün sonu). 15.000 katmanda şiddetli kaçış sırasında (yüz binlerce spike/sn) ve makine yüklüyken
 bir ölçümde gerçek zamanın altına (×0,8) inildi; 5.000'de ×7,4.
 
 **Yaklaşma hızı.** İmlecin yaklaşma hızı artık GUI'de değil işçide, GUI'nin her karede gönderdiği saat damgası,
