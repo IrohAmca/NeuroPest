@@ -92,7 +92,11 @@ Hangi girdi tipinin hangi çıkışı sürdüğü literatürden değil **modelde
 aynı taraftaki DNa02'yi sürüyor. LPC1 girdisi Giant Fiber'ı baskılıyor (`tools/probe_combo.py`), bu
 yüzden geri çekilme girdisi 20 Hz'de doyuyor ve kalkış yalnız yaklaşma çok hızlıysa kazanıyor: geri
 yürüme ~2 /s genişlemeden, kalkış ~7 /s'den başlıyor. Eşikler ve kazançlar benim tasarım seçimim
-(`neuropest/brain.py`). Optik lob (77,5 bin nöron, %56) simüle edilmez: görsel girdi doğrudan
+(`neuropest/brain.py`). Kalkış bir hız değil **olay** olarak okunur: gerçek sinekte Giant Fiber'in bir iki spike'ı
+kalkışı başlatır, bu yüzden 10 ms'lik pencerede iki GF spike'ı (`BrainSpec.gf_event_spikes`) hemen FLY yapar; 80 ms
+üstel ortalamalı hız yolu ikinci yol ve çıkış koşulu olarak durur. Modelde ölçüm (`tools/latency.py`, 15k, 8 tohum):
+kalkış 20 /s genişlemede 16 yerine 8 ms, 10 /s'de 22 yerine 14 ms, 7 /s'de 24 yerine 20 ms sürüyor; 5 /s'de medyan değişmiyor (44 ms,
+ilk spike 18 ms). Kalkış eşiği ~5 /s'den ~4 /s genişlemeye iniyor (4 /s'de 12 tohumun 9'unda uçuyor). Beyin içi gecikmenin büyük kısmı zaten spike'ın kendisi; GUI yoklaması ve kare hızı ayrı kalemler. Optik lob (77,5 bin nöron, %56) simüle edilmez: görsel girdi doğrudan
 projeksiyon nöronlarına verilir.
 
 **Katmanlar.** Modelde kendiliğinden aktivite yoktur: hiç ateşlemeyen bir nöron diğerlerini
