@@ -258,3 +258,39 @@ def test_sphere_cursor_drives_looming_at_any_azimuth_and_height_does_not_matter(
     assert loom_peak(0.0, 100.0, speed=150.0) < 60.0                # a slow walk up to the fly drives far less
     behind = loom_peak(180.0, 100.0)
     assert behind < 1.0                                             # nothing is seen behind (no columns there)
+
+
+@needs_eye
+def test_lplc2_reads_the_size_of_the_object_and_lc4_its_speed():
+    from dataclasses import replace
+
+    net = flywire.load_cache().prefix(5000)
+    fly = (1000.0, 700.0, 0.0)
+
+    def peaks_of(params, radius, speed):
+        drive = VisionDrive(net, replace(params, halo_px=radius))
+        n2, nl = drive.n_lplc2, len(drive.loom_idx)
+        assert 0 < n2 < nl
+        path = lambda t: (1000.0 + max(50.0, 400.0 - speed * max(0.0, t - 0.3)), 700.0)     # noqa: E731
+        top2 = top4 = 0.0
+        for k in range(90):
+            idx, rates = drive.step_cursor(path(k / 60), path((k - 1) / 60), *fly, DT)
+            top2, top4 = max(top2, float(rates[:n2].max())), max(top4, float(rates[n2:nl].max()))
+        return top2, top4
+
+    base = VisionParams()
+    small2, small4 = peaks_of(base, 15.0, 800.0)
+    big2, big4 = peaks_of(base, 60.0, 800.0)
+    assert small4 > 40.0 and small2 < 0.7 * small4                  # a small fast object: LC4 leads, LPLC2 is held back
+    assert big2 > 0.9 * big4 > 40.0                                 # a big one fills LPLC2's field: both respond
+    assert big2 > 2.0 * small2                                      # LPLC2 grows with size ...
+    slow2, slow4 = peaks_of(base, 60.0, 150.0)
+    assert slow4 < 0.6 * big4                                       # ... and LC4 with the expansion speed
+    s2, s4 = peaks_of(replace(base, loom_split=False), 15.0, 800.0)  # the first version: one rate for both
+    assert s2 == pytest.approx(s4)
+
+
+def test_receptive_field_weights_are_flat_by_default_and_gaussian_on_request(field):
+    flat, tuned = Features(field), Features(field, rf_sigma_deg=10.0)
+    assert (flat.pool_w == 1.0).all() and len(flat.pool_w) == len(flat.pool[1])
+    assert tuned.pool_w.max() == 1.0 and 0.0 < tuned.pool_w.min() < 0.1       # own column 1, 30 deg away exp(-4.5)
