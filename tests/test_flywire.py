@@ -6,7 +6,9 @@ import pyarrow.parquet as pq
 import pytest
 
 from neuropest import flywire
-from neuropest.brain import FLY, GROOM, RETREAT, STAND, Brain
+from dataclasses import replace
+
+from neuropest.brain import FLY, FLYWIRE, GROOM, RETREAT, STAND, Brain
 from neuropest.engine import LIFEngine
 
 N = 400
@@ -168,6 +170,33 @@ def test_brain_fast_approach_escapes_and_moderate_approach_retreats(tier):
     b.set_stimulus(300, 500, 0.0)                       # expansion 1.7 /s: backward walking only
     seen = {b.advance(4.0) for _ in range(250)}
     assert RETREAT in seen and FLY not in seen
+
+
+def test_brain_gf_spike_event_takes_off_without_the_rate_path(tier):
+    never_rate = 1e9                                    # the smoothed-rate path can no longer fire
+    b = Brain(tier, spec=replace(FLYWIRE, gf_on_hz=never_rate, gf_event_spikes=2))
+    b.set_stimulus(150, 3000, 0.0)
+    assert FLY in {b.advance(4.0) for _ in range(150)}
+    off = Brain(tier, spec=replace(FLYWIRE, gf_on_hz=never_rate, gf_event_spikes=0))
+    off.set_stimulus(150, 3000, 0.0)
+    assert FLY not in {off.advance(4.0) for _ in range(150)}
+
+
+def test_brain_gf_spike_window_covers_whole_chunks_of_at_least_the_event_time(tier):
+    b = Brain(tier, spec=replace(FLYWIRE, gf_event_ms=10.0))
+    for spikes in (1, 0, 0, 0, 0, 2):                   # 4 ms chunks: the window is 3 chunks (12 ms >= 10 ms)
+        b._track_gf_spikes(4.0, spikes)
+    assert b.gf_window == 2
+    b._track_gf_spikes(4.0, 1)
+    b._track_gf_spikes(4.0, 1)
+    assert b.gf_window == 4
+    for _ in range(3):
+        b._track_gf_spikes(4.0, 0)
+    assert b.gf_window == 0
+    g = Brain(tier, spec=replace(FLYWIRE, gf_event_ms=10.0))
+    g._track_gf_spikes(12.0, 3)                         # a GPU chunk longer than the window is its own window
+    g._track_gf_spikes(12.0, 1)
+    assert g.gf_window == 1
 
 
 def test_brain_steering_follows_the_side_of_the_cursor(tier):
