@@ -9,7 +9,7 @@ from PySide6.QtCore import Qt, QTimer
 from PySide6.QtWidgets import (QApplication, QCheckBox, QComboBox, QFrame, QGridLayout, QHBoxLayout,
                                QLabel, QScrollArea, QSizePolicy, QSlider, QVBoxLayout, QWidget)
 
-from .paths import CACHE, TIERS
+from .paths import CACHE, EYE, FIELD, TIERS
 from .runner import GPU_AUTO_MIN_NEURONS, EngineConfig, list_gpus, pick_gpu
 from .theme import ERROR, FAINT, MUTED, STATE_STYLE, fly_icon
 
@@ -112,6 +112,7 @@ class Control(QWidget):
         self._header()
         self._live_card()
         self._behaviour_card()
+        self._vision_card()
         self._circuit_card()
         self._compute_card()
         self._view_card()
@@ -180,6 +181,37 @@ class Control(QWidget):
         slider_row(card, "Ürkeklik", "Yaklaşan imlece duyarlılık: geri yürüme ve kaçış eşiklerini ölçekler.",
                    k, lambda v: f"×{2.0 ** ((v - 50) / 25.0):.2f}")
         self.page.addWidget(card)
+
+    def _vision_card(self):
+        card = Card("Görsel girdi")
+        self.has_eye = CACHE.exists() and EYE.exists() and FIELD.exists()
+        self.vision = QCheckBox("Ekranı sineğin gözüyle gör", enabled=self.has_eye)
+        self.vision.setToolTip("İmleç sayıları yerine görüntü: huni görüşü, retinotopik dedektörler ve projeksiyon "
+                               "nöronlarının bağlantıdan çıkarılan alıcı alanları (neuropest/vision.py)")
+        self.vision.toggled.connect(lambda on: setattr(self.runner, "vision", on))
+        card.body.addWidget(self.vision)
+        hgt = QSlider(Qt.Horizontal, minimum=40, maximum=300, value=int(self.runner.eye_height), enabled=self.has_eye)
+        hgt.valueChanged.connect(lambda v: setattr(self.runner, "eye_height", float(v)))
+        slider_row(card, "Göz yüksekliği", "Ekran düzleminin kaç px üstünden bakıyor: büyük = daha dikey (tepeden) bakış.",
+                   hgt, lambda v: f"{v} px")
+        self.vision_info = _label("", "Faint", wrap=True)
+        card.body.addWidget(self.vision_info)
+        self.page.addWidget(card)
+        self._describe_vision(0.0)
+
+    def _describe_vision(self, state: float):
+        """`state` is the worker's vision flag: 1 on, 0 off, -1 wanted but unusable."""
+        if not self.has_eye:
+            text = "Göz verisi yok: uv run python tools/build_eye.py (ham veri gerekir, README'ye bak)."
+        elif state > 0:
+            text = ("Sinek imleci kendi gözünden, yere yakın koyu bir disk olarak görüyor; yaklaşma ve yön bilgisi "
+                    "retinotopik dedektörlerden geliyor.")
+        elif state < 0 and self.vision.isChecked():
+            text = "Bu devrede görsel girdi yok (alıcı alanı olan LPLC2/LC4 gerekir): imleç sayılarıyla çalışılıyor."
+        else:
+            text = ""
+        self.vision_info.setText(text)
+        self.vision_info.setVisible(bool(text))
 
     def _circuit_card(self):
         card = Card("Devre")
@@ -364,6 +396,7 @@ class Control(QWidget):
             g = next((g for g in self.gpus if g["index"] == r.cfg.adapter), None)
             where = f"GPU {g['name']} ({g['backend']})" if g else "GPU"
         self.telemetry.setText(f"Çalışan: {where} · zaman adımı {r.cfg.dt:g} ms")
+        self._describe_vision(st.get("vision", 0.0))
         slow = st["rt"] < 1.0 or st["lag_ms"] > 100
         self._show_warn("Bu ayar bu bilgisayar için ağır: sinek yavaş çekimde. "
                         "Boyutu küçült ya da zaman adımını büyüt." if slow else "")

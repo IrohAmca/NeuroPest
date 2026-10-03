@@ -2,7 +2,7 @@ import time
 
 import pytest
 
-from neuropest.paths import CACHE
+from neuropest.paths import CACHE, EYE, FIELD
 from neuropest.runner import EngineConfig, Runner
 
 
@@ -49,3 +49,43 @@ def test_worker_process_reacts_to_looming_and_reports_telemetry():
     finally:
         r.stop()
     assert not r.alive
+
+
+FLY_POSE = (1000.0, 700.0, 0.0)             # x, y, heading of a fly standing on the screen
+
+
+@pytest.mark.skipif(not (CACHE.exists() and EYE.exists() and FIELD.exists()),
+                    reason="needs the FlyWire cache and the eye data (tools/build_eye.py)")
+def test_worker_sees_the_cursor_through_the_funnel():
+    r = Runner(EngineConfig("flywire", 5_000, 0.5))
+    try:
+        assert _wait(lambda: r.ready, 120), "worker did not become ready"
+        r.bias, r.vision = 0.0, True
+        for _ in range(90):                                     # the cursor is far away: nothing to see
+            r.send(900.0, 0.0, 0.0, FLY_POSE, (1900.0, 700.0))
+            time.sleep(0.016)
+        assert r.stats()["vision"] == 1 and r.state == "stand"
+        t0 = time.time()
+        while time.time() - t0 < 5.0 and r.state != "fly":      # then it dashes at the fly (closing speed is not sent)
+            cx = max(1050.0, 1400.0 - 1500.0 * max(0.0, time.time() - t0 - 0.3))
+            r.send(abs(cx - FLY_POSE[0]), 0.0, 0.0, FLY_POSE, (cx, 700.0))
+            time.sleep(0.016)
+        assert r.state == "fly"
+        r.vision = False                                        # back to the cursor numbers
+        r.send(900.0, 0.0, 0.0, FLY_POSE, (1900.0, 700.0))
+        assert _wait(lambda: r.stats()["vision"] == 0, 5.0)
+    finally:
+        r.stop()
+
+
+def test_vision_switch_is_harmless_on_a_circuit_without_receptive_fields():
+    r = Runner(EngineConfig(n=2_000, dt=0.5))
+    try:
+        assert _wait(lambda: r.ready, 90), "worker did not become ready"
+        r.bias, r.vision = 0.0, True
+        r.send(900.0, 0.0, 0.0, (500.0, 500.0, 0.0), (900.0, 500.0))
+        assert _wait(lambda: r.stats()["vision"] < 0, 10.0)     # unusable here, reported once, no retry loop
+        r.send(150.0, 3000.0, 0.0, (500.0, 500.0, 0.0), (650.0, 500.0))
+        assert _wait(lambda: r.state == "fly", 3.0)             # the cursor numbers still drive the fly
+    finally:
+        r.stop()

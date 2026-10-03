@@ -76,10 +76,22 @@ class Brain:
         self.walk_bias = 0.0
         self.skittish = 1.0
         self._stim = (1e6, 0.0, 0.0)
+        self._vision = None        # (neuron indices, rates in Hz) from the image, replaces the cursor numbers
         self._drive()
 
     def group(self, name: str) -> np.ndarray:
         return self.g.get(name, np.zeros(0, np.int32))
+
+    def set_vision(self, idx: np.ndarray, rates: np.ndarray):
+        """Forced spike rates of individual projection neurons computed from the screen image (see vision.py).
+
+        While set, they replace the looming / retreat / bearing drive derived from the cursor position."""
+        self._vision = (np.asarray(idx, np.int32), np.asarray(rates, np.float32))
+        self._drive()
+
+    def clear_vision(self):
+        self._vision = None
+        self._drive()
 
     @property
     def steer(self) -> float:
@@ -112,8 +124,14 @@ class Brain:
         side = math.sin(bearing)                         # >0: cursor to the right
         e = self.engine
         fi, fr = [], []
-        for name, hz in (("LOOM", loom), ("RETREAT_IN", retreat), ("VIS", vis), ("BULK_DRIVE", s.bulk_hz),
-                         ("LC10_R", steer * max(0.0, side)), ("LC10_L", steer * max(0.0, -side))):
+        if self._vision is not None:
+            fi.append(self._vision[0])
+            fr.append(self._vision[1])
+            cursor_drive = (("VIS", vis), ("BULK_DRIVE", s.bulk_hz))
+        else:
+            cursor_drive = (("LOOM", loom), ("RETREAT_IN", retreat), ("VIS", vis), ("BULK_DRIVE", s.bulk_hz),
+                            ("LC10_R", steer * max(0.0, side)), ("LC10_L", steer * max(0.0, -side)))
+        for name, hz in cursor_drive:
             idx = self.group(name)
             fi.append(idx)
             fr.append(np.full(len(idx), hz))

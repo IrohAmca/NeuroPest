@@ -3,10 +3,12 @@
 Masaüstünde gezen, fare imlecine tepki veren bir sinek. Davranışı, gerçek sinek beyni
 bağlantısından (FlyWire) çıkarılan bir devrenin simülasyonundan gelir (leaky integrate-and-fire).
 
-**Durum (v0.4):** imleç sinek için üç girdiye dönüşür ve gerçek bağlantı bunları davranışa çevirir:
+**Durum (v0.5):** imleç sinek için üç girdiye dönüşür ve gerçek bağlantı bunları davranışa çevirir:
 yaklaşma hızı → hafifse **geri yürüme** (MDN), çok hızlıysa **uçarak kaçış** (Giant Fiber); imlecin
 yönü → sağ/sol **dönüş** (DNa02). Yürüme komut nöronlarına (DNp09/P9) tonik sürücü verilince yürür.
 Devrenin boyutu arayüzden seçilir; her boyutun tam beyne göre doğruluğu ve hızı ölçülmüştür.
+İsteğe bağlı **görsel girdi** (kontrol penceresindeki kutu) imleç sayıları yerine sineğin gözünden görüntüyü
+kullanır: ekran düzlemi eğimi çok düşük bir huniyle örneklenir (aşağıda "Görsel girdi").
 
 ## Çalıştırma
 
@@ -21,6 +23,9 @@ uv run neuropest
 - İmleç yavaşça yaklaşırsa sinek **geri yürür**, çok hızlı yaklaşırsa **uçarak kaçar**; yakın bir imlece
   doğru **döner**. "Ürkeklik" kaydırıcısı yaklaşmaya hassasiyeti ayarlar. 700 px'ten uzak imleç yok
   sayılır (motor boşta kalır).
+- "Görsel girdi" kutusu (kontrol penceresinde, "Ekranı sineğin gözüyle gör") açılınca imlecin sayıları
+  yerine görüntü kullanılır; "Göz yüksekliği" ekranın kaç px üstünden bakıldığını ayarlar. Göz verisi
+  (`tools/build_eye.py`) yoksa kutu kapalıdır.
 - "Hareketlilik" yürüme sürücüsünü ayarlar: düşükse durur, ortada arada yürür, yüksekse yürür.
 - Sinek, seçilen monitörün görev çubuğunun üstündeki alanda kalır. Overlay tıklamayı geçirir.
 - Kontrol penceresi (koyu tema, kartlar halinde): sineğin anlık durumu, canlı ölçümler (Giant Fiber,
@@ -98,6 +103,59 @@ devre büyüdü ve ~15.000 nöron gerekti. **Sınır:** doğruluk yalnız bu ü�
 yeni bir uyaran eklenirse sıralama onunla yeniden kurulmalı (`flywire.train_protocols`,
 `tools/build_flywire.py`, `tools/fidelity.py`). Uyaran yokken CPU ≈ 0; yük yalnız imleç yakınken artar.
 
+## Görsel girdi (huni görüşü)
+
+Kutu açıkken sinek, ekran düzleminin `h` px üstünde duruyormuş gibi görüntüyü görür. Her medulla sütunu
+gövde çerçevesinde bir yöne (azimut, yükseklik) bakar; ufkun altına bakan bir yön ekranı `h / tan(-yükseklik)`
+uzaklıkta keser. Yakın zemini ince alt ommatidialar, uzak ekranı ufkun hemen altındaki dar bir bant görür:
+eğimi çok düşük bir huni. Sahne şimdilik imleç (30 px yarıçaplı koyu disk, nötr zemin); gerçek ekran yakalama
+sıradaki iş.
+
+```bash
+uv run python tools/build_eye.py      # ham veriyle bir kez: data/circuits/eye.npz ve field.npz (+ eye_map.png)
+uv run python tools/vision_runner.py  # gerçek işçi süreci, betikli imleç hareketleri: yavaş/orta/hızlı yaklaşma...
+```
+
+**Sütun yönleri ve alıcı alanlar** (`neuropest/eyebuild.py`, bağlantıdan): fotoreseptör ya da lamina
+konumlarına küre uydurmak yanlış/dejenere alan verdi; sütun yönleri Mi1 konumlarına küre uydurularak,
+diğer sütunlu hücreler (L1-L3, Tm, TmY...) en yakın Mi1'in yönüyle, T4/T5 ve her görsel projeksiyon nöronu
+presinaptik sütunlu nöronlarının sinaps ağırlıklı ortalama yönüyle bulundu (ortalamanın uzunluğu, 0..1,
+alıcı alanın darlığı). Doğrulama: projeksiyon nöronlarının alıcı alanları doğru gözün doğru bölgesine
+düşüyor. Veri çerçevesi gerçek bir sineğe göre sol-elli (ayna); gözler simetrik olduğundan etiketli taraflar
+kullanılır. Sol gözün R1-6 kaydı veride eksik (lamina hücreleri tam).
+
+**Olumsuz sonuç.** Ham LIF optik lob görüntüden looming ya da hareket ayırt etmiyor
+(`tools/vision_experiment.py`: lamina hücreleri görüntüyle sürülüp tam beyin GPU'da koşuldu). Karanlık disk
+yaklaşırken, kayarken, uzaklaşırken, ani belirirken ve ekran bütünüyle kararırken T4/T5/Mi1/LPLC2 sessiz
+kaldı (0-0,2 Hz); optik lobu dinlenme potansiyelinin üstüne çeken tonik akımla (5,5 mV) ağ rastgele
+coştu (270-340 bin spike/sn, Giant Fiber düz zeminde bile ~12 Hz), uyaranlar arasında fark çıkmadı.
+Sebep: derecelendirilmiş (sivri uçsuz) hücrelerin ham LIF'te ayarı yok. Bu yüzden optik lob atlanır.
+
+**Yerine iki retinotopik dedektör** (`neuropest/vision.py`, `Features`, sütun kafesinde):
+
+- *genişleme* (LPLC2/LC4 benzeri): bir sütun nesnenin içinde ve nesnenin kenarı çevresindeki halkanın dört
+  çeyreğinin hepsinde büyüyor; en zayıf çeyrek sayılır (kayan kenar ve tek yönlü değişim 0, küçülen nesne 0),
+  bir gözün tamamında aynı değişim çıkarılır. Koyu ve açık nesne ayrı kanallar.
+- *küçük nesne* (LC10 benzeri): merkez çevresinden koyu ya da açık.
+
+Sahne değişimi **aynı duruştan** ölçülür (önceki karenin sahnesi şimdiki duruşta örneklenir), böylece
+sineğin kendi yürüyüşü looming sayılmaz. `neuropest/visual.py` her LPLC2/LC4 (looming), LPC1 (geri çekilme)
+ve LC10 (yön) nöronunun kendi alıcı alanındaki değeri zorlanmış ateşleme hızına çevirir ve `Brain.set_vision`
+ile verir; bu sırada imleç sayılarının yerine geçerler. Kazançlar ve eşikler `tools/vision_calibrate.py --grid`
+ile bulundu: yavaş yaklaşma (150 px/s) dur, orta (400) geri yürü, hızlı (800, 1500) kalk; kayan, uzaklaşan
+ve duran disk dur. Yavaş taban çizgisi 8 s (`tau_adapt`): 2 s iken uzun süre yakında duran imleç
+uzaklaşırken bıraktığı açık iz büyüyen açık nesne gibi okunuyor, sahte geri çekilme çıkıyordu.
+
+**Maliyet.** Dedektör kare başına ~1,6 ms (60 Hz, numba), motorla aynı süreçte; merkezi beyin değişmez
+(girdi nöronları her katmanda var). Ekran yakalama (gerçek ekran için) Qt `grabWindow` ile GUI iş parçacığına
+ağır: 2560x1440'ta tam ekran 58 ms, 600x600'lük bölge 14 ms (`tools/capture_cost.py`); ayrı süreç gerekecek.
+
+**Sınırlar.** İmleç düz bir düzlemde uzakta ince bir şerit olur, looming yalnız yakında belirgin
+(göz yüksekliği ayarı ve imleç halesi bunu dengeler). Optik lob simüle edilmiyor. Katman doğruluğu görüntüyle
+(mekânsal olarak seyrek) yeniden ölçülmedi; senaryolar 5.000 ve 15.000 katmanda denendi (5.000'de eşiklere
+daha az pay var: kalkışta Giant Fiber ~23 Hz, eşik 15). 15.000 katman şiddetli kaçış sırasında bu makinede
+gerçek zamanın altına inebiliyor.
+
 ## Motor (`neuropest/engine`)
 
 - Nöron modeli: Shiu ve ark. 2024 (`philshiu/Drosophila_brain_model`) ile aynı LIF sabitleri ve
@@ -113,7 +171,9 @@ yeni bir uyaran eklenirse sıralama onunla yeniden kurulmalı (`flywire.train_pr
   `probe_circuit.py` (bir girdi grubu →
   DN yanıtı), `probe_inputs.py`, `probe_side.py`, `probe_combo.py` (hangi girdi hangi çıkışı sürer),
   `fidelity.py` (katman doğruluğu), `calibrate.py` (davranış ayarı), `inspect_flywire.py`,
-  `explore_types.py` (hücre tipi arama), `startup_time.py`.
+  `explore_types.py` (hücre tipi arama), `startup_time.py`. Görsel girdi: `build_eye.py`,
+  `vision_experiment.py` (optik lob deneyi), `vision_calibrate.py` (sahne → davranış, kazanç ayarı),
+  `vision_runner.py` (gerçek işçi, uçtan uca), `capture_cost.py`, `explore_eye*.py`.
 
 Az boş bellekli makinelerde (sayfa dosyası yoksa) numpy/BLAS iş parçacıkları başlarken bellek ayırmayı
 başaramayabilir; paket bunu `OPENBLAS_NUM_THREADS=1` ile önler. Tam beyin katmanı CPU'da ~0,4 GB,
@@ -152,9 +212,8 @@ parçalar, gerçek zamana hızlanma bekleyerek) GTX 1650'de tam beyin ×5, işle
 
 ## Sıradaki işler
 
-1. Görsel girdi: ekranı "huni" geometrisiyle (bakış açısı → ekran düzlemi) ommatidia örneklerine çevirmek,
-   fotoreseptörleri sürmek; optik lobu LIF ile mi, derecelendirilmiş (rate) modelle mi, yoksa projeksiyon
-   nöronlarını retinotopik doğrudan sürerek mi simüle edeceğimizi deneyle seçmek.
+1. Görsel girdi: imleç yerine gerçek ekran görüntüsü (ayrı süreçte yakalama, kendi overlay'ini dışarıda
+   bırakarak); sineğin çevresindeki bölge ~12-15 fps.
 2. Daha fazla görsel nöron tipi ve davranış (küçük nesne LC11, yaklaşma yerine kaçınma ya da takip);
    her biri için sıralamayı yeniden kurmak.
 3. Otomatik boyut/donanım seçimi (makineyi ölç, gerçek zamanı tutan en küçük maliyet).

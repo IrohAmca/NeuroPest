@@ -63,7 +63,9 @@ class Overlay(QWidget):
         dist = ((cur.x() - self.fly.x) ** 2 + (cur.y() - self.fly.y) ** 2) ** 0.5
         closing = 0.0 if self.prev_dist is None else (self.prev_dist - dist) / max(dt, 1e-3)
         self.prev_dist = dist
-        self.runner.send(dist, closing, self.fly.bearing_of((cur.x(), cur.y())))
+        # pose and cursor in screen px feed the visual input (runner.vision); the numbers feed the cursor drive
+        self.runner.send(dist, closing, self.fly.bearing_of((cur.x(), cur.y())),
+                         (self.fly.x, self.fly.y, self.fly.heading), (cur.x(), cur.y()))
         self.fly.update(dt, self.runner.state, (cur.x(), cur.y()), self.play_rect(), self.runner.steer)
         self.update()
 

@@ -15,13 +15,14 @@ class FakeRunner:
     def __init__(self):
         self.cfg = EngineConfig("toy", 146, 0.5)
         self.bias, self.skittish = 0.65, 1.0
+        self.vision, self.eye_height = False, 100.0
         self.state, self.ready, self.failed, self.alive = "walk", True, False, True
         self.rt = 5.0
         self.started = []
 
     def stats(self):
         return dict(ready=self.ready, n=146, rt=self.rt, active=40, cpu=0.1, lag_ms=5, gf=0, walk=30, rest=0,
-                    mdn=2, steer=4, sim_s=1.0, spikes=900)
+                    mdn=2, steer=4, sim_s=1.0, spikes=900, vision=float(self.vision))
 
     def start(self, cfg):
         self.started.append(cfg)
@@ -66,6 +67,16 @@ def test_size_change_restarts_engine(app):
     c.size.setValue(c.size.maximum())
     c._apply()
     assert r.started and r.started[-1].n == 139_000
+
+
+def test_vision_switch_and_eye_height_reach_the_runner(app):
+    r = FakeRunner()
+    c = Control(FakeOverlay(), r)
+    c.vision.setChecked(True)
+    assert r.vision is True
+    c._refresh()                                        # the worker reports the flag back; no crash either way
+    c.vision.setChecked(False)
+    assert r.vision is False
 
 
 def test_tray_and_window_visibility_stay_in_step(app):

@@ -170,3 +170,17 @@ def test_brain_steering_follows_the_side_of_the_cursor(tier):
     ahead.set_stimulus(150, 0, 0.0, bearing=0.0)
     _settle(ahead, 800)
     assert abs(ahead.steer) < 1
+
+
+def test_brain_image_rates_replace_the_cursor_drive(tier):
+    loom = tier.groups["LOOM"]
+    b = Brain(tier)
+    b.set_stimulus(150, 3000, 0.0)                      # the cursor numbers say: fast approach
+    b.set_vision(loom, np.zeros(len(loom)))             # the image shows nothing growing, and it wins
+    assert FLY not in {b.advance(4.0) for _ in range(150)}
+    b.clear_vision()                                    # back to the cursor numbers
+    assert FLY in {b.advance(4.0) for _ in range(150)}
+    c = Brain(tier)
+    c.set_stimulus(900, 0, 0.0)                         # no cursor drive at all, but the image shows a strong expansion
+    c.set_vision(loom, np.full(len(loom), 120.0))
+    assert FLY in {c.advance(4.0) for _ in range(150)}

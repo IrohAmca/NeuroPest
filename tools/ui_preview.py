@@ -22,12 +22,13 @@ class FakeRunner:
     def __init__(self, state="walk", rt=7.2):
         self.cfg = EngineConfig("flywire", 15_000, 0.5)
         self.bias, self.skittish = 0.65, 1.0
+        self.vision, self.eye_height = False, 100.0
         self.state, self.ready, self.failed, self.alive = state, True, False, True
         self._rt = rt
 
     def stats(self):
         return dict(ready=True, n=15_000, rt=self._rt, active=3_412, cpu=0.38, lag_ms=12, gf=0, walk=41,
-                    rest=0, mdn=3, steer=-7, sim_s=12.0, spikes=48_230)
+                    rest=0, mdn=3, steer=-7, sim_s=12.0, spikes=48_230, vision=0.0)
 
     def start(self, cfg):
         self.cfg = cfg

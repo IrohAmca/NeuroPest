@@ -16,13 +16,15 @@ from .states import STAND, STATES
 
 # input slots
 I_DIST, I_CLOSING, I_BIAS, I_SKITTISH, I_BEARING = 0, 1, 2, 3, 4
+I_X, I_Y, I_HEAD, I_CX, I_CY, I_VISION, I_HEIGHT = 5, 6, 7, 8, 9, 10, 11     # pose, cursor, vision switch
 # output slots
 (O_READY, O_STATE, O_GF, O_WALK, O_REST, O_RT, O_ACTIVE, O_N, O_CPU, O_LAG, O_SIM_S, O_BEAT, O_MDN, O_STEER,
- O_SPIKES) = range(15)
+ O_SPIKES, O_VISION) = range(16)
 
 CHUNK_MS = 4.0              # simulated time advanced per loop iteration
 CHUNK_MS_GPU = 12.0         # a GPU read-back costs ~1 ms regardless of size; measured x1.8 -> x2.8-4 on a GTX 1650
 STATS_EVERY_S = 0.25
+VISION_PERIOD_MS = 1000.0 / 60.0     # the vision pipeline looks at a new image about this often
 MAX_LAG_S = 0.25            # beyond this the backlog is dropped (slow motion instead of catching up)
 
 
@@ -115,17 +117,21 @@ def _loop(cfg: EngineConfig, brain, net, inp, out, stop) -> None:
     out[O_READY] = 1.0
 
     chunk = CHUNK_MS if cfg.backend == "cpu" else CHUNK_MS_GPU
+    eye = _Eye(net)
     last_in = None
     t0 = time.perf_counter()
     sim_ms = 0.0
     spikes0 = brain.engine.total_spikes
     w_wall, w_cpu, w_comp, w_sim, w_active, w_iters = t0, time.process_time(), 0.0, 0.0, 0.0, 0
     while not stop.is_set():
+        t = time.perf_counter()
+        eye.update(brain, inp, out, sim_ms)
         cur = (inp[I_DIST], inp[I_CLOSING], inp[I_BIAS], inp[I_SKITTISH], round(inp[I_BEARING], 2))
+        if eye.on:
+            cur = (1e6, 0.0, cur[2], cur[3], 0.0)   # the image, not cursor numbers, drives the looming inputs
         if cur != last_in:
             brain.set_stimulus(*cur)
             last_in = cur
-        t = time.perf_counter()
         state = brain.advance(chunk)
         spent = time.perf_counter() - t
         w_comp += spent
@@ -161,17 +167,79 @@ def _loop(cfg: EngineConfig, brain, net, inp, out, stop) -> None:
             w_wall, w_cpu, w_comp, w_sim, w_active, w_iters = now, cpu, 0.0, 0.0, 0.0, 0
 
 
+class _Eye:
+    """Worker side of the visual input: while switched on, turns the scene around the fly into projection
+    neuron rates about every VISION_PERIOD_MS of simulated time and hands them to the brain."""
+
+    def __init__(self, net):
+        self.net = net
+        self.drive = None               # visual.VisionDrive, built on first use (loads eye.npz / field.npz)
+        self.on = False
+        self.failed = False             # asked for, but not available here: do not retry until switched off
+        self.next_ms = self.last_ms = 0.0
+        self.cursor = None              # where the cursor was at the previous frame
+
+    def update(self, brain, inp, out, sim_ms: float) -> None:
+        want = inp[I_VISION] > 0.5
+        if not want:
+            self.failed = False
+        if want != self.on and not self.failed:
+            self._switch(want, brain, out, sim_ms)
+        if self.on and sim_ms >= self.next_ms:
+            self._frame(brain, inp, sim_ms)
+
+    def _switch(self, want: bool, brain, out, sim_ms: float) -> None:
+        if not want:
+            brain.clear_vision()
+            self.on = False
+            out[O_VISION] = 0.0
+            return
+        from .visual import VisionDrive
+
+        if self.drive is None:
+            try:
+                self.drive = VisionDrive(self.net)
+            except FileNotFoundError:
+                self.failed, out[O_VISION] = True, -1.0     # eye.npz / field.npz not built (tools/build_eye.py)
+                return
+        if not self.drive.usable:
+            self.failed, out[O_VISION] = True, -1.0         # this circuit has no LPLC2 / LC4 with receptive fields
+            return
+        self.drive.reset()
+        self.on, self.cursor = True, None
+        self.next_ms = self.last_ms = sim_ms
+        out[O_VISION] = 1.0
+
+    def _frame(self, brain, inp, sim_ms: float) -> None:
+        from .visual import cursor_scene
+
+        d = self.drive
+        d.eye_height, d.skittish = max(10.0, inp[I_HEIGHT]), inp[I_SKITTISH]
+        p = d.params
+        cursor = (inp[I_CX], inp[I_CY])
+        prev = self.cursor or cursor
+        dt = max(sim_ms - self.last_ms, 1.0) / 1000.0
+        idx, rates = d.step(cursor_scene(cursor[0], cursor[1], p.halo_px, p.background),
+                            cursor_scene(prev[0], prev[1], p.halo_px, p.background),
+                            inp[I_X], inp[I_Y], inp[I_HEAD], dt)
+        brain.set_vision(idx, rates)
+        self.cursor, self.last_ms = cursor, sim_ms
+        self.next_ms = sim_ms + VISION_PERIOD_MS
+
+
 class Runner:
     """GUI-side handle to the worker process."""
 
     def __init__(self, cfg: EngineConfig | None = None):
         self._ctx = mp.get_context("spawn")
-        self.inp = self._ctx.Array("d", 8, lock=False)
+        self.inp = self._ctx.Array("d", 16, lock=False)
         self.out = self._ctx.Array("d", 16, lock=False)
         self._proc = None
         self._stop = None
         self.bias = 0.65          # walking drive, 0..1
         self.skittish = 1.0       # looming sensitivity multiplier
+        self.vision = False       # see the screen (funnel view, retinotopic detectors) instead of cursor numbers
+        self.eye_height = 100.0
         self.cfg = cfg or default_config()
         self.start(self.cfg)
 
@@ -196,10 +264,14 @@ class Runner:
             self._proc.join(1.0)
         self._proc = None
 
-    def send(self, dist: float, closing: float, bearing: float = 0.0) -> None:
+    def send(self, dist: float, closing: float, bearing: float = 0.0, pose=(0.0, 0.0, 0.0), cursor=(0.0, 0.0)) -> None:
+        """Per-frame input. pose = fly (x, y, heading) and cursor = (x, y) in screen px, used by the vision pipeline."""
         inp = self.inp
         inp[I_DIST], inp[I_CLOSING], inp[I_BIAS], inp[I_SKITTISH] = dist, closing, self.bias, self.skittish
         inp[I_BEARING] = bearing
+        inp[I_X], inp[I_Y], inp[I_HEAD] = pose
+        inp[I_CX], inp[I_CY] = cursor
+        inp[I_VISION], inp[I_HEIGHT] = float(self.vision), self.eye_height
 
     @property
     def steer(self) -> float:
@@ -226,4 +298,4 @@ class Runner:
         o = self.out
         return dict(ready=self.ready, n=int(o[O_N]), rt=o[O_RT], active=o[O_ACTIVE], cpu=o[O_CPU],
                     lag_ms=o[O_LAG], gf=o[O_GF], walk=o[O_WALK], rest=o[O_REST], mdn=o[O_MDN],
-                    steer=o[O_STEER], sim_s=o[O_SIM_S], spikes=o[O_SPIKES])
+                    steer=o[O_STEER], sim_s=o[O_SIM_S], spikes=o[O_SPIKES], vision=o[O_VISION])
