@@ -122,9 +122,11 @@ def sphere_luminance(col_dir: np.ndarray, cursor: tuple[float, float], x: float,
     return (background + (dark - background) * cover).astype(np.float32)
 
 
-def image_scene(gray: np.ndarray, origin: tuple[float, float] = (0.0, 0.0), outside: float = 0.5):
+def image_scene(gray: np.ndarray, origin: tuple[float, float] = (0.0, 0.0), outside: float = 0.5,
+                cursor: tuple[float, float] | None = None, cursor_radius: float = 30.0, dark: float = 0.0):
     """Scene function over a grayscale image (rows = y, columns = x), bilinear, `outside` beyond its edges.
-    `origin` (ox, oy) is the top-left coordinate of the image in world/screen space."""
+    `origin` (ox, oy) is the top-left coordinate of the image in world/screen space.
+    If `cursor` (cx, cy) is given, composites the cursor disk onto the scene (since GDI BitBlt excludes hardware cursor)."""
     from scipy.ndimage import map_coordinates
 
     h, w = gray.shape
@@ -140,6 +142,12 @@ def image_scene(gray: np.ndarray, origin: tuple[float, float] = (0.0, 0.0), outs
         out = np.full(px.shape, outside, np.float32)
         if inside.any():
             out[inside] = map_coordinates(img_data, [ly[inside], lx[inside]], order=1, mode="nearest")
+        if cursor is not None:
+            cx, cy = cursor
+            cdist_sq = (px - cx) ** 2 + (py - cy) ** 2
+            c_mask = cdist_sq <= cursor_radius ** 2
+            if c_mask.any():
+                out[c_mask] = dark
         return out
 
     return scene

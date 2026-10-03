@@ -309,8 +309,10 @@ class _Eye:
                     self.last_seq = seq
 
                 if self.frame_now is not None and self.frame_prev is not None:
-                    scene_now = image_scene(self.frame_now, origin=self.origin_now, outside=p.background)
-                    scene_prev = image_scene(self.frame_prev, origin=self.origin_prev, outside=p.background)
+                    scene_now = image_scene(self.frame_now, origin=self.origin_now, outside=p.background,
+                                            cursor=cursor, cursor_radius=d.halo_px)
+                    scene_prev = image_scene(self.frame_prev, origin=self.origin_prev, outside=p.background,
+                                             cursor=prev, cursor_radius=d.halo_px)
                     idx, rates = d.step(scene_now, scene_prev, inp[I_X], inp[I_Y], inp[I_HEAD], dt)
                     used_screen = True
 
