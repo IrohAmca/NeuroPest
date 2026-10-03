@@ -110,6 +110,33 @@ QPushButton {{
 QPushButton:hover {{ border-color: {BORDER_HI}; background: #232329; }}
 QPushButton:pressed {{ background: {SURFACE}; }}
 
+QFrame#Sidebar {{
+    background: #0d0d10;
+    border-right: 1px solid {BORDER};
+}}
+QPushButton#NavBtn {{
+    background: transparent;
+    border: none;
+    border-radius: 8px;
+    padding: 8px 12px;
+    text-align: left;
+    font-size: 13px;
+    color: {MUTED};
+    font-weight: 500;
+}}
+QPushButton#NavBtn:hover {{
+    background: {RAISED};
+    color: {TEXT};
+}}
+QPushButton#NavBtn[active="true"] {{
+    background: {RAISED};
+    color: {ACCENT};
+    font-weight: 600;
+    border-left: 3px solid {ACCENT};
+    border-top-left-radius: 2px;
+    border-bottom-left-radius: 2px;
+}}
+
 QScrollArea, QScrollArea > QWidget > QWidget {{ background: {BG}; border: none; }}
 QScrollBar:vertical {{ background: transparent; width: 8px; margin: 2px; }}
 QScrollBar::handle:vertical {{ background: {BORDER_HI}; border-radius: 3px; min-height: 30px; }}

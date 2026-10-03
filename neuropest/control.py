@@ -1,4 +1,4 @@
-"""Control window: live readouts and settings, grouped into cards on the dark theme."""
+"""Control window: live readouts and settings, grouped into categories with a sidebar navigation."""
 from __future__ import annotations
 
 import importlib.util
@@ -6,8 +6,22 @@ import json
 import threading
 
 from PySide6.QtCore import Qt, QTimer
-from PySide6.QtWidgets import (QApplication, QCheckBox, QComboBox, QFrame, QGridLayout, QHBoxLayout,
-                               QLabel, QScrollArea, QSizePolicy, QSlider, QVBoxLayout, QWidget)
+from PySide6.QtWidgets import (
+    QApplication,
+    QCheckBox,
+    QComboBox,
+    QFrame,
+    QGridLayout,
+    QHBoxLayout,
+    QLabel,
+    QPushButton,
+    QScrollArea,
+    QSizePolicy,
+    QSlider,
+    QStackedWidget,
+    QVBoxLayout,
+    QWidget,
+)
 
 from .paths import CACHE, EYE, FIELD, TIERS
 from .runner import GPU_AUTO_MIN_NEURONS, EngineConfig, list_gpus, pick_gpu
@@ -52,8 +66,8 @@ class Card(QFrame):
         super().__init__()
         self.setObjectName("Card")
         lay = QVBoxLayout(self)
-        lay.setContentsMargins(16, 14, 16, 16)
-        lay.setSpacing(10)
+        lay.setContentsMargins(18, 16, 18, 18)
+        lay.setSpacing(12)
         lay.addWidget(_label(title.upper(), "Section"))
         self.body = lay
 
@@ -65,7 +79,7 @@ class Stat(QWidget):
         super().__init__()
         lay = QVBoxLayout(self)
         lay.setContentsMargins(0, 0, 0, 0)
-        lay.setSpacing(1)
+        lay.setSpacing(2)
         self.value = _label("–", "StatValue")
         lay.addWidget(self.value)
         lay.addWidget(_label(name, "StatName"))
@@ -77,7 +91,7 @@ class Stat(QWidget):
 
 
 def slider_row(card: Card, name: str, hint: str, slider: QSlider, fmt) -> QLabel:
-    """Name and live value on one line, the slider under it, an optional muted hint below."""
+    """Name and live value on one line, the slider bar under it, an optional muted hint below."""
     head = QHBoxLayout()
     head.addWidget(_label(name))
     head.addStretch(1)
@@ -106,30 +120,16 @@ class Control(QWidget):
         self.setObjectName("Control")
         self.setWindowTitle("NeuroPest")
         self.setWindowIcon(fly_icon())
-        self.resize(420, 780)
-        self.setMinimumWidth(380)
+        self.resize(760, 560)
+        self.setMinimumSize(620, 440)
 
-        scroll = QScrollArea(widgetResizable=True, frameShape=QFrame.NoFrame)
-        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-        page = QWidget()
-        scroll.setWidget(page)
-        outer = QVBoxLayout(self)
-        outer.setContentsMargins(0, 0, 0, 0)
-        outer.addWidget(scroll)
-        self.page = QVBoxLayout(page)
-        self.page.setContentsMargins(18, 18, 18, 18)
-        self.page.setSpacing(12)
+        # Root two-column layout: Sidebar on the left, Content pages on the right
+        root = QHBoxLayout(self)
+        root.setContentsMargins(0, 0, 0, 0)
+        root.setSpacing(0)
 
-        self._header()
-        self._live_card()
-        self._behaviour_card()
-        self._vision_card()
-        self._circuit_card()
-        self._compute_card()
-        self._view_card()
-        self.page.addStretch(1)
-        self.page.addWidget(_label("Bağlantı verisi: FlyWire v783 (Dorkenwald ve ark.; Schlegel ve ark., "
-                                   "Nature 2024), CC BY-NC 4.0 (ticari olmayan kullanım). Nöron modeli: Shiu ve ark. 2024.", "Faint", wrap=True))
+        self._setup_sidebar(root)
+        self._setup_content(root)
 
         self._load_sizes(runner.cfg.n)
         self._debounce = QTimer(self, singleShot=True, interval=500, timeout=self._apply)
@@ -141,28 +141,134 @@ class Control(QWidget):
         self._t.start()
         self._refresh()
 
-    # ------------------------------------------------------------------ layout
-    def _header(self):
-        row = QHBoxLayout()
+    # ------------------------------------------------------------------ sidebar
+    def _setup_sidebar(self, parent_layout: QHBoxLayout):
+        sidebar = QFrame()
+        sidebar.setObjectName("Sidebar")
+        sidebar.setFixedWidth(220)
+        lay = QVBoxLayout(sidebar)
+        lay.setContentsMargins(16, 20, 16, 18)
+        lay.setSpacing(10)
+
+        # App Brand Header
+        brand = QHBoxLayout()
         icon = QLabel()
-        icon.setPixmap(fly_icon().pixmap(36, 36))
-        row.addWidget(icon)
+        icon.setPixmap(fly_icon().pixmap(32, 32))
+        brand.addWidget(icon)
         titles = QVBoxLayout()
-        titles.setSpacing(0)
+        titles.setSpacing(1)
         titles.addWidget(_label("NeuroPest", "Title"))
-        titles.addWidget(_label("FlyWire beyniyle yaşayan sinek", "Subtitle"))
-        row.addLayout(titles)
-        row.addStretch(1)
+        titles.addWidget(_label("FlyWire Pet", "Subtitle"))
+        brand.addLayout(titles)
+        brand.addStretch(1)
+        lay.addLayout(brand)
+
+        # State Pill right under header
         self.pill = QLabel()
         self.pill.setAlignment(Qt.AlignCenter)
-        row.addWidget(self.pill, 0, Qt.AlignVCenter)
-        self.page.addLayout(row)
+        lay.addWidget(self.pill)
 
-    def _live_card(self):
-        card = Card("Canlı")
+        lay.addSpacing(14)
+        lay.addWidget(_label("KATEGORİLER", "Section"))
+
+        # Navigation buttons
+        self.nav_buttons: list[QPushButton] = []
+        nav_items = [
+            ("Canlı İzleme", 0),
+            ("Davranış", 1),
+            ("Görsel Girdi", 2),
+            ("Devre & Donanım", 3),
+            ("Görünüm", 4),
+        ]
+        for title, idx in nav_items:
+            btn = QPushButton(title)
+            btn.setObjectName("NavBtn")
+            btn.setCursor(Qt.PointingHandCursor)
+            btn.setProperty("active", "true" if idx == 0 else "false")
+            btn.clicked.connect(lambda _, i=idx: self._switch_tab(i))
+            self.nav_buttons.append(btn)
+            lay.addWidget(btn)
+
+        lay.addStretch(1)
+        lay.addWidget(_label("FlyWire v783 connectome\nShiu et al. (Nature 2024)", "Faint", wrap=True))
+
+        parent_layout.addWidget(sidebar)
+
+    def _switch_tab(self, idx: int):
+        self.stack.setCurrentIndex(idx)
+        for i, btn in enumerate(self.nav_buttons):
+            active_str = "true" if i == idx else "false"
+            btn.setProperty("active", active_str)
+            btn.style().unpolish(btn)
+            btn.style().polish(btn)
+
+    # ------------------------------------------------------------------ content
+    def _setup_content(self, parent_layout: QHBoxLayout):
+        scroll = QScrollArea(widgetResizable=True, frameShape=QFrame.NoFrame)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        content_wrap = QWidget()
+        scroll.setWidget(content_wrap)
+
+        content_lay = QVBoxLayout(content_wrap)
+        content_lay.setContentsMargins(24, 20, 24, 20)
+        content_lay.setSpacing(16)
+
+        self.stack = QStackedWidget()
+
+        # Page 0: Canlı İzleme
+        p0 = QWidget()
+        p0_lay = QVBoxLayout(p0)
+        p0_lay.setContentsMargins(0, 0, 0, 0)
+        p0_lay.setSpacing(14)
+        self._build_live_page(p0_lay)
+        p0_lay.addStretch(1)
+        self.stack.addWidget(p0)
+
+        # Page 1: Davranış
+        p1 = QWidget()
+        p1_lay = QVBoxLayout(p1)
+        p1_lay.setContentsMargins(0, 0, 0, 0)
+        p1_lay.setSpacing(14)
+        self._build_behaviour_page(p1_lay)
+        p1_lay.addStretch(1)
+        self.stack.addWidget(p1)
+
+        # Page 2: Görsel Girdi
+        p2 = QWidget()
+        p2_lay = QVBoxLayout(p2)
+        p2_lay.setContentsMargins(0, 0, 0, 0)
+        p2_lay.setSpacing(14)
+        self._build_vision_page(p2_lay)
+        p2_lay.addStretch(1)
+        self.stack.addWidget(p2)
+
+        # Page 3: Devre & Donanım
+        p3 = QWidget()
+        p3_lay = QVBoxLayout(p3)
+        p3_lay.setContentsMargins(0, 0, 0, 0)
+        p3_lay.setSpacing(14)
+        self._build_circuit_page(p3_lay)
+        p3_lay.addStretch(1)
+        self.stack.addWidget(p3)
+
+        # Page 4: Görünüm
+        p4 = QWidget()
+        p4_lay = QVBoxLayout(p4)
+        p4_lay.setContentsMargins(0, 0, 0, 0)
+        p4_lay.setSpacing(14)
+        self._build_view_page(p4_lay)
+        p4_lay.addStretch(1)
+        self.stack.addWidget(p4)
+
+        content_lay.addWidget(self.stack)
+        parent_layout.addWidget(scroll, 1)
+
+    # ------------------------------------------------------------------ pages
+    def _build_live_page(self, lay: QVBoxLayout):
+        card = Card("Canlı Ölçümler")
         grid = QGridLayout()
-        grid.setHorizontalSpacing(12)
-        grid.setVerticalSpacing(12)
+        grid.setHorizontalSpacing(16)
+        grid.setVerticalSpacing(14)
         self.s_gf = Stat("Giant Fiber", "Kaçış (uçuş) komut nöronunun ateşleme hızı")
         self.s_mdn = Stat("MDN", "Geri yürüme komut nöronlarının ateşleme hızı")
         self.s_steer = Stat("Yön", "Sağ eksi sol DNa02 hızı (pozitif: sağa döner)")
@@ -179,43 +285,44 @@ class Control(QWidget):
         self.warn = _label("", "Warn", wrap=True)
         self.warn.hide()
         card.body.addWidget(self.warn)
-        self.page.addWidget(card)
+        lay.addWidget(card)
 
-    def _behaviour_card(self):
-        card = Card("Davranış")
+    def _build_behaviour_page(self, lay: QVBoxLayout):
+        card = Card("Davranış Ayarları")
         w = QSlider(Qt.Horizontal, minimum=0, maximum=100, value=int(self.runner.bias * 100))
         w.valueChanged.connect(lambda v: setattr(self.runner, "bias", v / 100))
-        slider_row(card, "Hareketlilik", "Yürüme komut nöronlarına verilen sürücü: düşükse durur, yüksekse gezer.",
+        slider_row(card, "Hareketlilik (İleri Yürüme Sürücüsü)",
+                   "Yürüme komut nöronlarına (DNp09/P9) verilen tonik akım: düşükse durur, yüksekse gezer.",
                    w, lambda v: f"%{v}")
+
         k = QSlider(Qt.Horizontal, minimum=0, maximum=100, value=50)
         k.valueChanged.connect(lambda v: setattr(self.runner, "skittish", 2.0 ** ((v - 50) / 25.0)))
-        slider_row(card, "Ürkeklik", "Yaklaşan imlece duyarlılık: geri yürüme ve kaçış eşiklerini ölçekler.",
+        slider_row(card, "Ürkeklik (Kaçış Duyarlılığı)",
+                   "Yaklaşan nesnelere karşı hassasiyet: geri çekilme ve uçuş eşiklerini çarpar.",
                    k, lambda v: f"×{2.0 ** ((v - 50) / 25.0):.2f}")
-        self.page.addWidget(card)
+        lay.addWidget(card)
 
-    def _vision_card(self):
-        card = Card("Görsel girdi")
+    def _build_vision_page(self, lay: QVBoxLayout):
+        card = Card("Görsel Girdi & Ekran Yakalama")
         self.has_eye = CACHE.exists() and EYE.exists() and FIELD.exists()
-        self.vision = QCheckBox("Ekranı sineğin gözüyle gör", enabled=self.has_eye)
-        self.vision.setToolTip("İmleç sayıları yerine görüntü: huni görüşü, retinotopik dedektörler ve projeksiyon "
-                               "nöronlarının bağlantıdan çıkarılan alıcı alanları (neuropest/vision.py)")
+        self.vision = QCheckBox("Ekranı sineğin gözüyle gör (Gerçek Ekran Yakalama)", enabled=self.has_eye)
+        self.vision.setToolTip("İmleç sayıları yerine gerçek masaüstü görüntüsü: 480 px huni görüşü, retinotopik dedektörler")
         self.vision.toggled.connect(lambda on: setattr(self.runner, "vision", on))
         card.body.addWidget(self.vision)
-        # The cursor is a disc at eye level (VisionParams.cursor_model = "sphere"), so the eye height changes nothing
-        # for it; the slider is for the funnel view of a screen image (screen capture, not built yet) and the legacy
-        # plane-disk model.
+
         hgt = QSlider(Qt.Horizontal, minimum=40, maximum=300, value=int(self.runner.eye_height),
                       enabled=self.has_eye)
         hgt.valueChanged.connect(lambda v: setattr(self.runner, "eye_height", float(v)))
-        slider_row(card, "Göz yüksekliği", "Ekran düzleminin kaç px üstünden bakıyor: büyük = daha dikey (tepeden) bakış. "
-                   "Gerçek ekran görüntüsünün huni (funnel) bakış açısını ayarlar.", hgt, lambda v: f"{v} px")
+        slider_row(card, "Göz Yüksekliği (Bakış Eğimi)",
+                   "Ekran düzleminin kaç px üstünden bakıyor: büyük = daha dikey (tepeden) huni açısı.",
+                   hgt, lambda v: f"{v} px")
+
         self.vision_info = _label("", "Faint", wrap=True)
         card.body.addWidget(self.vision_info)
-        self.page.addWidget(card)
+        lay.addWidget(card)
         self._describe_vision(0.0)
 
     def _describe_vision(self, state: float):
-        """`state` is the worker's vision flag: 1 on, 0 off, -1 wanted but unusable."""
         if not self.has_eye:
             text = "Göz verisi yok: uv run python tools/build_eye.py (ham veri gerekir, README'ye bak)."
         elif state > 0:
@@ -228,75 +335,78 @@ class Control(QWidget):
         self.vision_info.setText(text)
         self.vision_info.setVisible(bool(text))
 
-    def _circuit_card(self):
-        card = Card("Devre")
+    def _build_circuit_page(self, lay: QVBoxLayout):
+        card = Card("Sinir Devresi")
         self.circuits = ([("flywire", "FlyWire v783 (gerçek bağlantı)")] if CACHE.exists() else []) \
             + [("toy", "Oyuncak devre (sentetik yük)")]
         self.circ = QComboBox()
         self.circ.addItems([name for _, name in self.circuits])
         self.circ.setCurrentIndex([c for c, _ in self.circuits].index(self.runner.cfg.circuit))
-        card.body.addWidget(self.circ)
+        labeled(card, "Devre Tipi", self.circ)
+
         if not CACHE.exists():
             card.body.addWidget(_label("Gerçek devre için: uv run python tools/build_flywire.py "
                                        "(README'ye bak)", "Hint", wrap=True))
 
         head = QHBoxLayout()
-        head.addWidget(_label("Devre boyutu"))
+        head.addWidget(_label("Devre Boyutu (Nöron Sayısı)"))
         head.addStretch(1)
         self.size_label = _label("", "Value")
         head.addWidget(self.size_label)
         card.body.addLayout(head)
         self.size = QSlider(Qt.Horizontal)
         card.body.addWidget(self.size)
+
         self.tier_info = _label("", "Faint", wrap=True)
         card.body.addWidget(self.tier_info)
 
         self.dt = QComboBox()
         self.dt.addItems([n for n, _ in DTS])
         self.dt.setCurrentIndex([d for _, d in DTS].index(self.runner.cfg.dt))
-        labeled(card, "Zaman adımı (küçük: daha doğru, daha ağır)", self.dt)
-        self.page.addWidget(card)
+        labeled(card, "Zaman adımı dt (küçük: daha doğru, daha ağır)", self.dt)
+        lay.addWidget(card)
 
-    def _compute_card(self):
-        card = Card("Hesaplama")
+        # Compute sub-card
+        comp_card = Card("Hesaplama Donanımı")
         self.hw = QComboBox()
         self.hw.addItems(["Otomatik", "CPU"])
         self.hw.setToolTip(f"Otomatik: {GPU_AUTO_MIN_NEURONS:,} nöron ve üstünde GPU, altında CPU")
-        card.body.addWidget(self.hw)
+        labeled(comp_card, "İşlemci / GPU Tercihi", self.hw)
+
         self.gpus: list[dict] = []
         self._gpu_result: list | None = None
         self._gpu_scanned = False
         self._gpu_scanning = False
-        self._apply_pending = False                                 # a size that needs the GPU list waits for the scan
+        self._apply_pending = False
         self.has_wgpu = importlib.util.find_spec("wgpu") is not None
         if self.has_wgpu:
-            # Listing adapters costs ~1 s and ~100 MB in a helper process, so it happens only when asked for:
-            # the entry below, or an automatic choice big enough to want a GPU.
             self.hw.addItem(SCAN_ITEM)
             self.hw.activated.connect(self._hw_activated)
             self.gpu_note = _label("GPU'lar arama isteğiyle bulunur (~1 s, ~100 MB)", "Faint")
-            card.body.addWidget(self.gpu_note)
+            comp_card.body.addWidget(self.gpu_note)
             self._gpu_poll = QTimer(self, timeout=self._gpus_found, interval=250)
         else:
-            card.body.addWidget(_label("GPU desteği için: uv sync --extra gpu", "Hint", wrap=True))
-        self.page.addWidget(card)
+            comp_card.body.addWidget(_label("GPU desteği için: uv sync --extra gpu", "Hint", wrap=True))
+        lay.addWidget(comp_card)
 
-    def _view_card(self):
-        card = Card("Görünüm")
+    def _build_view_page(self, lay: QVBoxLayout):
+        card = Card("Görünüm & Monitör")
         s = QSlider(Qt.Horizontal, minimum=5, maximum=40, value=int(self.overlay.scale * 10))
         s.valueChanged.connect(lambda v: setattr(self.overlay, "scale", v / 10))
-        slider_row(card, "Sinek boyutu", "", s, lambda v: f"×{v / 10:.1f}")
+        slider_row(card, "Sinek Boyutu", "Masaüstündeki görünür büyüklük", s, lambda v: f"×{v / 10:.1f}")
+
         self.visible = QCheckBox("Sinek görünür", checked=True)
         self.visible.toggled.connect(self.overlay.setVisible)
         card.body.addWidget(self.visible)
+
         screens = QApplication.screens()
         if len(screens) > 1:
             box = QComboBox()
             box.addItems([f"{i + 1}: {s.name()}" for i, s in enumerate(screens)])
             box.setCurrentIndex(screens.index(self.overlay.home))
             box.currentIndexChanged.connect(lambda i: self.overlay.set_home(screens[i]))
-            labeled(card, "Ekran", box)
-        self.page.addWidget(card)
+            labeled(card, "Sanal Alan / Monitör", box)
+        lay.addWidget(card)
 
     # ------------------------------------------------------------ circuit choice
     def _kind(self) -> str:
@@ -346,7 +456,7 @@ class Control(QWidget):
 
     def _hw_activated(self, i: int):
         if not self._gpu_scanned and self.hw.itemText(i) == SCAN_ITEM:
-            self.hw.setCurrentIndex(0)                              # back to "Otomatik" while the list is built
+            self.hw.setCurrentIndex(0)
             self._scan_gpus()
 
     def _scan_gpus(self):
@@ -374,7 +484,6 @@ class Control(QWidget):
             self._apply()
 
     def _hardware(self, n: int) -> tuple[str, int | None]:
-        """(backend, adapter) for the chosen 'Hesaplama' entry; automatic = GPU for big tiers."""
         i = self.hw.currentIndex()
         if i >= 2 and self._gpu_scanned:
             return "gpu", self.gpus[i - 2]["index"]
@@ -385,7 +494,7 @@ class Control(QWidget):
     def _apply(self):
         n = self._sizes()[self.size.value()]
         if self.hw.currentIndex() == 0 and n >= GPU_AUTO_MIN_NEURONS and self.has_wgpu and not self._gpu_scanned:
-            self._apply_pending = True                              # "Otomatik" needs to know the GPUs first
+            self._apply_pending = True
             self._scan_gpus()
             return
         backend, adapter = self._hardware(n)
@@ -402,7 +511,7 @@ class Control(QWidget):
 
     def _show_warn(self, text: str, error: bool = False):
         self.warn.setObjectName("Error" if error else "Warn")
-        self.warn.style().unpolish(self.warn)          # re-apply the stylesheet for the new name
+        self.warn.style().unpolish(self.warn)
         self.warn.style().polish(self.warn)
         self.warn.setText(text)
         self.warn.setVisible(bool(text))

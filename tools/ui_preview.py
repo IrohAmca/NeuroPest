@@ -56,9 +56,16 @@ def main():
         ctrl = Control(FakeOverlay(), runner)
         ctrl.show()
         app.processEvents()
-        ctrl.resize(420, ctrl.findChild(QScrollArea).widget().sizeHint().height())   # whole page, no scrolling
+        ctrl.resize(760, 560)
         app.processEvents()
         ctrl.grab().save(str(out / name))
+        if name == "control.png":
+            tab_names = ["tab_live.png", "tab_behaviour.png", "tab_vision.png", "tab_circuit.png", "tab_view.png"]
+            for i, tname in enumerate(tab_names):
+                ctrl._switch_tab(i)
+                app.processEvents()
+                ctrl.grab().save(str(out / tname))
+            ctrl._switch_tab(0)
         tray = Tray(app, ctrl, runner)
         if name == "control.png":
             tray.menu.show()
