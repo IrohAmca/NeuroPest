@@ -386,3 +386,9 @@ parçalar, gerçek zamana hızlanma bekleyerek) GTX 1650'de tam beyin ×5, işle
    her biri için sıralamayı yeniden kurmak.
 3. Otomatik boyut/donanım seçimi (makineyi ölç, gerçek zamanı tutan en küçük maliyet).
 4. Gerçek sprite'lar ve daha iyi yürüme/uçma/geri yürüme animasyonu.
+5. **Bilinen sorun: sol/sağ yön asimetrisi.** Tam beyinde LC10_L ve LC10_R eşit oranda sürülünce DNa02 hızları eşit
+   değil (18 Hz'de 83 Hz'e karşı 20,5 Hz; 75 Hz'de 184'e karşı 76,5; DNa02 yanda tek nöron, sağ taraf gürültülü).
+   `steer = DNa02_R - DNa02_L` ile döndüğü için tam karşıdan simetrik yaklaşma bile sola dönüş üretiyor (görüntü
+   sürücülü sahnelerde ortalama -10 ile -20 Hz). Ölçüm: `tools/fidelity.py --mirror`, `data/probes/steer_symmetry.csv`.
+   Sebep (LC10 alt tipleri, taraf başına bağlantı sayıları, DNa02 farkı) araştırılmadı. Olası çözüm taraf başına yön
+   kazancını normalleştirmek (tasarlanmış bir katman olur); karar bekliyor.
