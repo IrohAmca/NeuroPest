@@ -15,10 +15,10 @@ from .paths import CACHE
 from .states import STAND, STATES
 
 # input slots
-I_DIST, I_CLOSING, I_BIAS, I_SKITTISH, I_BEARING = 0, 1, 2, 3, 4
+I_DIST, I_CLOSING, I_BIAS, I_SKITTISH, I_BEARING, I_TOUCH = 0, 1, 2, 3, 4, 5
 # output slots
 (O_READY, O_STATE, O_GF, O_WALK, O_REST, O_RT, O_ACTIVE, O_N, O_CPU, O_LAG, O_SIM_S, O_BEAT, O_MDN, O_STEER,
- O_SPIKES) = range(15)
+ O_SPIKES, O_GROOM) = range(16)
 
 CHUNK_MS = 4.0              # simulated time advanced per loop iteration
 CHUNK_MS_GPU = 12.0         # a GPU read-back costs ~1 ms regardless of size; measured x1.8 -> x2.8-4 on a GTX 1650
@@ -121,7 +121,7 @@ def _loop(cfg: EngineConfig, brain, net, inp, out, stop) -> None:
     spikes0 = brain.engine.total_spikes
     w_wall, w_cpu, w_comp, w_sim, w_active, w_iters = t0, time.process_time(), 0.0, 0.0, 0.0, 0
     while not stop.is_set():
-        cur = (inp[I_DIST], inp[I_CLOSING], inp[I_BIAS], inp[I_SKITTISH], round(inp[I_BEARING], 2))
+        cur = (inp[I_DIST], inp[I_CLOSING], inp[I_BIAS], inp[I_SKITTISH], round(inp[I_BEARING], 2), inp[I_TOUCH])
         if cur != last_in:
             brain.set_stimulus(*cur)
             last_in = cur
@@ -137,7 +137,7 @@ def _loop(cfg: EngineConfig, brain, net, inp, out, stop) -> None:
         sim_ms += chunk
         out[O_STATE] = float(STATES.index(state))
         out[O_GF], out[O_WALK], out[O_REST] = (brain.rates["GF"], brain.rates["WALK"], brain.rates["REST"])
-        out[O_MDN], out[O_STEER] = brain.rates["MDN"], brain.steer
+        out[O_MDN], out[O_STEER], out[O_GROOM] = brain.rates["MDN"], brain.steer, brain.rates["GROOM"]
 
         ahead = t0 + sim_ms / 1000.0 - time.perf_counter()
         if ahead > 0:
@@ -196,10 +196,10 @@ class Runner:
             self._proc.join(1.0)
         self._proc = None
 
-    def send(self, dist: float, closing: float, bearing: float = 0.0) -> None:
+    def send(self, dist: float, closing: float, bearing: float = 0.0, touch: float = 0.0) -> None:
         inp = self.inp
         inp[I_DIST], inp[I_CLOSING], inp[I_BIAS], inp[I_SKITTISH] = dist, closing, self.bias, self.skittish
-        inp[I_BEARING] = bearing
+        inp[I_BEARING], inp[I_TOUCH] = bearing, touch
 
     @property
     def steer(self) -> float:
@@ -226,4 +226,4 @@ class Runner:
         o = self.out
         return dict(ready=self.ready, n=int(o[O_N]), rt=o[O_RT], active=o[O_ACTIVE], cpu=o[O_CPU],
                     lag_ms=o[O_LAG], gf=o[O_GF], walk=o[O_WALK], rest=o[O_REST], mdn=o[O_MDN],
-                    steer=o[O_STEER], sim_s=o[O_SIM_S], spikes=o[O_SPIKES])
+                    steer=o[O_STEER], groom=o[O_GROOM], sim_s=o[O_SIM_S], spikes=o[O_SPIKES])

@@ -63,3 +63,13 @@ def test_clamp_after_taskbar_grows():
     fly = Fly(500, 1000)
     fly.clamp((25.0, 25.0, 1895.0, 900.0))
     assert fly.y == 900.0
+
+
+def test_grooming_fly_stays_in_place():
+    from neuropest.states import GROOM
+
+    fly = Fly(500, 500)
+    x, y, heading = fly.x, fly.y, fly.heading
+    for _ in range(60):
+        fly.update(1 / 60, GROOM, (500, 500), RECT)
+    assert (fly.x, fly.y) == (x, y) and abs(fly.heading - heading) < 1e-9 and fly.phase != 0.0

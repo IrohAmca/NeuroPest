@@ -20,6 +20,7 @@ from .runner import GPU_AUTO_MIN_NEURONS, EngineConfig, Runner, list_gpus, pick_
 FLYWIRE_SIZES = [2_000, 5_000, 10_000, 15_000, 20_000, 50_000, 138_639]
 FLYWIRE_DEFAULT = 15_000
 TOY_SIZES = [146, 500, 2_000, 5_000, 10_000, 25_000, 50_000, 100_000, 139_000]
+TOUCH_RADIUS_PX = 14.0     # cursor this close to the fly center (times its scale) touches it
 DTS = [("Hassas (0.1 ms)", 0.1), ("Dengeli (0.5 ms)", 0.5), ("Hızlı (1 ms)", 1.0)]
 
 
@@ -78,7 +79,8 @@ class Overlay(QWidget):
         dist = ((cur.x() - self.fly.x) ** 2 + (cur.y() - self.fly.y) ** 2) ** 0.5
         closing = 0.0 if self.prev_dist is None else (self.prev_dist - dist) / max(dt, 1e-3)
         self.prev_dist = dist
-        self.runner.send(dist, closing, self.fly.bearing_of((cur.x(), cur.y())))
+        touch = 1.0 if dist < TOUCH_RADIUS_PX * self.scale else 0.0      # click-through overlay: hover = cursor over the fly
+        self.runner.send(dist, closing, self.fly.bearing_of((cur.x(), cur.y())), touch)
         self.fly.update(dt, self.runner.state, (cur.x(), cur.y()), self.play_rect(), self.runner.steer)
         self.update()
 

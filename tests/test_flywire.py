@@ -6,7 +6,7 @@ import pyarrow.parquet as pq
 import pytest
 
 from neuropest import flywire
-from neuropest.brain import FLY, RETREAT, STAND, Brain
+from neuropest.brain import FLY, GROOM, RETREAT, STAND, Brain
 from neuropest.engine import LIFEngine
 
 N = 400
@@ -36,8 +36,16 @@ def raw(tmp_path_factory):
     side[74], side[75] = "left", "right"
     types[76:96], sc[76:96] = "LC10c-2", "visual_projection"
     side[76:86], side[86:96] = "left", "right"
+    # 100..109 head bristles (BM_InOm) and 110..114 Johnston's organ C/E, left; 120..129 and 130..134 right;
+    # 140,141 taste bristles (must not count as touch); 150..153 grooming DNs (aDN1 = DNg62, aDN2 = DNge078)
+    cc = np.array([np.nan] * N, dtype=object)
+    for lo, s_ in ((100, "left"), (120, "right")):
+        types[lo:lo + 10], types[lo + 10:lo + 15], side[lo:lo + 15] = "BM_InOm", "JO-CE", s_
+        cc[lo:lo + 15] = "mechanosensory"
+    types[140:142], cc[140:142] = "BM_Taste", "mechanosensory"
+    types[150:152], types[152:154], sc[150:154] = "DNg62", "DNge078", "descending"
     pd.DataFrame({"Completed": True}, index=pd.Index(ids)).to_csv(d / "Completeness_783.csv")
-    ann = pd.DataFrame({"root_id": ids, "flow": "intrinsic", "super_class": sc, "cell_class": np.nan,
+    ann = pd.DataFrame({"root_id": ids, "flow": "intrinsic", "super_class": sc, "cell_class": cc,
                         "cell_type": types, "hemibrain_type": hb, "side": side})
     ann.to_csv(d / "Supplemental_file1_neuron_annotations.tsv", sep="\t", index=False)
     pre, post, cnt = [], [], []
@@ -51,6 +59,7 @@ def raw(tmp_path_factory):
     strong += [(range(0, 30), (50, 51), 15)]              # looming -> GF
     strong += [(range(60, 70), (70, 71, 72, 73), 40)]     # LPC1 -> MDN
     strong += [(range(76, 86), (74,), 80), (range(86, 96), (75,), 80)]   # LC10 -> DNa02 of the same side
+    strong += [(range(100, 115), (150, 152), 40), (range(120, 135), (151, 153), 40)]   # touch -> grooming DNs
     for rows, targets, c in strong:
         for i in rows:
             for j in targets:
@@ -88,7 +97,9 @@ def test_groups_follow_the_annotation(raw):
     assert list(g["RETREAT_IN"]) == list(range(60, 70)) and list(g["MDN"]) == [70, 71, 72, 73]
     assert list(g["DNa02_L"]) == [74] and list(g["DNa02_R"]) == [75]
     assert list(g["LC10_L"]) == list(range(76, 86)) and list(g["LC10_R"]) == list(range(86, 96))
-    assert len(g["VPN"]) == 80 and len(g["DN"]) == 16
+    assert len(g["VPN"]) == 80 and len(g["DN"]) == 20
+    assert list(g["TOUCH_L"]) == list(range(100, 115)) and list(g["TOUCH_R"]) == list(range(120, 135))
+    assert list(g["GROOM"]) == [150, 151, 152, 153]
 
 
 def test_build_orders_pinned_first_and_prefix_is_a_valid_network(raw):
@@ -170,3 +181,17 @@ def test_brain_steering_follows_the_side_of_the_cursor(tier):
     ahead.set_stimulus(150, 0, 0.0, bearing=0.0)
     _settle(ahead, 800)
     assert abs(ahead.steer) < 1
+
+
+def test_brain_hover_makes_the_fly_groom_and_calms_a_take_off(tier):
+    b = Brain(tier)
+    b.set_stimulus(5, 0, 0.0, bearing=0.5, touch=1.0)    # cursor on the fly, on its right
+    seen = {b.advance(4.0) for _ in range(250)}
+    assert GROOM in seen and FLY not in seen
+    b.set_stimulus(900, 0, 0.0, bearing=0.5, touch=0.0)  # cursor leaves: grooming ends after its minimum
+    _settle(b, 2000)
+    assert b.state == STAND
+    off = Brain(tier)
+    off.set_stimulus(5, 0, 0.0, bearing=0.5, touch=0.0)  # near but not touching: no grooming
+    assert GROOM not in {off.advance(4.0) for _ in range(250)}
+
