@@ -21,13 +21,15 @@ I_DIST, I_CLOSING, I_BIAS, I_SKITTISH, I_BEARING, I_TOUCH = 0, 1, 2, 3, 4, 5
 I_X, I_Y, I_HEAD, I_CX, I_CY, I_VISION, I_HEIGHT = 6, 7, 8, 9, 10, 11, 12     # fly pose, cursor, vision switch
 I_STAMP = 13                # clock reading (s) of the frame the GUI sampled the cursor and pose at; 0 = not sent
 I_PHERO_STEER, I_PHERO_DRIVE, I_PHERO_REPEL, I_AT_TARGET = 14, 15, 16, 17
+I_FORGET = 18               # counter: every increase makes the fly forget what it learned
 # output slots
 (O_READY, O_STATE, O_GF, O_WALK, O_REST, O_RT, O_ACTIVE, O_N, O_CPU, O_LAG, O_SIM_S, O_BEAT, O_MDN, O_STEER,
- O_SPIKES, O_GROOM, O_VISION) = range(17)
+ O_SPIKES, O_GROOM, O_VISION, O_VALENCE) = range(18)
 
 CHUNK_MS = 4.0              # simulated time advanced per loop iteration
 CHUNK_MS_GPU = 12.0         # a GPU read-back costs ~1 ms regardless of size; measured x1.8 -> x2.8-4 on a GTX 1650
 STATS_EVERY_S = 0.25
+MEMORY_SAVE_S = 60.0        # the learned weights are written this often (and on exit) when they changed
 VISION_PERIOD_MS = 20.0     # the vision pipeline looks at a new image this often: 5 CPU chunks (60 Hz was rounded up to this anyway)
 MAX_FRAME_GAP_S = 0.25      # two cursor samples further apart than this say nothing about its speed (a stalled GUI)
 MAX_LAG_S = 0.25            # beyond this the backlog is dropped (slow motion instead of catching up)
@@ -82,7 +84,9 @@ def pick_gpu(gpus: list[dict]) -> int | None:
 def default_config() -> EngineConfig:
     """The real connectome at 15,000 neurons (within ~2% of the full brain for every cursor
     stimulus, tools/fidelity.py) when its cache has been built, else the toy circuit."""
-    return EngineConfig("flywire", 15_000) if CACHE.exists() else EngineConfig()
+    from .paths import MEMORY
+
+    return EngineConfig("flywire", 15_000, memory_path=str(MEMORY)) if CACHE.exists() else EngineConfig()
 
 
 def build_network(cfg: EngineConfig):
@@ -135,6 +139,8 @@ def _loop(cfg: EngineConfig, brain, net, inp, out, stop, cap_frame=None, cap_met
     eye = _Eye(net, cap_frame, cap_meta)
     approach = _Approach()
     last_in = None
+    forget_seen = inp[I_FORGET]
+    last_save = time.perf_counter()
     t0 = time.perf_counter()
     sim_ms = 0.0
     spikes0 = brain.engine.total_spikes
@@ -154,6 +160,9 @@ def _loop(cfg: EngineConfig, brain, net, inp, out, stop, cap_frame=None, cap_met
         if cur != last_in:
             brain.set_stimulus(*cur)
             last_in = cur
+        if inp[I_FORGET] != forget_seen and brain.mb is not None:
+            forget_seen = inp[I_FORGET]
+            brain.mb.reset()
         state = brain.advance(chunk)
         spent = time.perf_counter() - t
         w_comp += spent
@@ -166,6 +175,13 @@ def _loop(cfg: EngineConfig, brain, net, inp, out, stop, cap_frame=None, cap_met
         out[O_STATE] = float(STATES.index(state))
         out[O_GF], out[O_WALK], out[O_REST] = (brain.rates["GF"], brain.rates["WALK"], brain.rates["REST"])
         out[O_MDN], out[O_STEER], out[O_GROOM] = brain.rates["MDN"], brain.steer, brain.rates["GROOM"]
+        out[O_VALENCE] = brain.valence
+        if brain.mb is not None and cfg.memory_path and brain.mb.dirty and time.perf_counter() - last_save > MEMORY_SAVE_S:
+            last_save = time.perf_counter()
+            try:
+                brain.mb.save(cfg.memory_path)
+            except OSError:
+                pass
 
         ahead = t0 + sim_ms / 1000.0 - time.perf_counter()
         if ahead > 0:
@@ -449,6 +465,15 @@ class Runner:
         if hasattr(self, "capture") and self.capture is not None:
             cx, cy = capture_pos if capture_pos is not None else (pose[0], pose[1])
             self.capture.update_target(cx, cy, enabled=self.vision)
+
+    @property
+    def valence(self) -> float:
+        """Learned valence of what the fly senses now, -1 (fear) .. +1 (desire); 0 for a naive fly."""
+        return self.out[O_VALENCE] if self.ready else 0.0
+
+    def forget(self) -> None:
+        """Amnesia: the worker resets the learned weights (and saves the empty memory soon after)."""
+        self.inp[I_FORGET] += 1.0
 
     @property
     def steer(self) -> float:

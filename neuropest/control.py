@@ -591,7 +591,7 @@ class Control(QWidget):
         backend, adapter = self._hardware(n)
         sym = self.sym_options[self.sym_combo.currentIndex()][0]
         cfg = EngineConfig(self._kind(), n, DTS[self.dt.currentIndex()][1], backend=backend, adapter=adapter,
-                           symmetry=sym)
+                           symmetry=sym, memory_path=self.runner.cfg.memory_path)
         if cfg != self.runner.cfg:
             self.runner.start(cfg)
 

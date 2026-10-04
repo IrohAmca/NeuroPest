@@ -145,3 +145,39 @@ def test_escape_punishes_the_cue_but_a_chase_does_not():
     for _ in range(40):
         c.advance(50.0)
     assert c._punish == 0.0
+
+
+def test_runner_remembers_across_restarts_and_forgets_on_request(tmp_path):
+    import time as _t
+
+    from neuropest.runner import EngineConfig, Runner
+
+    f = tmp_path / "mem.npz"
+    cfg = EngineConfig(n=500, dt=0.5, memory_path=str(f))
+    r = Runner(cfg)
+    try:
+        t0 = _t.time()
+        while not r.ready and _t.time() - t0 < 60:
+            _t.sleep(0.1)
+        assert r.ready
+        for _ in range(60):                              # feed with the food odor for a few seconds
+            r.send(900, 0, phero_drive=0.9, at_target=True)
+            _t.sleep(0.1)
+    finally:
+        r.stop()
+    assert f.exists() and MushroomBody().load(f)         # saved on exit
+    mb = MushroomBody()
+    mb.load(f)
+    assert mb.read(np.array([0.9, 0, 0, 0, 0.])) > 0.1
+    r2 = Runner(cfg)
+    try:
+        t0 = _t.time()
+        while not r2.ready and _t.time() - t0 < 60:
+            _t.sleep(0.1)
+        r2.forget()
+        _t.sleep(0.5)
+    finally:
+        r2.stop()
+    mb2 = MushroomBody()
+    mb2.load(f)
+    assert mb2.read(np.array([0.9, 0, 0, 0, 0.])) == 0.0

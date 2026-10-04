@@ -62,6 +62,7 @@ class MushroomBody:
         self.valence = 0.0
         self.mbon_app = self.mbon_av = 0.0
         self.pam = self.ppl1 = 0.0                    # dopamine now (0..1), for display and tests
+        self.dirty = False                            # learned since the last save
 
     # ------------------------------------------------------------------ code
     def encode(self, cues: np.ndarray) -> np.ndarray:
@@ -87,6 +88,7 @@ class MushroomBody:
         self.trace += (self.kc - self.trace) * (1.0 - math.exp(-dt / p.tau_trace_s))
         self.pam, self.ppl1 = float(reward), float(punishment)
         # three-factor rule: eligibility (KC) x dopamine -> depression of that KC's output synapse
+        self.dirty = self.dirty or reward > 0.0 or punishment > 0.0
         if reward > 0.0:
             self.w_av -= p.eta * reward * dt * self.trace * self.w_av
         if punishment > 0.0:
@@ -117,9 +119,12 @@ class MushroomBody:
         self.w_av[:] = 1.0
         self.trace[:] = 0.0
         self.valence = 0.0
+        self.dirty = True
 
     def save(self, path: str | Path) -> None:
+        Path(path).parent.mkdir(parents=True, exist_ok=True)
         np.savez(path, w_app=self.w_app, w_av=self.w_av, n_kc=self.p.n_kc, seed=self.p.seed)
+        self.dirty = False
 
     def load(self, path: str | Path) -> bool:
         """Load a saved memory; False (and nothing changes) if it is missing or made for another KC layout."""
