@@ -393,9 +393,13 @@ parçalar, gerçek zamana hızlanma bekleyerek) GTX 1650'de tam beyin ×5, işle
 5. **Feromon Simülasyonu ve Kemotaksis (Tropotaxis):** İmlece ve ekran sınırlarına tanımlanabilir kimyasal alanlar
    (itici/çekici cVA ve agregasyon profilleri); sineğin kafa açısına göre iki anten arasındaki konsantrasyon farkı
    ($\Delta C = C_R - C_L$) ile yön (DNa02) ve yürüme (DNp09/GF) sürüşü; etki alanı ve şiddeti konfigürasyonu.
-6. **Mushroom Body & Pekiştirmeli Öğrenme (RL / Sinaptik Plastisite):** Kenyon hücreleri $\to$ MBON sinapslarında
+6. **[İlk adım tamamlandı: `mushroom.py`]** **Mushroom Body & Pekiştirmeli Öğrenme (RL / Sinaptik Plastisite):** Kenyon hücreleri $\to$ MBON sinapslarında
    dopaminerjik (PAM ödül / PPL1 ceza) 3 faktörlü sinaptik plastisite kuralı; imleç veya görsel desenlerle
    ödüllendirilen/cezalandırılan davranışların deneyimle öğrenilmesi (klasik koşullanma ve hafıza).
+   Şu an: tasarlanmış (bağlantıdan okunmayan) hız modeli; rastgele PN→KC (%5 seyrek), KC→MBON (yaklaşma/kaçınma),
+   PAM (besleme) / PPL1 (GF-MDN kaynaklı tehdit) ile kapılı depresyon; çıktı değerlik (−1 korku … +1 arzu) yürüme
+   eğilimini, ürkekliği ve DNa02 yönünü ölçekler (korkuda yön ters döner). Saf sinek değerliği 0'dır, davranış değişmez.
+   Sonra: gerçek FlyWire KC/MBON/DAN hücreleri, hata (RPE) sinyali, söndürme, belleğin diske yazılması ve arayüzü.
 7. **Canlı 3D Beyin Görselleştirici (Hafif GPU/Nokta Bulutu):** Nöron soma koordinatlarının 3D nokta bulutu ve
    arka planda şeffaf nöropil kabuğu; simülasyon sürecinden gelen spike listesiyle parıldayan aksiyon potansiyeli
    dalgaları; serbest kamera (orbit), sekme gizliyken sıfır ek GPU/CPU yükü.

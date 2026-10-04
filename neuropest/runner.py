@@ -42,6 +42,8 @@ class EngineConfig:
     backend: str = "cpu"    # "cpu" (event-driven numba) or "gpu" (WebGPU, needs `uv sync --extra gpu`)
     adapter: int | None = None   # GPU adapter index (see list_gpus); None = first discrete GPU
     symmetry: str = "individual"  # "individual" (default; FlyWire connectome) or "symmetric" (hemisphere-balanced)
+    learning: bool = True   # mushroom-body valence learning (mushroom.py); a naive fly behaves as without it
+    memory_path: str | None = None   # where the learned weights are kept between runs; None = forget on exit
 
 
 GPU_AUTO_MIN_NEURONS = 50_000   # "auto" uses a GPU from this tier on: the CPU holds smaller ones in real time
@@ -108,10 +110,17 @@ def _run(cfg: EngineConfig, inp, out, stop, cap_frame=None, cap_meta=None) -> No
     from .brain import Brain
 
     net = build_network(cfg)
-    brain = Brain(net, dt=cfg.dt, seed=cfg.seed, backend=cfg.backend, adapter=cfg.adapter)
+    brain = Brain(net, dt=cfg.dt, seed=cfg.seed, backend=cfg.backend, adapter=cfg.adapter, learning=cfg.learning)
+    if brain.mb is not None and cfg.memory_path:
+        brain.mb.load(cfg.memory_path)
     try:
         _loop(cfg, brain, net, inp, out, stop, cap_frame, cap_meta)
     finally:
+        if brain.mb is not None and cfg.memory_path:
+            try:
+                brain.mb.save(cfg.memory_path)
+            except OSError:
+                pass
         close = getattr(brain.engine, "close", None)
         if close:
             close()                                 # free the GPU buffers

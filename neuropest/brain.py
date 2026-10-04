@@ -16,6 +16,7 @@ from dataclasses import dataclass
 import numpy as np
 
 from .engine import Network, create_engine
+from .mushroom import MushroomBody
 from .states import FLY, FREEZE, GROOM, RETREAT, STAND, STATES, WALK  # noqa: F401  (re-exported)
 
 
@@ -82,7 +83,8 @@ def spec_for(net: Network) -> BrainSpec:
 
 class Brain:
     def __init__(self, net: Network, dt: float = 0.5, seed: int = 0, ema_ms: float = 80.0,
-                 spec: BrainSpec | None = None, backend: str = "cpu", adapter: int | None = None):
+                 spec: BrainSpec | None = None, backend: str = "cpu", adapter: int | None = None,
+                 learning: bool = True):
         self.net = net
         self.spec = spec or spec_for(net)
         self.engine = create_engine(net, dt=dt, seed=seed, backend=backend, adapter=adapter)
@@ -110,6 +112,13 @@ class Brain:
         self._vision = None        # (neuron indices, rates in Hz) from the image, replaces the cursor numbers
         self._loom_in = 0.0        # expansion rate (1/s) of the nearest object now, from the cursor numbers or the image
         self.loom = 0.0            # the same, smoothed like the rates: what the freeze rule reads
+        # learned valence (mushroom body, mushroom.py): a designed layer, 0 for a naive fly
+        self.mb = MushroomBody() if learning else None
+        self.valence = 0.0                  # -1 fear .. +1 desire, for the cues present now
+        self._mb_ms = 0.0
+        self._reward = 0.0                  # PAM drive: feeding, held ~0.8 s after the contact
+        self._punish = 0.0                  # PPL1 drive: threat read from the spiking escape / retreat outputs
+        self._valence_driven = 0.0          # the valence the drive was last built with
         self.phero_steer = 0.0     # bilateral tropotaxis steering bias (Hz)
         self.phero_drive = 0.0     # attractive pheromone intensity (0..1)
         self.phero_repel = 0.0     # repulsive warning/border intensity (0..1)
@@ -172,8 +181,12 @@ class Brain:
     def _drive(self):
         s = self.spec
         dist, closing, bearing, touch = self._stim
-        effective_skittish = self.skittish * (1.0 + 0.5 * self.arousal)
-        effective_walk_bias = min(1.0, (self.walk_bias + 0.65 * self.phero_drive) * (1.0 + 0.3 * self.arousal))
+        v = self.valence
+        self._valence_driven = v
+        desire, fear = max(0.0, v), max(0.0, -v)
+        effective_skittish = self.skittish * (1.0 + 0.5 * self.arousal) * (1.0 + 0.8 * fear)
+        effective_walk_bias = min(1.0, (self.walk_bias + 0.65 * self.phero_drive + 0.4 * desire)
+                                  * (1.0 + 0.3 * self.arousal))
         # Food odor / attractant actively suppresses predator looming escape (GF) and backward retreat (MDN)
         if self.phero_drive > 0.05:
             expansion = 0.0
@@ -198,8 +211,13 @@ class Brain:
         side = math.sin(bearing)                         # >0: cursor to the right
 
         # Bilateral steering drive combining cursor angle and pheromone tropotaxis
-        steer_r = steer * max(0.0, side) + max(0.0, self.phero_steer)
-        steer_l = steer * max(0.0, -side) + max(0.0, -self.phero_steer)
+        # learned valence scales it: toward what the fly learned to want, away from what it learned to fear
+        gain = min(2.5, max(-1.0, 1.0 + 1.5 * v))
+        cur_r, cur_l = steer * max(0.0, side), steer * max(0.0, -side)
+        ph_r, ph_l = max(0.0, self.phero_steer), max(0.0, -self.phero_steer)
+        if gain < 0:                                     # aversion reverses the turn: the opposite side is driven
+            cur_r, cur_l, ph_r, ph_l = cur_l, cur_r, ph_l, ph_r
+        cur_r, cur_l, ph_r, ph_l = (abs(gain) * x for x in (cur_r, cur_l, ph_r, ph_l))
 
         e = self.engine
         fi, fr = [], []
@@ -211,10 +229,10 @@ class Brain:
             fi.append(self._vision[0])
             fr.append(self._vision[1])
             cursor_drive = (("VIS", vis), ("BULK_DRIVE", s.bulk_hz),
-                            ("LC10_R", max(0.0, self.phero_steer)), ("LC10_L", max(0.0, -self.phero_steer)))
+                            ("LC10_R", ph_r), ("LC10_L", ph_l))
         else:
             cursor_drive = (("LOOM", loom), ("RETREAT_IN", retreat), ("VIS", vis), ("BULK_DRIVE", s.bulk_hz),
-                            ("LC10_R", steer_r), ("LC10_L", steer_l))
+                            ("LC10_R", cur_r + ph_r), ("LC10_L", cur_l + ph_l))
         touch_drive = (("TOUCH_R", s.touch_hz * touch * (side >= 0)), ("TOUCH_L", s.touch_hz * touch * (side < 0)))
         for name, hz in cursor_drive + touch_drive:      # touch is mechanical, not visual: it always comes from the cursor
             idx = self.group(name)
@@ -275,7 +293,36 @@ class Brain:
                 self._last_arousal_drive = self.arousal
                 self._drive()
         self._decode(ms)
+        if self.mb is not None:
+            self._learn(ms)
         return self.state
+
+    MB_STEP_MS = 50.0
+
+    def _learn(self, ms: float):
+        """Mushroom-body step every 50 ms: cues in, dopamine from the unconditioned stimuli, valence out.
+
+        Reward (PAM) = feeding at a pheromone source. Punishment (PPL1) = threat read from the spiking outputs: Giant
+        Fiber (escape), MDN (backward retreat), touch. A chase (food odor / pursuit urge) is not a threat even though it
+        drives the Giant Fiber, so punishment is held off then."""
+        s = self.spec
+        self._reward = 1.0 if self.at_target > 0.5 else self._reward * math.exp(-ms / 800.0)
+        threat = max(self.rates["GF"] / (2.0 * s.gf_on_hz), self.rates["MDN"] / (3.0 * s.mdn_on_hz))
+        if self.gf_window >= max(1, s.gf_event_spikes):
+            threat = 1.0
+        if self.phero_drive > 0.05 or self.flight_urge >= 0.5:
+            threat = 0.0
+        self._punish = min(1.0, threat)
+        self._mb_ms += ms
+        if self._mb_ms < self.MB_STEP_MS:
+            return
+        dt, self._mb_ms = self._mb_ms / 1000.0, 0.0
+        dist, _, _, touch = self._stim
+        cues = (self.phero_drive, self.phero_repel, 1.0 / (1.0 + dist / 250.0) if dist < 1e5 else 0.0,
+                min(1.0, self.loom / 3.0), touch)
+        self.valence = self.mb.step(cues, self._reward, self._punish, dt)
+        if abs(self.valence - self._valence_driven) > 0.05:
+            self._drive()
 
     def _track_gf_spikes(self, ms: float, spikes: int):
         """Keep the GF spike counts of the last `gf_event_ms` (rounded up to whole chunks)."""
