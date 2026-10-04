@@ -24,6 +24,7 @@ I_STAMP = 13                # clock reading (s) of the frame the GUI sampled the
 I_PHERO_STEER, I_PHERO_DRIVE, I_PHERO_REPEL, I_AT_TARGET = 14, 15, 16, 17
 I_FORGET = 18               # counter: every increase makes the fly forget what it learned
 I_HUNGER = 19               # metabolic hunger drive [0, 1]
+I_WALL_BUMP = 20            # mechanical wall collision event [0, 1]
 # output slots
 (O_READY, O_STATE, O_GF, O_WALK, O_REST, O_RT, O_ACTIVE, O_N, O_CPU, O_LAG, O_SIM_S, O_BEAT, O_MDN, O_STEER,
  O_SPIKES, O_GROOM, O_VISION, O_VALENCE, O_VMOTOR, O_GEAR) = range(20)
@@ -160,13 +161,14 @@ def _loop(cfg: EngineConfig, brain, net, inp, out, stop, cap_frame=None, cap_met
         hunger = inp[I_HUNGER]
         eff_closing = 0.0 if (inp[I_PHERO_DRIVE] * hunger) > 0.05 else raw_closing
         eff_bias = inp[I_BIAS] * hunger
+        wall_bump = inp[I_WALL_BUMP]
         cur = (round(inp[I_DIST], 1), round(eff_closing, 1), round(eff_bias, 3), inp[I_SKITTISH],
                round(inp[I_BEARING], 2), inp[I_TOUCH],
                round(inp[I_PHERO_STEER], 1), round(inp[I_PHERO_DRIVE], 2),
                round(inp[I_PHERO_REPEL], 2), inp[I_AT_TARGET],
-               round(hunger, 2))
+               round(hunger, 2), round(wall_bump, 2))
         if eye.on:                                      # the image, not cursor numbers, drives the looming inputs;
-            cur = (1e6, 0.0, cur[2], cur[3], cur[4] if cur[5] else 0.0, cur[5], cur[6], cur[7], cur[8], cur[9], cur[10])
+            cur = (1e6, 0.0, cur[2], cur[3], cur[4] if cur[5] else 0.0, cur[5], cur[6], cur[7], cur[8], cur[9], cur[10], cur[11])
         if cur != last_in:
             brain.set_stimulus(*cur)
             last_in = cur
@@ -409,6 +411,7 @@ class Runner:
         self._starting = False
         self.bias = 0.65          # walking drive, 0..1
         self.skittish = 1.0       # looming sensitivity multiplier
+        self.wall_pain = 1.0      # nociceptive wall collision punishment multiplier
         self.vision = False       # see the screen (funnel view, retinotopic detectors) instead of cursor numbers
         self.eye_height = 100.0
         self.cfg = cfg or default_config()
@@ -457,7 +460,7 @@ class Runner:
              capture_pos=None,
              phero_steer: float = 0.0, phero_drive: float = 0.0,
              phero_repel: float = 0.0, at_target: bool = False,
-             hunger: float = 1.0) -> None:
+             hunger: float = 1.0, wall_bump: bool = False) -> None:
         """Per-frame input. pose = fly (x, y, heading) and cursor = (x, y) in screen px feed the visual input.
 
         stamp: `time.perf_counter()` of the frame. With it the worker measures the cursor's closing speed itself from
@@ -474,6 +477,7 @@ class Runner:
         inp[I_PHERO_REPEL] = phero_repel
         inp[I_AT_TARGET] = 1.0 if at_target else 0.0
         inp[I_HUNGER] = float(hunger)
+        inp[I_WALL_BUMP] = (1.0 if wall_bump else 0.0) * getattr(self, "wall_pain", 1.0)
 
         if hasattr(self, "capture") and self.capture is not None:
             cx, cy = capture_pos if capture_pos is not None else (pose[0], pose[1])

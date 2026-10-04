@@ -46,7 +46,7 @@ class Overlay(QWidget):
         cx = float(pg.x()) + float(pg.width()) * pdpr / 2.0
         cy = float(pg.y()) + float(pg.height()) * pdpr / 2.0
         self.fly = Fly(cx, cy)
-        self.pheromone = PheromoneField(border_margin=0.0, border_strength=0.0)
+        self.pheromone = PheromoneField(border_margin=60.0 * self.scale, border_strength=0.7)
         self.pheromone.spawn_random_sources(self.play_area().screens, count=7)
         self.pheromone_enabled = True
         self.cursor_phero_mode = "attract"  # "attract", "repel", or "none"
@@ -111,7 +111,8 @@ class Overlay(QWidget):
     def play_area(self) -> PlayArea:
         """Playable domain: all screens (multi-monitor roaming) or the chosen monitor."""
         if self._cached_play_area is None:
-            m = 2.0 * self.scale
+            from .fly import FLY_MARGIN_PX
+            m = FLY_MARGIN_PX * self.scale
             if self.home is not None:
                 self._cached_play_area = PlayArea.from_screens([self.home], margin=m)
             else:
@@ -205,15 +206,16 @@ class Overlay(QWidget):
         cursor_is_attract = self.pheromone_enabled and (self.cursor_phero_mode == "attract")
         effective_closing = 0.0 if cursor_is_attract else closing
 
+        effective_cursor = (cur_x, cur_y)
+        self.fly.update(dt, self.runner.state, effective_cursor, area, self.runner.steer)
+
         self.runner.send(dist, effective_closing, bearing, touch,
                          (self.fly.x, self.fly.y, self.fly.heading), (cur_x, cur_y), stamp=now,
                          capture_pos=(self.fly.x, self.fly.y),
                          phero_steer=phero_steer, phero_drive=phero_drive,
                          phero_repel=phero_repel, at_target=at_target,
-                         hunger=self.metabolism.hunger)
-
-        effective_cursor = (cur_x, cur_y)
-        self.fly.update(dt, self.runner.state, effective_cursor, area, self.runner.steer)
+                         hunger=self.metabolism.hunger,
+                         wall_bump=self.fly.hit_wall)
 
         # Update feeding animation and floating reward effects
         if self.feed_glow > 0.0:

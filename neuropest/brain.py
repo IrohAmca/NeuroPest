@@ -134,6 +134,7 @@ class Brain:
         self.at_target = 0.0       # 1.0 if arrived at attractive source
         self.hunger = 1.0          # internal hunger drive in [0, 1]
         self.flight_urge = 0.0     # accumulated motivation to initiate long-mode pursuit flight
+        self.wall_bump = 0.0       # mechanical wall collision impact [0, 1]
         # central motor pool (diagram): V_motor = threat + desire + unreachability tension. A READOUT of what drives the
         # state machine below, not its input: the state still comes from the spiking descending neurons.
         self.v_threat = self.v_desire = 0.0
@@ -183,7 +184,7 @@ class Brain:
     def set_stimulus(self, dist: float, closing_speed: float, walk_bias: float | None = None,
                      skittish: float | None = None, bearing: float | None = None, touch: float = 0.0,
                      phero_steer: float = 0.0, phero_drive: float = 0.0, phero_repel: float = 0.0,
-                     at_target: float = 0.0, hunger: float = 1.0):
+                     at_target: float = 0.0, hunger: float = 1.0, wall_bump: float = 0.0):
         """dist: px to the cursor; closing_speed: px/s, positive when the cursor approaches;
         bearing: angle of the cursor relative to the fly's heading, radians, positive to the right.
         touch: 0..1, the cursor is on the fly (hover); it touches the side given by the bearing.
@@ -194,7 +195,8 @@ class Brain:
         phero_drive: attractive pheromone intensity (0..1), boosts walking/foraging.
         phero_repel: repulsive warning/border intensity (0..1).
         at_target: 1.0 when arrived at target/nectar source.
-        hunger: 0..1 internal metabolic hunger drive."""
+        hunger: 0..1 internal metabolic hunger drive.
+        wall_bump: 1.0 when colliding with screen boundaries (mechanosensory pain)."""
         self._stim = (dist, closing_speed, self._stim[2] if bearing is None else bearing, touch)
         if walk_bias is not None:
             self.walk_bias = walk_bias
@@ -205,6 +207,7 @@ class Brain:
         self.phero_repel = phero_repel
         self.at_target = at_target
         self.hunger = float(hunger)
+        self.wall_bump = float(wall_bump)
         self._drive()
 
     def _drive(self):
@@ -231,6 +234,10 @@ class Brain:
             expansion = max(0.0, closing) / max(dist, 30.0) * effective_skittish
             loom = min(s.loom_max_hz, expansion * s.loom_gain)
             retreat = min(s.retreat_max_hz, expansion * s.retreat_gain + self.phero_repel * 8.0)
+
+        # Mechanical collision with solid boundaries triggers acute retreat reflex (MDN)
+        if self.wall_bump > 0.0:
+            retreat = max(retreat, min(s.retreat_max_hz, 16.0 * self.wall_bump))
 
         # High chemical alarm repulsion excites the Giant Fiber escape pathway
         if self.phero_repel > 0.6:
@@ -352,6 +359,9 @@ class Brain:
             threat = 1.0
         if eff_phero_drive > 0.05 or self.flight_urge >= 0.5:
             threat = 0.0
+        # Physical wall collision delivers acute nociceptive punishment (PPL1 dopamine)
+        if self.wall_bump > 0.0:
+            threat = max(threat, min(1.0, self.wall_bump))
         self._punish = min(1.0, threat)
         self._mb_ms += ms
         if self._mb_ms < self.MB_STEP_MS:

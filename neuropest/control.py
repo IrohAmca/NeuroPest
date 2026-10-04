@@ -14,6 +14,7 @@ from PySide6.QtWidgets import (
     QGridLayout,
     QHBoxLayout,
     QLabel,
+    QLayout,
     QPushButton,
     QScrollArea,
     QSizePolicy,
@@ -90,17 +91,25 @@ class Stat(QWidget):
         self.value.setText(text)
 
 
-def slider_row(card: Card, name: str, hint: str, slider: QSlider, fmt) -> QLabel:
+def slider_row(target: Card | QLayout | QWidget, name: str, hint: str, slider: QSlider, fmt) -> QLabel:
     """Name and live value on one line, the slider bar under it, an optional muted hint below."""
     head = QHBoxLayout()
     head.addWidget(_label(name))
     head.addStretch(1)
     value = _label("", "Value")
     head.addWidget(value)
-    card.body.addLayout(head)
-    card.body.addWidget(slider)
+    if isinstance(target, Card):
+        body = target.body
+    elif isinstance(target, QLayout):
+        body = target
+    elif hasattr(target, "layout") and target.layout() is not None:
+        body = target.layout()
+    else:
+        body = target
+    body.addLayout(head)
+    body.addWidget(slider)
     if hint:
-        card.body.addWidget(_label(hint, "Faint", wrap=True))
+        body.addWidget(_label(hint, "Faint", wrap=True))
     slider.valueChanged.connect(lambda v: value.setText(fmt(v)))
     value.setText(fmt(slider.value()))
     return value
@@ -308,32 +317,7 @@ class Control(QWidget):
         lay.addWidget(card)
 
     def _build_behaviour_page(self, lay: QVBoxLayout):
-        card = Card("Davranış Ayarları")
-        w = QSlider(Qt.Horizontal, minimum=0, maximum=100, value=int(self.runner.bias * 100))
-        w.valueChanged.connect(lambda v: setattr(self.runner, "bias", v / 100))
-        slider_row(card, "Hareketlilik (İleri Yürüme Sürücüsü)",
-                   "Yürüme komut nöronlarına (DNp09/P9) verilen tonik akım: düşükse durur, yüksekse gezer.",
-                   w, lambda v: f"%{v}")
-
-        k = QSlider(Qt.Horizontal, minimum=0, maximum=100, value=50)
-        k.valueChanged.connect(lambda v: setattr(self.runner, "skittish", 2.0 ** ((v - 50) / 25.0)))
-        slider_row(card, "Ürkeklik (Kaçış Duyarlılığı)",
-                   "Yaklaşan nesnelere karşı hassasiyet: geri çekilme ve uçuş eşiklerini çarpar.",
-                   k, lambda v: f"×{2.0 ** ((v - 50) / 25.0):.2f}")
-
-        self.touch_groom_box = QCheckBox("İmleç Dokunduğunda Kaşınma / Tımar (Grooming)")
-        self.touch_groom_box.setToolTip(
-            "İmleç sineğin üzerine geldiğinde mekanik dokunma nöronlarını (aDN1/aDN2) uyararak "
-            "sineğin durup başını kaşımasını sağlar. Kapalıyken (varsayılan) imleç teması kaşınmayı zorlamaz."
-        )
-        is_touch_on = getattr(self.overlay, "touch_groom_enabled", False) if self.overlay is not None else False
-        self.touch_groom_box.setChecked(is_touch_on)
-        self.touch_groom_box.toggled.connect(self._on_touch_groom_toggled)
-        card.body.addWidget(self.touch_groom_box)
-
-        lay.addWidget(card)
-
-        # Hunger and metabolism card
+        # 1. Açlık & Metabolizma (Temel Biyolojik Dürtü)
         hunger_card = Card("Açlık & Metabolizma")
         self.hunger_enable_box = QCheckBox("Açlık ve Metabolizma Simülasyonu")
         self.hunger_enable_box.setToolTip(
@@ -372,6 +356,75 @@ class Control(QWidget):
 
         hunger_card.body.addLayout(btn_row)
         lay.addWidget(hunger_card)
+
+        # 2. Temas & Tımar
+        touch_card = Card("Temas & Tımar")
+        self.touch_groom_box = QCheckBox("İmleç Dokunduğunda Kaşınma / Tımar (Grooming)")
+        self.touch_groom_box.setToolTip(
+            "İmleç sineğin üzerine geldiğinde mekanik dokunma nöronlarını (aDN1/aDN2) uyararak "
+            "sineğin durup başını kaşımasını sağlar. Kapalıyken (varsayılan) imleç teması kaşınmayı zorlamaz."
+        )
+        is_touch_on = getattr(self.overlay, "touch_groom_enabled", False) if self.overlay is not None else False
+        self.touch_groom_box.setChecked(is_touch_on)
+        self.touch_groom_box.toggled.connect(self._on_touch_groom_toggled)
+        touch_card.body.addWidget(self.touch_groom_box)
+        lay.addWidget(touch_card)
+
+        # 3. Gelişmiş Davranış Ayarları (Katlanabilir Akordeon Kart)
+        adv_card = Card("Gelişmiş Davranış Ayarları")
+        self.adv_btn = QPushButton("▸ Gelişmiş Parametreleri Göster")
+        self.adv_btn.setFlat(True)
+        self.adv_btn.setCursor(Qt.PointingHandCursor)
+        self.adv_btn.setStyleSheet("text-align: left; font-size: 13px; font-weight: 600; padding: 4px 0;")
+        self.adv_btn.clicked.connect(self._toggle_adv_settings)
+        adv_card.body.addWidget(self.adv_btn)
+
+        self.adv_content = QWidget()
+        adv_lay = QVBoxLayout(self.adv_content)
+        adv_lay.setContentsMargins(0, 8, 0, 0)
+        adv_lay.setSpacing(14)
+
+        self.w_slider = QSlider(Qt.Horizontal, minimum=0, maximum=100, value=int(self.runner.bias * 100))
+        self.w_slider.valueChanged.connect(lambda v: setattr(self.runner, "bias", v / 100))
+        slider_row(adv_lay, "Hareketlilik (Baz Yürüme Sürücüsü)",
+                   "DNp09/P9 yürüme komut nöronlarına verilen tonik akım: açlık ve koku yokken taban istek. Varsayılan: %65.",
+                   self.w_slider, lambda v: f"%{v}")
+
+        cur_skittish = getattr(self.runner, "skittish", 1.0)
+        import math
+        k_val = int(round(50.0 + 25.0 * math.log2(max(0.1, cur_skittish))))
+        self.k_slider = QSlider(Qt.Horizontal, minimum=0, maximum=100, value=max(0, min(100, k_val)))
+        self.k_slider.valueChanged.connect(lambda v: setattr(self.runner, "skittish", 2.0 ** ((v - 50) / 25.0)))
+        slider_row(adv_lay, "Ürkeklik (Kaçış Duyarlılığı)",
+                   "Yaklaşan nesnelere karşı hassasiyet: geri çekilme ve uçuş eşiklerini çarpar. Varsayılan: ×1.00.",
+                   self.k_slider, lambda v: f"×{2.0 ** ((v - 50) / 25.0):.2f}")
+
+        cur_pain = getattr(self.runner, "wall_pain", 1.0)
+        self.pain_slider = QSlider(Qt.Horizontal, minimum=0, maximum=200, value=int(cur_pain * 100))
+        self.pain_slider.valueChanged.connect(lambda v: setattr(self.runner, "wall_pain", v / 100.0))
+        slider_row(adv_lay, "Kenar Acısı (Nosiseptif Darbe Cezası)",
+                   "Sinek ekran sınırına tosladığında Mantar Cismi'ne iletilen acı/ceza (PPL1 dopamin). Sinek kenarlardan sakınmayı öğrenir. Varsayılan: ×1.00.",
+                   self.pain_slider, lambda v: f"×{v / 100.0:.2f}")
+
+        self.btn_reset_adv = QPushButton("↺ Varsayılan Parametrelere Sıfırla")
+        self.btn_reset_adv.setToolTip("Hareketlilik (%65), ürkeklik (×1.00) ve kenar acısı (×1.00) değerlerini varsayılana döndürür.")
+        self.btn_reset_adv.clicked.connect(self._reset_adv_settings)
+        adv_lay.addWidget(self.btn_reset_adv)
+
+        self.adv_content.setVisible(False)
+        adv_card.body.addWidget(self.adv_content)
+        lay.addWidget(adv_card)
+
+    def _toggle_adv_settings(self):
+        visible = not self.adv_content.isVisible()
+        self.adv_content.setVisible(visible)
+        arrow = "▾" if visible else "▸"
+        self.adv_btn.setText(f"{arrow} Gelişmiş Parametreleri {'Gizle' if visible else 'Göster'}")
+
+    def _reset_adv_settings(self):
+        self.w_slider.setValue(65)
+        self.k_slider.setValue(50)
+        self.pain_slider.setValue(100)
 
     def _on_touch_groom_toggled(self, checked: bool):
         if self.overlay is not None:

@@ -237,3 +237,58 @@ def test_tight_screen_boundary_margins():
     wx, wy = area.wall_push(30.0, 500.0, 14.0)
     assert wx == 0.0 and wy == 0.0
 
+
+def test_boundary_reflection_and_hit_wall_flag():
+    from neuropest.fly import FLY_MARGIN_PX, FLY_RADIUS_PX, Fly, PlayArea, ScreenBox
+    from neuropest.states import WALK
+
+    # Verify safe margin constants: margin must exceed radius by at least 1-2px
+    assert FLY_MARGIN_PX >= FLY_RADIUS_PX + 2.0
+
+    s0 = ScreenBox(
+        id=0, name="Main",
+        raw_l=0.0, raw_t=0.0, raw_r=1920.0, raw_b=1080.0,
+        phys_l=0.0, phys_t=0.0, phys_r=1920.0, phys_b=1080.0,
+        dpr=1.0, margin=FLY_MARGIN_PX,
+    )
+    area = PlayArea([s0])
+
+    # 1. Fly walking straight into right border
+    fly = Fly(1920.0 - FLY_MARGIN_PX - 2.0, 500.0)
+    fly.heading = 0.0  # pointing right (+x)
+    fly.turn, fly.turn_t = 0.0, 10.0
+    fly.update(0.1, WALK, (2000.0, 500.0), area)
+
+    # Must have hit wall, stopped at usable_r, and reflected inward (-x)
+    assert fly.hit_wall is True
+    assert fly.x <= s0.usable_r
+    assert math.cos(fly.heading) < -0.2  # heading pointing back into the room
+
+    # 2. Fly walking straight into bottom border
+    fly_b = Fly(500.0, 1080.0 - FLY_MARGIN_PX - 2.0)
+    fly_b.heading = math.pi / 2  # pointing down (+y)
+    fly_b.turn, fly_b.turn_t = 0.0, 10.0
+    fly_b.update(0.1, WALK, (500.0, 1200.0), area)
+
+    assert fly_b.hit_wall is True
+    assert fly_b.y <= s0.usable_b
+    assert math.sin(fly_b.heading) < -0.2  # heading pointing upward
+
+
+def test_wall_nociception_retreat_reflex_and_learning():
+    from neuropest.brain import Brain
+    from neuropest.toy_circuit import build
+
+    brain = Brain(build(146))
+    # Baseline with no wall bump
+    brain.set_stimulus(500.0, 0.0, walk_bias=0.65, wall_bump=0.0)
+    assert brain._punish == 0.0
+
+    # Impact with wall: triggers acute mechanosensory retreat and nociceptive punishment
+    brain.set_stimulus(500.0, 0.0, walk_bias=0.65, phero_repel=0.7, wall_bump=1.0)
+    assert brain.wall_bump == 1.0
+    brain._learn(20.0)
+    assert brain._punish >= 1.0  # PPL1 dopamine punishment fired
+    brain.advance(40.0)
+
+

@@ -8,6 +8,9 @@ from .states import FLY, FREEZE, GROOM, RETREAT, STAND, WALK
 
 Rect = tuple[float, float, float, float]   # left, top, right, bottom of the area the fly's center may use
 TURN_GAIN = 0.02                           # rad/s of turning per Hz of right-minus-left DNa02 rate
+FLY_RADIUS_PX: float = 22.0                # physical extent of body, folded wings (-22px) and legs
+FLY_MARGIN_PX: float = 24.0                # radius + 2px safety margin to never poke past the bezel
+
 
 
 class ScreenBox:
@@ -67,6 +70,7 @@ class PlayArea:
         if not screens:
             raise ValueError("PlayArea requires at least one screen")
         self.screens = screens
+        self.last_hit_wall = False
 
     def __iter__(self):
         s = self.screens[0]
@@ -171,64 +175,84 @@ class PlayArea:
         nx = x + math.cos(heading) * speed * dt
         ny = y + math.sin(heading) * speed * dt
         nh = heading
+        hit_wall = False
         s = self.get_screen(x, y)
 
-        if nx > s.raw_r:
-            portal = self.has_portal(s, "right", x, y)
-            if portal:
+        portal = self.has_portal(s, "right", x, y)
+        if portal:
+            if nx > s.raw_r:
                 over = nx - s.raw_r
                 px, py = s.to_phys(s.raw_r, ny)
                 nx, ny = portal.from_phys(portal.phys_l + over * (portal.dpr / s.dpr), py)
                 s = portal
-            else:
-                nx = s.raw_r - s.margin
+        else:
+            if nx > s.usable_r:
+                nx = s.usable_r
                 nh = math.pi - nh
-        elif nx < s.raw_l:
-            portal = self.has_portal(s, "left", x, y)
-            if portal:
+                if math.cos(nh) > -0.25:
+                    nh = math.pi - 0.4 if math.sin(nh) >= 0 else -math.pi + 0.4
+                hit_wall = True
+
+        portal = self.has_portal(s, "left", x, y)
+        if portal:
+            if nx < s.raw_l:
                 over = s.raw_l - nx
                 px, py = s.to_phys(s.raw_l, ny)
                 nx, ny = portal.from_phys(portal.phys_r - over * (portal.dpr / s.dpr), py)
                 s = portal
-            else:
-                nx = s.raw_l + s.margin
+        else:
+            if nx < s.usable_l:
+                nx = s.usable_l
                 nh = math.pi - nh
+                if math.cos(nh) < 0.25:
+                    nh = 0.4 if math.sin(nh) >= 0 else -0.4
+                hit_wall = True
 
-        if ny > s.raw_b:
-            portal = self.has_portal(s, "bottom", nx, y)
-            if portal:
+        portal = self.has_portal(s, "bottom", nx, y)
+        if portal:
+            if ny > s.raw_b:
                 over = ny - s.raw_b
                 px, py = s.to_phys(nx, s.raw_b)
                 nx, ny = portal.from_phys(px, portal.phys_t + over * (portal.dpr / s.dpr))
                 s = portal
-            else:
-                ny = s.raw_b - s.margin
+        else:
+            if ny > s.usable_b:
+                ny = s.usable_b
                 nh = -nh
-        elif ny < s.raw_t:
-            portal = self.has_portal(s, "top", nx, y)
-            if portal:
+                if math.sin(nh) > -0.25:
+                    nh = -0.4 if math.cos(nh) >= 0 else -math.pi + 0.4
+                hit_wall = True
+
+        portal = self.has_portal(s, "top", nx, y)
+        if portal:
+            if ny < s.raw_t:
                 over = s.raw_t - ny
                 px, py = s.to_phys(nx, s.raw_t)
                 nx, ny = portal.from_phys(px, portal.phys_b - over * (portal.dpr / s.dpr))
                 s = portal
-            else:
-                ny = s.raw_t + s.margin
+        else:
+            if ny < s.usable_t:
+                ny = s.usable_t
                 nh = -nh
+                if math.sin(nh) < 0.25:
+                    nh = 0.4 if math.cos(nh) >= 0 else math.pi - 0.4
+                hit_wall = True
 
-        min_x = s.raw_l if self.has_portal(s, "left", nx, ny) else s.raw_l + s.margin
-        max_x = s.raw_r if self.has_portal(s, "right", nx, ny) else s.raw_r - s.margin
-        min_y = s.raw_t if self.has_portal(s, "top", nx, ny) else s.raw_t + s.margin
-        max_y = s.raw_b if self.has_portal(s, "bottom", nx, ny) else s.raw_b - s.margin
+        min_x = s.raw_l if self.has_portal(s, "left", nx, ny) else s.usable_l
+        max_x = s.raw_r if self.has_portal(s, "right", nx, ny) else s.usable_r
+        min_y = s.raw_t if self.has_portal(s, "top", nx, ny) else s.usable_t
+        max_y = s.raw_b if self.has_portal(s, "bottom", nx, ny) else s.usable_b
         nx = min(max(nx, min_x), max_x)
         ny = min(max(ny, min_y), max_y)
+        self.last_hit_wall = hit_wall
         return nx, ny, _wrap(nh)
 
     def clamp(self, x: float, y: float) -> tuple[float, float]:
         s = self.get_screen(x, y)
-        min_x = s.raw_l if self.has_portal(s, "left", x, y) else s.raw_l + s.margin
-        max_x = s.raw_r if self.has_portal(s, "right", x, y) else s.raw_r - s.margin
-        min_y = s.raw_t if self.has_portal(s, "top", x, y) else s.raw_t + s.margin
-        max_y = s.raw_b if self.has_portal(s, "bottom", x, y) else s.raw_b - s.margin
+        min_x = s.raw_l if self.has_portal(s, "left", x, y) else s.usable_l
+        max_x = s.raw_r if self.has_portal(s, "right", x, y) else s.usable_r
+        min_y = s.raw_t if self.has_portal(s, "top", x, y) else s.usable_t
+        max_y = s.raw_b if self.has_portal(s, "bottom", x, y) else s.usable_b
         return min(max(x, min_x), max_x), min(max(y, min_y), max_y)
 
 
@@ -240,6 +264,7 @@ class Fly:
         self.turn = 0.0
         self.steer_ema = 0.0
         self.alpha_steer = alpha_steer
+        self.hit_wall = False
 
     def bearing_of(self, cursor: tuple[float, float]) -> float:
         """Angle of `cursor` relative to the heading, radians, positive when it is to the fly's right."""
@@ -269,20 +294,36 @@ class Fly:
             self.heading += steer_eff * TURN_GAIN * dt          # keeps facing the stimulus while backing away
             self.heading = _wrap(self.heading)
 
+        self.hit_wall = False
         if isinstance(rect, PlayArea):
             self.x, self.y, self.heading = rect.step(self.x, self.y, self.heading, speed, dt)
+            self.hit_wall = getattr(rect, "last_hit_wall", False)
         else:
             l, t, r, b = rect
             self.x += math.cos(self.heading) * speed * dt
             self.y += math.sin(self.heading) * speed * dt
             # hard limits: stay inside the usable area (e.g. above the taskbar), bounce off
-            if self.x < l or self.x > r:
-                self.x = min(max(self.x, l), r)
+            if self.x <= l:
+                self.x = l
                 self.heading = math.pi - self.heading
-            if self.y < t or self.y > b:
-                self.y = min(max(self.y, t), b)
+                self.hit_wall = True
+            elif self.x >= r:
+                self.x = r
+                self.heading = math.pi - self.heading
+                self.hit_wall = True
+            if self.y <= t:
+                self.y = t
                 self.heading = -self.heading
+                self.hit_wall = True
+            elif self.y >= b:
+                self.y = b
+                self.heading = -self.heading
+                self.hit_wall = True
             self.heading = _wrap(self.heading)
+
+        if self.hit_wall:
+            self.turn_t = 0.6
+            self.turn = 0.0
 
         rate = {STAND: 0.0, WALK: 14.0, FLY: 120.0, RETREAT: -10.0, GROOM: 22.0, FREEZE: 0.0}[state]
         self.phase = (self.phase + rate * dt) % math.tau

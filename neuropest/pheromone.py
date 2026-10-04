@@ -117,11 +117,20 @@ class PheromoneField:
             sbox = play_area.get_screen(x, y) if hasattr(play_area, "get_screen") else None
             if sbox:
                 m = self.border_margin
-                dist_edge = min(x - sbox.usable_l, sbox.usable_r - x,
-                                y - sbox.usable_t, sbox.usable_b - y)
-                if dist_edge < m:
-                    edge_factor = max(0.0, (m - max(0.0, dist_edge)) / max(m, 1e-4)) ** 2
-                    c_rep += self.border_strength * edge_factor
+                wall_dists = []
+                if not (hasattr(play_area, "has_portal") and play_area.has_portal(sbox, "left", x, y)):
+                    wall_dists.append(x - sbox.usable_l)
+                if not (hasattr(play_area, "has_portal") and play_area.has_portal(sbox, "right", x, y)):
+                    wall_dists.append(sbox.usable_r - x)
+                if not (hasattr(play_area, "has_portal") and play_area.has_portal(sbox, "top", x, y)):
+                    wall_dists.append(y - sbox.usable_t)
+                if not (hasattr(play_area, "has_portal") and play_area.has_portal(sbox, "bottom", x, y)):
+                    wall_dists.append(sbox.usable_b - y)
+                if wall_dists:
+                    dist_edge = min(wall_dists)
+                    if dist_edge < m:
+                        edge_factor = max(0.0, (m - max(0.0, dist_edge)) / max(m, 1e-4)) ** 2
+                        c_rep += self.border_strength * edge_factor
 
         return c_attr, c_rep
 
