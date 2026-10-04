@@ -395,10 +395,6 @@ class Control(QWidget):
         s.valueChanged.connect(lambda v: setattr(self.overlay, "scale", v / 10))
         slider_row(card, "Sinek Boyutu", "Masaüstündeki görünür büyüklük", s, lambda v: f"×{v / 10:.1f}")
 
-        self.visible = QCheckBox("Sinek görünür", checked=False)
-        self.visible.toggled.connect(self.overlay.setVisible)
-        card.body.addWidget(self.visible)
-
         screens = QApplication.screens()
         if len(screens) > 1:
             box = QComboBox()

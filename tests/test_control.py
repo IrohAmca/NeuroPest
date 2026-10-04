@@ -80,15 +80,15 @@ def test_vision_switch_and_eye_height_reach_the_runner(app):
     assert r.vision is False
 
 
-def test_tray_and_window_visibility_stay_in_step(app):
+def test_tray_tooltip_and_open_control(app):
     r, o = FakeRunner(), FakeOverlay()
     c = Control(o, r)
     t = Tray(app, c, r)
-    t.visible.setChecked(False)
-    assert not c.visible.isChecked() and not o.shown
-    c.visible.setChecked(True)
-    assert t.visible.isChecked() and o.shown
+    t._refresh()
     assert "Yürüyor" in t.toolTip()
+    assert t.status.text() == "Sinek: Yürüyor"
+    t._open_control()
+    assert c.isVisible()
 
 
 def test_gpus_are_listed_only_when_asked_for_or_needed(app, monkeypatch):

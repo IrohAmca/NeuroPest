@@ -21,10 +21,6 @@ class Tray(QSystemTrayIcon):
         menu.addSeparator()
         self.show_ctrl = QAction("Kontrol penceresini aç", menu, triggered=self._open_control)
         menu.addAction(self.show_ctrl)
-        self.visible = QAction("Sinek görünür", menu, checkable=True, checked=ctrl.visible.isChecked())
-        self.visible.toggled.connect(ctrl.visible.setChecked)     # keep tray and window in step
-        ctrl.visible.toggled.connect(self.visible.setChecked)
-        menu.addAction(self.visible)
         menu.addSeparator()
         menu.addAction(QAction("Çıkış", menu, triggered=app.quit))
         self.menu = menu                    # QSystemTrayIcon does not own the menu
