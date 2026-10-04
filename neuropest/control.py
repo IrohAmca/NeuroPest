@@ -422,8 +422,8 @@ class Control(QWidget):
         card.body.addWidget(_label(
             "Sinek yaşadıklarından öğrenir. Bir kokuyla ya da imleçle birlikte beslenirse onu sever ve ona yönelir; "
             "o sırada korkarsa ondan kaçınır. Öğrendiği, uygulama kapanınca da saklanır.\n\n"
-            "Unutma iki şekilde olur: sinek çalışırken anılar yarım saat civarında yavaşça silinir, "
-            "\"Hafızayı sil\" ile hepsi hemen silinir.", "Muted", wrap=True))
+            "Unutma üç şekilde olur: anılar zamanla yavaşça silinir, ödül ya da korku gelmeden tekrarlanan "
+            "ipucu onu çabuk unutturur, \"Hafızayı sil\" ile de hepsi hemen silinir.", "Muted", wrap=True))
         grid = QGridLayout()
         grid.setHorizontalSpacing(16)
         self.s_val = Stat("Değerlik", "Şu an algıladığı şeye karşı öğrenilmiş his: + arzu, − korku")
@@ -633,7 +633,7 @@ class Control(QWidget):
         sym = self.sym_options[self.sym_combo.currentIndex()][0]
         cfg = EngineConfig(self._kind(), n, DTS[self.dt.currentIndex()][1], backend=backend, adapter=adapter,
                            symmetry=sym, memory_path=self.runner.cfg.memory_path,
-                           learning=self.learn_enable.isChecked())
+                           learning=self.learn_enable.isChecked(), mb_wiring=self.runner.cfg.mb_wiring)
         if cfg != self.runner.cfg:
             self.runner.start(cfg)
 

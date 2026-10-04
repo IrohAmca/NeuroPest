@@ -10,6 +10,7 @@ measured response of the anchor neurons (tools/probe_circuit.py).
 from __future__ import annotations
 
 import math
+import warnings
 from collections import deque
 from dataclasses import dataclass
 
@@ -84,7 +85,7 @@ def spec_for(net: Network) -> BrainSpec:
 class Brain:
     def __init__(self, net: Network, dt: float = 0.5, seed: int = 0, ema_ms: float = 80.0,
                  spec: BrainSpec | None = None, backend: str = "cpu", adapter: int | None = None,
-                 learning: bool = True):
+                 learning: bool = True, mb_wiring: str = "random"):
         self.net = net
         self.spec = spec or spec_for(net)
         self.engine = create_engine(net, dt=dt, seed=seed, backend=backend, adapter=adapter)
@@ -113,7 +114,14 @@ class Brain:
         self._loom_in = 0.0        # expansion rate (1/s) of the nearest object now, from the cursor numbers or the image
         self.loom = 0.0            # the same, smoothed like the rates: what the freeze rule reads
         # learned valence (mushroom body, mushroom.py): a designed layer, 0 for a naive fly
-        self.mb = MushroomBody() if learning else None
+        self.mb = None
+        if learning:
+            self.mb = MushroomBody()
+            if mb_wiring == "flywire":                  # opt-in: the real FlyWire KC / MBON / DAN / PN wiring
+                try:
+                    self.mb = MushroomBody.from_flywire()
+                except OSError as e:                    # tools/build_mushroom.py has not been run
+                    warnings.warn(f"real mushroom-body wiring not available ({e}); using the random model")
         self.valence = 0.0                  # -1 fear .. +1 desire, for the cues present now
         self._mb_ms = 0.0
         self._reward = 0.0                  # PAM drive: feeding, held ~0.8 s after the contact

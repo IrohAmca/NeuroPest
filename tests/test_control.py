@@ -18,6 +18,8 @@ class FakeRunner:
         self.vision, self.eye_height = False, 100.0
         self.state, self.ready, self.failed, self.alive = "walk", True, False, True
         self.rt = 5.0
+        self.valence = 0.0
+        self.forgotten = 0
         self.started = []
 
     def stats(self):
@@ -27,6 +29,9 @@ class FakeRunner:
     def start(self, cfg):
         self.started.append(cfg)
         self.cfg = cfg
+
+    def forget(self):
+        self.forgotten += 1
 
 
 class FakeOverlay:

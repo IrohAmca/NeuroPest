@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import math
 import multiprocessing as mp
+import os
 import threading
 import time
 from dataclasses import dataclass
@@ -46,6 +47,7 @@ class EngineConfig:
     symmetry: str = "individual"  # "individual" (default; FlyWire connectome) or "symmetric" (hemisphere-balanced)
     learning: bool = True   # mushroom-body valence learning (mushroom.py); a naive fly behaves as without it
     memory_path: str | None = None   # where the learned weights are kept between runs; None = forget on exit
+    mb_wiring: str = "random"   # mushroom body: "random" (designed) or "flywire" (real KC/MBON/DAN/PN cells, mushroom.py)
 
 
 GPU_AUTO_MIN_NEURONS = 50_000   # "auto" uses a GPU from this tier on: the CPU holds smaller ones in real time
@@ -86,7 +88,9 @@ def default_config() -> EngineConfig:
     stimulus, tools/fidelity.py) when its cache has been built, else the toy circuit."""
     from .paths import MEMORY
 
-    return EngineConfig("flywire", 15_000, memory_path=str(MEMORY)) if CACHE.exists() else EngineConfig()
+    # NEUROPEST_MB=flywire switches the mushroom body to the real cells (needs tools/build_mushroom.py to have been run)
+    wiring = "flywire" if os.environ.get("NEUROPEST_MB", "").lower() == "flywire" else "random"
+    return EngineConfig("flywire", 15_000, memory_path=str(MEMORY), mb_wiring=wiring) if CACHE.exists() else EngineConfig()
 
 
 def build_network(cfg: EngineConfig):
@@ -114,15 +118,17 @@ def _run(cfg: EngineConfig, inp, out, stop, cap_frame=None, cap_meta=None) -> No
     from .brain import Brain
 
     net = build_network(cfg)
-    brain = Brain(net, dt=cfg.dt, seed=cfg.seed, backend=cfg.backend, adapter=cfg.adapter, learning=cfg.learning)
-    if brain.mb is not None and cfg.memory_path:
-        brain.mb.load(cfg.memory_path)
+    brain = Brain(net, dt=cfg.dt, seed=cfg.seed, backend=cfg.backend, adapter=cfg.adapter, learning=cfg.learning,
+                  mb_wiring=cfg.mb_wiring)
+    memory = brain.mb.memory_file(cfg.memory_path) if brain.mb is not None and cfg.memory_path else None
+    if memory is not None:
+        brain.mb.load(memory)
     try:
-        _loop(cfg, brain, net, inp, out, stop, cap_frame, cap_meta)
+        _loop(cfg, brain, net, inp, out, stop, cap_frame, cap_meta, memory)
     finally:
-        if brain.mb is not None and cfg.memory_path:
+        if memory is not None:
             try:
-                brain.mb.save(cfg.memory_path)
+                brain.mb.save(memory)
             except OSError:
                 pass
         close = getattr(brain.engine, "close", None)
@@ -130,7 +136,7 @@ def _run(cfg: EngineConfig, inp, out, stop, cap_frame=None, cap_meta=None) -> No
             close()                                 # free the GPU buffers
 
 
-def _loop(cfg: EngineConfig, brain, net, inp, out, stop, cap_frame=None, cap_meta=None) -> None:
+def _loop(cfg: EngineConfig, brain, net, inp, out, stop, cap_frame=None, cap_meta=None, memory=None) -> None:
     brain.advance(cfg.dt * 4)                       # triggers/loads the compiled kernel
     out[O_N] = net.n
     out[O_READY] = 1.0
@@ -177,10 +183,10 @@ def _loop(cfg: EngineConfig, brain, net, inp, out, stop, cap_frame=None, cap_met
         out[O_MDN], out[O_STEER], out[O_GROOM] = brain.rates["MDN"], brain.steer, brain.rates["GROOM"]
         out[O_VALENCE] = brain.valence
         out[O_VMOTOR], out[O_GEAR] = brain.v_motor, float(GEARS.index(brain.gear))
-        if brain.mb is not None and cfg.memory_path and brain.mb.dirty and time.perf_counter() - last_save > MEMORY_SAVE_S:
+        if memory is not None and brain.mb.dirty and time.perf_counter() - last_save > MEMORY_SAVE_S:
             last_save = time.perf_counter()
             try:
-                brain.mb.save(cfg.memory_path)
+                brain.mb.save(memory)
             except OSError:
                 pass
 

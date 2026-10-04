@@ -55,6 +55,45 @@ def test_memory_fades_and_reset_clears_it():
     assert mb.read(FOOD) == 0.0
 
 
+def _omit(mb, cue, seconds):
+    for _ in range(int(seconds / 0.05)):
+        mb.step(cue, 0, 0, 0.05)
+
+
+def test_a_predicted_reward_that_does_not_come_extinguishes_the_memory():
+    mb = MushroomBody()
+    _pair(mb, FOOD, reward=1.0)
+    v0 = mb.read(FOOD)
+    _omit(mb, FOOD, 60)                                  # the food odor again, no food
+    assert mb.read(FOOD) < 0.5 * v0
+    off = MushroomBody(MBParams(pred_gain=0.0))          # without the prediction error only the slow forgetting acts
+    _pair(off, FOOD, reward=1.0)
+    _omit(off, FOOD, 60)
+    assert off.read(FOOD) > 0.95 * v0
+
+
+def test_extinction_needs_the_cue_and_a_memory():
+    naive = MushroomBody()
+    _omit(naive, FOOD, 30)
+    assert naive.read(FOOD) == 0.0 and not naive.dirty   # nothing to extinguish
+    mb = MushroomBody()
+    _pair(mb, FOOD, reward=1.0)
+    v0 = mb.read(FOOD)
+    _omit(mb, QUIET, 60)                                 # no cue, no omission
+    assert mb.read(FOOD) > 0.95 * v0
+
+
+def test_dopamine_is_the_surprise_not_the_reward():
+    mb = MushroomBody()
+    mb.step(FOOD, 1.0, 0.0, 0.05)
+    assert mb.pam == 1.0                                 # naive: the whole reward is news
+    _pair(mb, FOOD, reward=1.0)
+    mb.step(FOOD, 1.0, 0.0, 0.05)
+    assert mb.pam < 0.5                                  # learned: mostly predicted, so it teaches less
+    mb.step(FOOD, 0.0, 1.0, 0.05)
+    assert mb.ppl1 == 1.0                                # but a threat is still a surprise for a desired cue
+
+
 def test_save_and_load_roundtrip_and_layout_check(tmp_path):
     mb = MushroomBody()
     _pair(mb, FOOD, reward=1.0)
