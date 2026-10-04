@@ -195,6 +195,12 @@ class VisualField:
         a = np.array(pairs, np.int64)
         return a[:, 0].astype(np.int32), a[:, 1].astype(np.int32)
 
+    def cell_columns(self, type_names) -> np.ndarray:
+        """Column of the receptive field of every cell of `type_names` that has one, whether or not the cell is in the
+        simulated tier (the mushroom-body cues read these cells' drive without forcing spikes in the engine)."""
+        want = [self.types.index(t) for t in type_names if t in self.types]
+        return self.rf_col[np.isin(self.rf_type, want)].astype(np.int32)
+
     def as_retina(self) -> Retina:
         """The columns as a `Retina` (one 'photoreceptor' per column) for `sample_scene`."""
         m = len(self.col_dir)
