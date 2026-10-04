@@ -145,6 +145,30 @@ class Brain:
         self._last_ci: np.ndarray | None = None
         self._last_cr: np.ndarray | None = None
         self._last_cw: np.ndarray | None = None
+
+        # Pre-allocate static drive buffers for cursor and current inputs
+        cursor_groups = ("LOOM", "RETREAT_IN", "VIS", "BULK_DRIVE", "LC10_R", "LC10_L", "TOUCH_R", "TOUCH_L")
+        c_parts = [self.group(k) for k in cursor_groups]
+        self._cursor_fi = np.concatenate(c_parts).astype(np.int32) if c_parts else np.zeros(0, np.int32)
+        self._cursor_slices = []
+        cur_offset = 0
+        for p in c_parts:
+            lp = len(p)
+            self._cursor_slices.append(slice(cur_offset, cur_offset + lp))
+            cur_offset += lp
+        self._cursor_fr = np.zeros(len(self._cursor_fi), dtype=np.float32)
+
+        walk = self.group("WALK")
+        rest = self.group("REST") if self.spec.rest_drive is not None else np.zeros(0, np.int32)
+        self._curr_ci = np.concatenate([walk, rest]).astype(np.int32)
+        self._walk_slice = slice(0, len(walk))
+        self._rest_slice = slice(len(walk), len(walk) + len(rest))
+        self._curr_cr = np.zeros(len(self._curr_ci), dtype=np.float32)
+        self._curr_cw = np.zeros(len(self._curr_ci), dtype=np.float32)
+        self._curr_cw[self._walk_slice] = self.spec.walk_drive[1]
+        if self.spec.rest_drive is not None:
+            self._curr_cw[self._rest_slice] = self.spec.rest_drive[1]
+
         self._drive()
 
     def group(self, name: str) -> np.ndarray:
@@ -269,50 +293,54 @@ class Brain:
             self._vision_expansion if self._vision is not None
             else max(0.0, closing) / max(dist, 30.0)) * effective_skittish
         if self._vision is not None:                     # the image replaces the visual part of the cursor drive
-            fi.append(self._vision[0])
-            fr.append(self._vision[1])
+            fi = [self._vision[0]]
+            fr = [self._vision[1]]
             cursor_drive = (("VIS", vis), ("BULK_DRIVE", s.bulk_hz),
                             ("LC10_R", ph_r), ("LC10_L", ph_l))
+            touch_drive = (("TOUCH_R", s.touch_hz * touch * (side >= 0)), ("TOUCH_L", s.touch_hz * touch * (side < 0)))
+            for name, hz in cursor_drive + touch_drive:      # touch is mechanical, not visual: it always comes from the cursor
+                idx = self.group(name)
+                fi.append(idx)
+                fr.append(np.full(len(idx), hz, dtype=np.float32))
+            new_fi = np.concatenate(fi)
+            new_fr = np.concatenate(fr)
         else:
-            cursor_drive = (("LOOM", loom), ("RETREAT_IN", retreat), ("VIS", vis), ("BULK_DRIVE", s.bulk_hz),
-                            ("LC10_R", cur_r + ph_r), ("LC10_L", cur_l + ph_l))
-        touch_drive = (("TOUCH_R", s.touch_hz * touch * (side >= 0)), ("TOUCH_L", s.touch_hz * touch * (side < 0)))
-        for name, hz in cursor_drive + touch_drive:      # touch is mechanical, not visual: it always comes from the cursor
-            idx = self.group(name)
-            fi.append(idx)
-            fr.append(np.full(len(idx), hz))
+            rates_tuple = (
+                loom, retreat, vis, s.bulk_hz,
+                cur_r + ph_r, cur_l + ph_l,
+                s.touch_hz * touch * (side >= 0),
+                s.touch_hz * touch * (side < 0)
+            )
+            for sl, r in zip(self._cursor_slices, rates_tuple):
+                self._cursor_fr[sl] = r
+            new_fi = self._cursor_fi
+            new_fr = self._cursor_fr
 
-        new_fi = np.concatenate(fi)
-        new_fr = np.concatenate(fr)
         drive_changed = True
         if self._last_fi is not None and self._last_fr is not None:
-            if len(self._last_fi) == len(new_fi) and np.array_equal(self._last_fi, new_fi):
+            if len(self._last_fi) == len(new_fi) and (self._last_fi is new_fi or np.array_equal(self._last_fi, new_fi)):
                 if np.max(np.abs(self._last_fr - new_fr)) < 0.2:
                     drive_changed = False
         if drive_changed:
-            self._last_fi, self._last_fr = new_fi, new_fr
+            self._last_fi = new_fi
+            self._last_fr = new_fr.copy()
             e.set_drive(new_fi, new_fr)
 
-        ci, cr, cw = [], [], []
-        walk, rest = self.group("WALK"), self.group("REST")
-        ci += [walk]
-        cr += [np.full(len(walk), s.walk_drive[0] * effective_walk_bias)]
-        cw += [np.full(len(walk), s.walk_drive[1])]
+        self._curr_cr[self._walk_slice] = s.walk_drive[0] * effective_walk_bias
         if s.rest_drive is not None:
-            ci += [rest]
-            cr += [np.full(len(rest), s.rest_drive[0])]
-            cw += [np.full(len(rest), s.rest_drive[1])]
-
-        new_ci = np.concatenate(ci)
-        new_cr = np.concatenate(cr)
-        new_cw = np.concatenate(cw)
+            self._curr_cr[self._rest_slice] = s.rest_drive[0]
+        new_ci = self._curr_ci
+        new_cr = self._curr_cr
+        new_cw = self._curr_cw
         curr_changed = True
         if self._last_ci is not None and self._last_cr is not None and self._last_cw is not None:
-            if len(self._last_ci) == len(new_ci) and np.array_equal(self._last_ci, new_ci):
+            if len(self._last_ci) == len(new_ci) and (self._last_ci is new_ci or np.array_equal(self._last_ci, new_ci)):
                 if np.max(np.abs(self._last_cr - new_cr)) < 0.2 and np.max(np.abs(self._last_cw - new_cw)) < 1e-4:
                     curr_changed = False
         if curr_changed:
-            self._last_ci, self._last_cr, self._last_cw = new_ci, new_cr, new_cw
+            self._last_ci = new_ci
+            self._last_cr = new_cr.copy()
+            self._last_cw = new_cw
             e.set_current_drive(new_ci, new_cr, new_cw)
 
     # ---------------------------------------------------------------- run
@@ -320,14 +348,19 @@ class Brain:
         e = self.engine
         e.advance(ms)
         a = 1.0 - math.exp(-ms / self.ema_ms)
-        cs = np.concatenate([[0], np.cumsum(e.pop_counts(self._mon_idx), dtype=np.int64)])
+        counts = e.pop_counts(self._mon_idx)
+        dt_s = ms / 1000.0
+        gf_spikes = 0
         for j, k in enumerate(self.rates):
             lo, hi = self._mon_edges[j], self._mon_edges[j + 1]
             if hi > lo:
-                inst = (cs[hi] - cs[lo]) / ((hi - lo) * ms / 1000.0)
+                grp_sum = int(counts[lo:hi].sum())
+                if j == self._gf_slot:
+                    gf_spikes = grp_sum
+                inst = grp_sum / ((hi - lo) * dt_s)
                 self.rates[k] += a * (inst - self.rates[k])
         self.loom += a * (self._loom_in - self.loom)
-        self._track_gf_spikes(ms, int(cs[self._mon_edges[self._gf_slot + 1]] - cs[self._mon_edges[self._gf_slot]]))
+        self._track_gf_spikes(ms, gf_spikes)
         # B3: decay defensive arousal
         if self.arousal > 1e-4:
             decay = math.exp(-ms / (self.tau_arousal_s * 1000.0))

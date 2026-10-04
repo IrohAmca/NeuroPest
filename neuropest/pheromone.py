@@ -21,13 +21,17 @@ class PheromoneSource:
     radius: float = 220.0  # spatial diffusion scale (px)
     strength: float = 1.0
 
+    def __post_init__(self):
+        sig2 = self.radius ** 2
+        self._cutoff_d2 = sig2 * 6.25
+        self._denom = 2.0 * (sig2 * 0.4)
+
     def concentration_at(self, px: float, py: float) -> float:
         d2 = (self.x - px) ** 2 + (self.y - py) ** 2
-        sig2 = self.radius ** 2
         # Smooth Gaussian falloff with a finite outer cutoff at 2.5 * radius
-        if d2 > sig2 * 6.25:
+        if d2 > self._cutoff_d2:
             return 0.0
-        return self.strength * math.exp(-d2 / (2.0 * (sig2 * 0.4)))
+        return self.strength * math.exp(-d2 / self._denom)
 
 
 class PheromoneField:
@@ -97,7 +101,7 @@ class PheromoneField:
     def update(self, dt: float) -> None:
         pass  # pheromones are static spatial diffusions
 
-    def sample_point(self, x: float, y: float, play_area=None) -> Tuple[float, float]:
+    def sample_point(self, x: float, y: float, play_area=None, sbox=None) -> Tuple[float, float]:
         """Returns (c_attract, c_repel) at given coordinate (x, y)."""
         c_attr = 0.0
         c_rep = 0.0
@@ -114,17 +118,21 @@ class PheromoneField:
 
         # Border repulsion: only calculated if border_margin and border_strength are positive
         if self.border_margin > 0.0 and self.border_strength > 0.0 and play_area is not None:
-            sbox = play_area.get_screen(x, y) if hasattr(play_area, "get_screen") else None
+            if sbox is None:
+                sbox = play_area.get_screen(x, y) if hasattr(play_area, "get_screen") else None
+            elif hasattr(sbox, "contains_point") and not sbox.contains_point(x, y):
+                sbox = play_area.get_screen(x, y) if hasattr(play_area, "get_screen") else None
             if sbox:
                 m = self.border_margin
                 wall_dists = []
-                if not (hasattr(play_area, "has_portal") and play_area.has_portal(sbox, "left", x, y)):
+                has_portal = getattr(play_area, "has_portal", None)
+                if not (has_portal and has_portal(sbox, "left", x, y)):
                     wall_dists.append(x - sbox.usable_l)
-                if not (hasattr(play_area, "has_portal") and play_area.has_portal(sbox, "right", x, y)):
+                if not (has_portal and has_portal(sbox, "right", x, y)):
                     wall_dists.append(sbox.usable_r - x)
-                if not (hasattr(play_area, "has_portal") and play_area.has_portal(sbox, "top", x, y)):
+                if not (has_portal and has_portal(sbox, "top", x, y)):
                     wall_dists.append(y - sbox.usable_t)
-                if not (hasattr(play_area, "has_portal") and play_area.has_portal(sbox, "bottom", x, y)):
+                if not (has_portal and has_portal(sbox, "bottom", x, y)):
                     wall_dists.append(sbox.usable_b - y)
                 if wall_dists:
                     dist_edge = min(wall_dists)
@@ -146,8 +154,10 @@ class PheromoneField:
         ax_r = fly_x + math.cos(hr) * antenna_dist
         ay_r = fly_y + math.sin(hr) * antenna_dist
 
-        al_attr, al_rep = self.sample_point(ax_l, ay_l, play_area)
-        ar_attr, ar_rep = self.sample_point(ax_r, ay_r, play_area)
+        fly_sbox = play_area.get_screen(fly_x, fly_y) if (play_area is not None and hasattr(play_area, "get_screen")) else None
+
+        al_attr, al_rep = self.sample_point(ax_l, ay_l, play_area, sbox=fly_sbox)
+        ar_attr, ar_rep = self.sample_point(ax_r, ay_r, play_area, sbox=fly_sbox)
 
         delta_attr = ar_attr - al_attr
         delta_rep = ar_rep - al_rep

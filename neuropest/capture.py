@@ -48,6 +48,18 @@ def bgra_to_gray(bgra: np.ndarray, out: np.ndarray) -> None:
             out[y, x] = (r * 77 + g * 150 + b * 29) >> 8
 
 
+@nb.njit(fastmath=True)
+def calc_diff(a: np.ndarray, b: np.ndarray) -> float:
+    """Zero-allocation mean absolute pixel difference between two uint8 images."""
+    h, w = a.shape
+    total = 0.0
+    for y in range(h):
+        for x in range(w):
+            d = int(a[y, x]) - int(b[y, x])
+            total += -d if d < 0 else d
+    return total / (h * w)
+
+
 class BITMAPINFOHEADER(ctypes.Structure):
     _fields_ = [
         ("biSize", wintypes.DWORD),
@@ -173,7 +185,7 @@ class GDIScreenCapturer:
             self.prev_gray[:] = self.gray
             self.has_prev = True
         else:
-            diff = float(np.mean(np.abs(self.gray.astype(np.int16) - self.prev_gray.astype(np.int16))))
+            diff = float(calc_diff(self.gray, self.prev_gray))
             is_static = diff < DIFF_THRESHOLD
             if not is_static:
                 self.prev_gray[:] = self.gray

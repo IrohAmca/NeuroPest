@@ -26,6 +26,8 @@ from pathlib import Path
 import numba as nb
 import numpy as np
 
+from scipy.ndimage import map_coordinates
+
 from .paths import EYE, FIELD
 
 EYE_FILE = EYE
@@ -40,6 +42,11 @@ class Retina:
     el: np.ndarray           # float32 [m] elevation, radians, positive = up
     eye: np.ndarray          # uint8 [m] 0 = left, 1 = right
     kind: np.ndarray         # uint8 [m] 0 = R1-6, 1 = R7, 2 = R8, 3 = L1, 4 = L2, 5 = L3 (see KINDS)
+
+    def __post_init__(self):
+        self.below = self.el < -1e-3
+        # Precompute inv_tan_el: 1.0 / np.tan(-el) where below horizon, 0.0 otherwise
+        self.inv_tan_el = np.where(self.below, 1.0 / np.tan(np.where(self.below, -self.el, 1.0)), 0.0).astype(np.float32)
 
     def save(self, path: Path = EYE_FILE) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -65,8 +72,12 @@ def plane_hits(retina: Retina, x: float, y: float, heading: float, eye_height: f
     eye_height: px above the plane. Returns hit x, hit y (px) and a boolean `hits` (looks below the
     horizon and within `max_dist`).
     """
-    below = retina.el < -1e-3
-    dist = eye_height / np.tan(np.where(below, -retina.el, 1.0))
+    if hasattr(retina, "inv_tan_el"):
+        below = retina.below
+        dist = eye_height * retina.inv_tan_el
+    else:
+        below = retina.el < -1e-3
+        dist = eye_height / np.tan(np.where(below, -retina.el, 1.0))
     hits = below & (dist <= max_dist)
     dist = np.where(hits, dist, 0.0)                            # columns that miss the plane get a dummy spot
     psi = heading + retina.az                                   # world azimuth on screen
@@ -117,7 +128,8 @@ def sphere_luminance(col_dir: np.ndarray, cursor: tuple[float, float], x: float,
     el = np.radians(elevation_deg)
     centre = np.array([np.cos(el) * np.cos(az), np.cos(el) * np.sin(az), np.sin(el)])
     half = np.arctan2(radius_px, max(np.hypot(dx, dy), 1.0))
-    ang = np.arccos(np.clip(col_dir.astype(np.float64) @ centre, -1.0, 1.0))
+    cd = col_dir if col_dir.dtype == np.float64 else col_dir.astype(np.float64)
+    ang = np.arccos(np.clip(cd @ centre, -1.0, 1.0))
     cover = np.clip((half - ang) / np.radians(edge_deg) + 0.5, 0.0, 1.0)
     return (background + (dark - background) * cover).astype(np.float32)
 
@@ -127,8 +139,6 @@ def image_scene(gray: np.ndarray, origin: tuple[float, float] = (0.0, 0.0), outs
     """Scene function over a grayscale image (rows = y, columns = x), bilinear, `outside` beyond its edges.
     `origin` (ox, oy) is the top-left coordinate of the image in world/screen space.
     If `cursor` (cx, cy) is given, composites the cursor disk onto the scene (since GDI BitBlt excludes hardware cursor)."""
-    from scipy.ndimage import map_coordinates
-
     h, w = gray.shape
     ox, oy = origin
 
@@ -389,7 +399,7 @@ class Features:
         obj = np.clip(obj_raw - self.obj_adapt, 0.0, 1.0)
         self.exp_hold = np.maximum(e, self.exp_hold * np.exp(-dt / self.hold)).astype(np.float32)
         self.obj_hold_v = np.maximum(obj, self.obj_hold_v * np.exp(-dt / self.obj_hold)).astype(np.float32)
-        eye_max = np.array([self.exp_hold[i].max() for i in self.eye_idx], np.float32)
+        eye_max = np.array([self.exp_hold[self.eye_idx[0]].max(), self.exp_hold[self.eye_idx[1]].max()], np.float32)
         rows = self.all_rows if pool_rows is None else pool_rows
         _pool_wmax(self.exp_hold, *self.pool, self.pool_w, rows, self._pooled)
         _pool_mean(np.maximum(now[:, 0], now[:, 1]), *self.pool, rows, self._size)   # share of the field the object covers

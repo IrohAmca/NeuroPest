@@ -1,14 +1,24 @@
-from __future__ import annotations
-
+import math
 import sys
 import time
 
-from PySide6.QtCore import Qt, QTimer
+if sys.platform == "win32":
+    import ctypes
+    from ctypes import wintypes
+    _u32 = ctypes.windll.user32
+    _u32.GetCursorPos.argtypes = [ctypes.POINTER(wintypes.POINT)]
+    _u32.GetCursorPos.restype = wintypes.BOOL
+else:
+    ctypes = None
+    wintypes = None
+    _u32 = None
+
+from PySide6.QtCore import QRect, Qt, QTimer
 from PySide6.QtGui import QCursor, QPainter
 from PySide6.QtWidgets import QApplication, QWidget
 
 from .control import Control
-from .fly import Fly, PlayArea, _wrap
+from .fly import FLY_MARGIN_PX, Fly, PlayArea, _wrap
 from .metabolism import MetabolicState
 from .pheromone import PheromoneField
 from .render import RewardEffect, draw_fly, draw_reward_plus
@@ -56,6 +66,9 @@ class Overlay(QWidget):
         self.touch_groom_enabled = False  # cursor touch grooming toggle (default: False/off)
         self.metabolism = MetabolicState()
         self._cached_play_area: PlayArea | None = None
+        self._cursor_pt = wintypes.POINT() if sys.platform == "win32" else None
+        self._prev_fly_rect: QRect | None = None
+        self._prev_effect_rects: list[QRect] = []
         self.last = time.perf_counter()
         self.prev_dist = None
         self._watch_screens()
@@ -91,10 +104,25 @@ class Overlay(QWidget):
 
     def _on_screens_changed(self, *args):
         self._cached_play_area = None
+        self._prev_fly_rect = None
+        self._prev_effect_rects.clear()
         self._update_geometry()
         self.fly.clamp(self.play_area())
         if not self.pheromone.sources:
             self.pheromone.spawn_random_sources(self.play_area().screens, count=7, attract_ratio=0.75)
+
+    def _get_fly_rect(self, g) -> QRect:
+        lx = int(self.fly.x - g.left())
+        ly = int(self.fly.y - g.top())
+        pad = int(math.ceil(70.0 * self.scale))
+        return QRect(lx - pad, ly - pad, pad * 2, pad * 2)
+
+    def _get_effect_rect(self, eff: RewardEffect, g) -> QRect:
+        lx = int(eff.x - g.left())
+        ly = int(eff.y - g.top() - 30.0 * self.scale)
+        pw = int(math.ceil(35.0 * self.scale))
+        ph = int(math.ceil(50.0 * self.scale))
+        return QRect(lx - pw, ly - ph, pw * 2, ph * 2)
 
     def set_home(self, screen):
         """Set a specific monitor to constrain the fly, or None to roam freely across all monitors."""
@@ -111,7 +139,6 @@ class Overlay(QWidget):
     def play_area(self) -> PlayArea:
         """Playable domain: all screens (multi-monitor roaming) or the chosen monitor."""
         if self._cached_play_area is None:
-            from .fly import FLY_MARGIN_PX
             m = FLY_MARGIN_PX * self.scale
             if self.home is not None:
                 self._cached_play_area = PlayArea.from_screens([self.home], margin=m)
@@ -134,10 +161,8 @@ class Overlay(QWidget):
         self.last = now
 
         if sys.platform == "win32":
-            import ctypes, ctypes.wintypes
-            pt = ctypes.wintypes.POINT()
-            ctypes.windll.user32.GetCursorPos(ctypes.byref(pt))
-            cur_x, cur_y = float(pt.x), float(pt.y)
+            _u32.GetCursorPos(ctypes.byref(self._cursor_pt))
+            cur_x, cur_y = float(self._cursor_pt.x), float(self._cursor_pt.y)
         else:
             cur = QCursor.pos()
             cur_x, cur_y = float(cur.x()), float(cur.y())
@@ -151,7 +176,6 @@ class Overlay(QWidget):
         touch = 1.0 if (self.touch_groom_enabled and dist < TOUCH_RADIUS_PX * self.scale) else 0.0
 
         # Physical bearing of cursor relative to fly heading
-        import math
         bearing = _wrap(math.atan2(pdy, pdx) - self.fly.heading)
 
         # Update pheromone field, cursor attractant and sample bilateral antennae
@@ -223,7 +247,22 @@ class Overlay(QWidget):
         if self.feed_effects:
             self.feed_effects = [e for e in self.feed_effects if e.update(dt)]
 
-        self.update()
+        # Partial dirty-region invalidation to avoid full-screen / multi-monitor recomposition at 60 FPS
+        g = self.geometry()
+        fly_rect = self._get_fly_rect(g)
+        curr_effect_rects = [self._get_effect_rect(e, g) for e in self.feed_effects]
+
+        if self._prev_fly_rect is not None:
+            self.update(self._prev_fly_rect)
+        self.update(fly_rect)
+
+        for r in self._prev_effect_rects:
+            self.update(r)
+        for r in curr_effect_rects:
+            self.update(r)
+
+        self._prev_fly_rect = fly_rect
+        self._prev_effect_rects = curr_effect_rects
 
     def paintEvent(self, _):
         p = QPainter(self)

@@ -140,19 +140,19 @@ def _run(cfg: EngineConfig, inp, out, stop, cap_frame=None, cap_meta=None) -> No
 
 def _loop(cfg: EngineConfig, brain, net, inp, out, stop, cap_frame=None, cap_meta=None, memory=None) -> None:
     brain.advance(cfg.dt * 4)                       # triggers/loads the compiled kernel
-    out[O_N] = net.n
-    out[O_READY] = 1.0
 
     chunk = CHUNK_MS if cfg.backend == "cpu" else CHUNK_MS_GPU
     eye = _Eye(net, cap_frame, cap_meta)
     approach = _Approach()
     last_in = None
-    forget_seen = inp[I_FORGET]
+    forget_seen = 0.0
     last_save = time.perf_counter()
     t0 = time.perf_counter()
     sim_ms = 0.0
     spikes0 = brain.engine.total_spikes
     w_wall, w_cpu, w_comp, w_sim, w_active, w_iters = t0, time.process_time(), 0.0, 0.0, 0.0, 0
+    out[O_N] = net.n
+    out[O_READY] = 1.0
     while not stop.is_set():
         t = time.perf_counter()
         eye.update(brain, inp, out, sim_ms)
@@ -254,6 +254,11 @@ class _Eye:
     neuron rates about every VISION_PERIOD_MS of simulated time and hands them to the brain."""
 
     def __init__(self, net, cap_frame=None, cap_meta=None):
+        import numpy as np
+        from .capture import CROP_H, CROP_W, META_ORIGIN_X, META_ORIGIN_Y, META_SEQ, META_STAMP
+        from .vision import image_scene
+        from .visual import cursor_scene
+
         self.net = net
         self.cap_frame = cap_frame
         self.cap_meta = cap_meta
@@ -271,6 +276,15 @@ class _Eye:
         self.frame_prev = None
         self.origin_now = (0.0, 0.0)
         self.origin_prev = (0.0, 0.0)
+        self._np = np
+        self._crop_h = CROP_H
+        self._crop_w = CROP_W
+        self._meta_ox = META_ORIGIN_X
+        self._meta_oy = META_ORIGIN_Y
+        self._meta_seq = META_SEQ
+        self._meta_stamp = META_STAMP
+        self._image_scene = image_scene
+        self._cursor_scene = cursor_scene
 
     def update(self, brain, inp, out, sim_ms: float) -> None:
         want = inp[I_VISION] > 0.5
@@ -323,12 +337,6 @@ class _Eye:
         out[O_VISION] = 1.0
 
     def _frame(self, brain, inp, sim_ms: float) -> None:
-        import numpy as np
-
-        from .capture import CROP_H, CROP_W, META_ORIGIN_X, META_ORIGIN_Y, META_SEQ, META_STAMP
-        from .vision import image_scene
-        from .visual import cursor_scene
-
         d = self.drive
         d.eye_height, d.skittish = max(10.0, inp[I_HEIGHT]), inp[I_SKITTISH]
         p = d.params
@@ -342,14 +350,14 @@ class _Eye:
 
         used_screen = False
         if self.cap_frame is not None and self.cap_meta is not None:
-            seq = int(self.cap_meta[META_SEQ])
+            seq = int(self.cap_meta[self._meta_seq])
             if seq > 0:
                 is_new = (seq != self.last_seq)
                 if is_new:
-                    raw = np.frombuffer(self.cap_frame, dtype=np.uint8).reshape((CROP_H, CROP_W)).copy()
-                    ox = self.cap_meta[META_ORIGIN_X]
-                    oy = self.cap_meta[META_ORIGIN_Y]
-                    cap_stamp = float(self.cap_meta[META_STAMP])
+                    raw = self._np.frombuffer(self.cap_frame, dtype=self._np.uint8).reshape((self._crop_h, self._crop_w)).copy()
+                    ox = self.cap_meta[self._meta_ox]
+                    oy = self.cap_meta[self._meta_oy]
+                    cap_stamp = float(self.cap_meta[self._meta_stamp])
                     dt_screen = max(cap_stamp - self.last_cap_stamp, dt) if self.last_cap_stamp > 0.0 else dt
                     self.last_cap_stamp = cap_stamp
                     self.frame_prev = self.frame_now if self.frame_now is not None else raw
@@ -366,10 +374,10 @@ class _Eye:
                     # composite it at eye level onto the columns inside d.step (B2).
                     plane_cursor = cursor if p.cursor_model != "sphere" else None
                     plane_prev = prev if p.cursor_model != "sphere" else None
-                    scene_now = image_scene(self.frame_now, origin=self.origin_now, outside=p.background,
-                                            cursor=plane_cursor, cursor_radius=d.halo_px)
-                    scene_prev = image_scene(self.frame_prev, origin=self.origin_prev, outside=p.background,
-                                             cursor=plane_prev, cursor_radius=d.halo_px)
+                    scene_now = self._image_scene(self.frame_now, origin=self.origin_now, outside=p.background,
+                                                  cursor=plane_cursor, cursor_radius=d.halo_px)
+                    scene_prev = self._image_scene(self.frame_prev, origin=self.origin_prev, outside=p.background,
+                                                   cursor=plane_prev, cursor_radius=d.halo_px)
                     idx, rates = d.step(scene_now, scene_prev, inp[I_X], inp[I_Y], inp[I_HEAD], dt,
                                         cursor=cursor, prev_cursor=prev, screen_scale=scale_screen)
                     # Next ticks before a new capture frame arrives must treat the screen background as unchanged (B1)
@@ -381,8 +389,8 @@ class _Eye:
             if p.cursor_model == "sphere":
                 idx, rates = d.step_cursor(cursor, prev, inp[I_X], inp[I_Y], inp[I_HEAD], dt)
             else:
-                idx, rates = d.step(cursor_scene(cursor[0], cursor[1], d.halo_px, p.background),
-                                    cursor_scene(prev[0], prev[1], d.halo_px, p.background),
+                idx, rates = d.step(self._cursor_scene(cursor[0], cursor[1], d.halo_px, p.background),
+                                    self._cursor_scene(prev[0], prev[1], d.halo_px, p.background),
                                     inp[I_X], inp[I_Y], inp[I_HEAD], dt)
 
         brain.set_vision(idx, rates, d.expansion, (d.mb_cue["cursor_near"], d.mb_cue["looming"]))

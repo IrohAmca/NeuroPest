@@ -146,8 +146,16 @@ class Control(QWidget):
         self.size.valueChanged.connect(self._size_moved)
         self.dt.currentIndexChanged.connect(lambda _: self._debounce.start())
         self.hw.currentIndexChanged.connect(lambda _: self._debounce.start())
-        self._t = QTimer(self, timeout=self._refresh, interval=250)
+        self._t = QTimer(self, timeout=self._on_refresh_timer, interval=250)
         self._t.start()
+        self._refresh()
+
+    def _on_refresh_timer(self):
+        if self.isVisible():
+            self._refresh()
+
+    def showEvent(self, event):
+        super().showEvent(event)
         self._refresh()
 
     # ------------------------------------------------------------------ sidebar

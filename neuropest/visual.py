@@ -40,6 +40,7 @@ class VisionDrive:
         self.params = params
         self.expansion = 0.0
         self.field = field or VisualField.load()
+        self.col_dir_f64 = self.field.col_dir.astype(np.float64)
         self.retina = self.field.as_retina()
         self.features = Features(self.field, rf_sigma_deg=params.rf_sigma_deg)
         lplc2_idx, lplc2_col = self.field.neurons(net, ["LPLC2"])
@@ -95,7 +96,7 @@ class VisionDrive:
         if screen_scale < 1.0:
             lum_prev = lum_now - (lum_now - lum_prev) * np.float32(screen_scale)
         if cursor is not None and p.cursor_model == "sphere":
-            cd = self.field.col_dir
+            cd = self.col_dir_f64
             cur_now = sphere_luminance(cd, cursor, x, y, heading, p.halo_px, p.background)
             cur_prev = sphere_luminance(cd, prev_cursor or cursor, x, y, heading, p.halo_px, p.background)
             cov_now = np.clip((p.background - cur_now) / max(p.background, 1e-4), 0.0, 1.0)
@@ -110,7 +111,7 @@ class VisionDrive:
         cursor positions at this and the previous frame (screen px); both are seen from the CURRENT pose, so the
         fly's own walking does not count as the cursor moving."""
         p = self.params
-        cd = self.field.col_dir
+        cd = self.col_dir_f64
         lum_now = sphere_luminance(cd, now, x, y, heading, p.halo_px, p.background)
         lum_prev = sphere_luminance(cd, prev, x, y, heading, p.halo_px, p.background)
         return self._detect(lum_now, lum_prev, dt, 1.0, 1.0)
