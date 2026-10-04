@@ -8,7 +8,7 @@ import pytest
 from neuropest import flywire
 from dataclasses import replace
 
-from neuropest.brain import FLY, FLYWIRE, FREEZE, GROOM, RETREAT, STAND, Brain
+from neuropest.brain import FLY, FLYWIRE, FREEZE, GROOM, RETREAT, STAND, WALK, Brain
 from neuropest.engine import LIFEngine
 
 N = 400
@@ -285,6 +285,55 @@ def test_brain_contact_is_not_looming_and_a_slow_approach_freezes_a_standing_fly
     calm = Brain(tier)
     calm.set_stimulus(300, 60, 0.0)                                       # 0.2 /s: a cursor drifting closer, no reaction
     assert FREEZE not in {calm.advance(4.0) for _ in range(250)}
+
+
+def test_brain_c1_hysteresis_and_decision_smoothing(tier):
+    b = Brain(tier)
+    # 1. Brief spike/blip of WALK (e.g. 5 Hz for just 20 ms): should NOT start walking
+    b.rates["WALK"] = 5.0
+    for _ in range(5):  # 20 ms
+        b._decode(4.0)
+    b.rates["WALK"] = 0.0
+    for _ in range(150):  # 600 ms dwell check
+        b._decode(4.0)
+    assert b.state == STAND
+
+    # 2. Sustained walk rate above walk_on_hz (3.5 Hz): should transition to WALK
+    b.rates["WALK"] = 6.0
+    for _ in range(200):  # 800 ms
+        b._decode(4.0)
+    assert b.state == WALK
+
+    # 3. Rate dips to intermediate value (2.8 Hz, between walk_off_hz 2.0 and walk_on_hz 3.5): stays WALK (hysteresis)
+    b.rates["WALK"] = 2.8
+    for _ in range(200):  # 800 ms
+        b._decode(4.0)
+    assert b.state == WALK
+
+    # 4. Rate drops below walk_off_hz (2.0 Hz): drops to STAND
+    b.rates["WALK"] = 0.5
+    for _ in range(200):  # 800 ms
+        b._decode(4.0)
+    assert b.state == STAND
+
+
+def test_brain_b3_defensive_arousal(tier):
+    b = Brain(tier)
+    assert b.arousal == 0.0
+
+    # Fast approach triggers escape (FLY) and surges arousal
+    b.set_stimulus(150, 3000, 0.0)
+    seen = {b.advance(4.0) for _ in range(150)}
+    assert FLY in seen
+    assert b.arousal >= 0.5
+
+    # Arousal decays over time
+    initial_arousal = b.arousal
+    for _ in range(250):  # 1 second of quiet
+        b.set_stimulus(900, 0, 0.0)
+        b.advance(4.0)
+    assert b.arousal < initial_arousal
+
 
 
 def test_tier_cache_is_written_once_and_follows_the_full_cache(raw, tmp_path):

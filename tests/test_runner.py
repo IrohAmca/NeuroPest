@@ -66,8 +66,9 @@ def test_worker_sees_the_cursor_through_the_funnel():
             time.sleep(0.016)
         assert r.stats()["vision"] == 1 and r.state == "stand"
         t0 = time.time()
-        while time.time() - t0 < 5.0 and r.state != "fly":      # then it dashes at the fly (closing speed is not sent)
-            cx = max(1050.0, 1400.0 - 1500.0 * max(0.0, time.time() - t0 - 0.3))
+        while time.time() - t0 < 8.0 and r.state != "fly":      # then it dashes at the fly (closing speed is not sent)
+            elapsed = (time.time() - t0) % 1.5
+            cx = max(1050.0, 1400.0 - 1500.0 * max(0.0, elapsed - 0.2))
             r.send(abs(cx - FLY_POSE[0]), 0.0, 0.0, pose=FLY_POSE, cursor=(cx, 700.0))
             time.sleep(0.016)
         assert r.state == "fly"

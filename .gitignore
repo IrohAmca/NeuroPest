@@ -2,6 +2,7 @@ __pycache__/
 *.pyc
 .venv/
 .licenses/
+assets/
 data/*.parquet
 data/*.csv
 data/*.pickle

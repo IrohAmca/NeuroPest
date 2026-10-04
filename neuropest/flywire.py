@@ -18,7 +18,7 @@ import numba as nb
 import numpy as np
 
 from .engine import LIFParams, Network
-from .paths import CACHE, RAW_DIR, TIER_DIR
+from .paths import CACHE, CACHE_SYM, RAW_DIR, TIER_DIR
 
 SOURCE = "FlyWire v783 (Dorkenwald et al. 2024; Schlegel et al. 2024), CC BY-NC 4.0, via Shiu et al. 2024"
 
@@ -270,17 +270,89 @@ def build(raw_dir: Path = RAW_DIR, with_activity: bool = True) -> Network:
     return net
 
 
-def load_cache(path: Path = CACHE) -> Network:
+def symmetrize(net: Network, raw_dir: Path = RAW_DIR) -> Network:
+    """Scale bilateral synapse weights so left and right copies of each type-pair match their mean (A2).
+
+    Edges between neurons with unknown cell_type or on 'center' are untouched. No edges added or deleted.
+    """
+    ann = load_annotations(net.ids, raw_dir)
+    types = ann["cell_type"].fillna("").to_numpy()
+    sides = ann["side"].fillna("").to_numpy()
+
+    side_code = np.zeros(len(sides), dtype=np.int8)
+    side_code[sides == "left"] = 1
+    side_code[sides == "right"] = 2
+
+    unique_types, type_inv = np.unique(types, return_inverse=True)
+    type_code = type_inv.copy()
+    type_code[types == ""] = -1
+
+    pre_idx = np.repeat(np.arange(net.n, dtype=np.int32), np.diff(net.indptr))
+    post_idx = net.indices
+    weights = net.data
+
+    valid = np.flatnonzero((side_code[pre_idx] > 0) & (side_code[post_idx] > 0) &
+                           (type_code[pre_idx] >= 0) & (type_code[post_idx] >= 0))
+    v_pre_t = type_code[pre_idx[valid]]
+    v_post_t = type_code[post_idx[valid]]
+    v_pre_s = side_code[pre_idx[valid]]
+    v_post_s = side_code[post_idx[valid]]
+    v_ipsi = (v_pre_s == v_post_s).astype(np.int8)
+    v_w = weights[valid]
+
+    N_T = len(unique_types)
+    raw_key = (v_pre_t.astype(np.int64) * N_T + v_post_t.astype(np.int64)) * 2 + v_ipsi.astype(np.int64)
+    u_keys, dense_key = np.unique(raw_key, return_inverse=True)
+    K = len(u_keys)
+
+    left_mask = (v_pre_s == 1)
+    right_mask = (v_pre_s == 2)
+    sum_L = np.bincount(dense_key[left_mask], weights=v_w[left_mask].astype(np.float64), minlength=K)
+    sum_R = np.bincount(dense_key[right_mask], weights=v_w[right_mask].astype(np.float64), minlength=K)
+
+    symmetrized = (sum_L != 0) & (sum_R != 0) & ((sum_L > 0) == (sum_R > 0))
+    avg = (sum_L + sum_R) * 0.5
+    scale_L = np.ones(K, dtype=np.float32)
+    scale_R = np.ones(K, dtype=np.float32)
+    scale_L[symmetrized] = (avg[symmetrized] / sum_L[symmetrized]).astype(np.float32)
+    scale_R[symmetrized] = (avg[symmetrized] / sum_R[symmetrized]).astype(np.float32)
+
+    new_data = weights.copy()
+    new_data[valid[left_mask]] *= scale_L[dense_key[left_mask]]
+    new_data[valid[right_mask]] *= scale_R[dense_key[right_mask]]
+
+    meta = dict(net.meta)
+    meta["symmetry"] = "symmetric"
+    return Network(net.indptr, net.indices, new_data, ids=net.ids, groups=dict(net.groups),
+                   meta=meta, order=net.order, extra=dict(net.extra))
+
+
+def load_cache(path: Path = CACHE, symmetry: str = "individual", raw_dir: Path = RAW_DIR) -> Network:
+    actual_path = CACHE_SYM if symmetry == "symmetric" else path
+    if actual_path.exists():
+        return Network.load(actual_path)
     if not path.exists():
         raise FileNotFoundError(f"{path} yok. Once: uv run python tools/build_flywire.py")
-    return Network.load(path)
+    base = Network.load(path)
+    if symmetry == "symmetric":
+        sym = symmetrize(base, raw_dir)
+        try:
+            actual_path.parent.mkdir(parents=True, exist_ok=True)
+            tmp = actual_path.with_name(f"{actual_path.stem}.{os.getpid()}.tmp.npz")
+            sym.save(tmp)
+            os.replace(tmp, actual_path)
+        except OSError:
+            pass
+        return sym
+    return base
 
 
 TIER_SIZES = (2_000, 5_000, 10_000, 15_000, 20_000, 50_000)      # sizes the control window offers below the full brain
 
 
-def tier_path(n: int, cache: Path = CACHE, tier_dir: Path = TIER_DIR) -> Path:
-    return tier_dir / f"{cache.stem}_n{n}.npz"
+def tier_path(n: int, cache: Path = CACHE, tier_dir: Path = TIER_DIR, symmetry: str = "individual") -> Path:
+    stem = f"{cache.stem}_sym" if symmetry == "symmetric" and not cache.stem.endswith("_sym") else cache.stem
+    return tier_dir / f"{stem}_n{n}.npz"
 
 
 def _stamp(cache: Path) -> str:
@@ -288,13 +360,15 @@ def _stamp(cache: Path) -> str:
     return f"{st.st_size}:{st.st_mtime_ns}"
 
 
-def load_tier(n: int, cache: Path = CACHE, tier_dir: Path = TIER_DIR) -> Network:
+def load_tier(n: int, cache: Path = CACHE, tier_dir: Path = TIER_DIR, symmetry: str = "individual",
+              raw_dir: Path = RAW_DIR) -> Network:
     """The `n` most relevant neurons, from a per-size cache file next to the full cache.
 
+    `symmetry`: "individual" (default; FlyWire connectome) or "symmetric" (hemisphere-balanced weights).
     Reading the 125 MB full cache and cutting the tier out of it cost ~0.8 s at every worker start; the tier's own
     file loads in ~20 ms. The file is written on first use (atomically: workers may race) and tied to the full
     cache by its size and mtime, so a rebuilt connectome never serves a stale tier."""
-    path = tier_path(n, cache, tier_dir)
+    path = tier_path(n, cache, tier_dir, symmetry=symmetry)
     stamp = _stamp(cache) if cache.exists() else None
     if stamp is not None and path.exists():
         try:
@@ -303,7 +377,21 @@ def load_tier(n: int, cache: Path = CACHE, tier_dir: Path = TIER_DIR) -> Network
                 return net
         except (OSError, ValueError, KeyError):
             pass                                            # damaged or half-written file: rebuild it
-    full = load_cache(cache)
+    if symmetry == "symmetric":
+        # Build symmetric tier from the individual tier for speed
+        base_net = load_tier(n, cache, tier_dir, symmetry="individual", raw_dir=raw_dir)
+        net = symmetrize(base_net, raw_dir)
+        net.meta["cache_stamp"] = stamp
+        try:
+            tier_dir.mkdir(parents=True, exist_ok=True)
+            tmp = path.with_name(f"{path.stem}.{os.getpid()}.tmp.npz")
+            net.save(tmp)
+            os.replace(tmp, path)
+        except OSError:
+            pass
+        return net
+
+    full = load_cache(cache, symmetry="individual", raw_dir=raw_dir)
     if n >= full.n:
         return full
     net = full.prefix(n)

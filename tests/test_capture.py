@@ -67,20 +67,21 @@ def test_image_scene_with_origin():
 def test_capture_process_lifecycle():
     import time
     cp = CaptureProcess(crop_w=100, crop_h=100)
-    cp.start()
-    cp.update_target(300, 300, enabled=True)
+    try:
+        cp.start()
+        cp.update_target(300, 300, enabled=True)
 
-    # Wait for frame (spawn on Windows takes ~1-2s)
-    seq = 0
-    for _ in range(50):
-        time.sleep(0.1)
-        frame, stamp, ox, oy, is_static, seq = cp.get_latest_frame()
-        if seq > 0:
-            break
+        # Wait for frame (spawn + numba JIT on Windows takes up to ~10-15s)
+        seq = 0
+        for _ in range(200):
+            time.sleep(0.1)
+            frame, stamp, ox, oy, is_static, seq = cp.get_latest_frame()
+            if seq > 0:
+                break
 
-    assert seq > 0
-    assert frame.shape == (100, 100)
-    assert ox == 300 - 50
-    assert oy == 300 - 50
-
-    cp.stop()
+        assert seq > 0
+        assert frame.shape == (100, 100)
+        assert ox == 300 - 50
+        assert oy == 300 - 50
+    finally:
+        cp.stop()

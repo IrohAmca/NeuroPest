@@ -233,11 +233,13 @@ class PlayArea:
 
 
 class Fly:
-    def __init__(self, x: float, y: float):
+    def __init__(self, x: float, y: float, alpha_steer: float = 0.8):
         self.x, self.y, self.heading = x, y, random.uniform(0, math.tau)
         self.phase = 0.0
         self.turn_t = 0.0
         self.turn = 0.0
+        self.steer_ema = 0.0
+        self.alpha_steer = alpha_steer
 
     def bearing_of(self, cursor: tuple[float, float]) -> float:
         """Angle of `cursor` relative to the heading, radians, positive when it is to the fly's right."""
@@ -247,6 +249,11 @@ class Fly:
         """steer: right-minus-left DNa02 rate (Hz) from the brain; turns a walking or retreating fly."""
         speed = {STAND: 0.0, WALK: 70.0, FLY: 420.0, RETREAT: -45.0, GROOM: 0.0, FREEZE: 0.0}[state]     # retreat = backward walking
         margin = 24.0 if state == FLY else 14.0
+
+        # Transient filter on DNa02 steer (Rayshubskiy et al. 2025 biphasic filter: persistent input adapts)
+        a_steer = 1.0 - math.exp(-dt / 0.4)
+        self.steer_ema += a_steer * (steer - self.steer_ema)
+        steer_eff = steer - self.alpha_steer * self.steer_ema
 
         if isinstance(rect, PlayArea):
             wx, wy = rect.wall_push(self.x, self.y, margin)
@@ -263,12 +270,12 @@ class Fly:
             self.turn_t -= dt
             if self.turn_t <= 0:
                 self.turn, self.turn_t = random.uniform(-1.5, 1.5), random.uniform(0.3, 1.2)
-            self.heading += (self.turn * 0.5 + steer * TURN_GAIN) * dt
+            self.heading += (self.turn * 0.5 + steer_eff * TURN_GAIN) * dt
             w = math.hypot(wx, wy)
             if w > 0:
                 self.heading += _wrap(math.atan2(wy, wx) - self.heading) * min(1.0, 5 * w * dt)
         elif state == RETREAT:
-            self.heading += steer * TURN_GAIN * dt          # keeps facing the cursor while backing away
+            self.heading += steer_eff * TURN_GAIN * dt          # keeps facing the cursor while backing away
 
         if isinstance(rect, PlayArea):
             self.x, self.y, self.heading = rect.step(self.x, self.y, self.heading, speed, dt)

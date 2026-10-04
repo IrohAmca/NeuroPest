@@ -279,7 +279,7 @@ class Features:
 
     def __init__(self, field: VisualField, ring_deg=(5.0, 18.0), centre_deg=3.5, surround_deg=(5.0, 11.0),
                  tau_adapt=8.0, tau_smooth=0.03, wide_field=1.5, pool_deg=30.0, object_pool_deg=12.0, hold_s=0.15,
-                 object_hold_s=0.1, rf_sigma_deg=0.0):
+                 object_hold_s=0.1, rf_sigma_deg=0.0, tau_obj_adapt=3.0):
         from scipy.sparse import csr_matrix, vstack
 
         d, eye = field.col_dir.astype(np.float64), field.col_eye
@@ -336,6 +336,8 @@ class Features:
         self.pool_small = neighbours(object_pool_deg)                   # narrow pooling (small objects)
         self.tau_adapt, self.tau_smooth, self.wide = tau_adapt, tau_smooth, wide_field
         self.hold, self.obj_hold = hold_s, object_hold_s
+        self.tau_obj_adapt = tau_obj_adapt
+        self.obj_adapt = np.zeros(m, np.float32)            # slow habituation / adaptation to persistent stimulation
         self.exp_hold = np.zeros(m, np.float32)             # leaky peak hold: a brief expansion drives for ~hold_s
         self.obj_hold_v = np.zeros(m, np.float32)
         self.A = np.full(m, 0.5, np.float32)
@@ -353,6 +355,7 @@ class Features:
         self.dd[:] = 0
         self.exp_hold[:] = 0
         self.obj_hold_v[:] = 0
+        self.obj_adapt[:] = 0
 
     def _channels(self, lum, base):
         """[m, 2]: how far below (dark) and above (bright) the slow baseline each column is."""
@@ -373,9 +376,11 @@ class Features:
         _weakest_quadrant(grow, *self.sectors, self._weakest)
         wide = self.eye_mean @ grow                                                  # [eye, polarity]
         e = np.maximum(self._weakest * (self.centre @ now) - self.wide * wide[self.eye], 0.0).max(axis=1)
-        # small object: centre darker (or brighter) than the surround
-        cs = self.centre_surround @ lum_now
-        obj = np.clip(np.abs(cs[m:] - cs[:m]) * 2.0, 0.0, 1.0)
+        # small object: centre-surround contrast of temporal change (LC10 responds to moving small objects)
+        cs_d = self.centre_surround @ (lum_now - lum_prev)
+        obj_raw = np.clip(np.abs(cs_d[m:] - cs_d[:m]) * 4.0, 0.0, 1.0)
+        self.obj_adapt += (1.0 - np.exp(-dt / self.tau_obj_adapt)) * (obj_raw - self.obj_adapt)
+        obj = np.clip(obj_raw - self.obj_adapt, 0.0, 1.0)
         self.exp_hold = np.maximum(e, self.exp_hold * np.exp(-dt / self.hold)).astype(np.float32)
         self.obj_hold_v = np.maximum(obj, self.obj_hold_v * np.exp(-dt / self.obj_hold)).astype(np.float32)
         eye_max = np.array([self.exp_hold[i].max() for i in self.eye_idx], np.float32)

@@ -40,6 +40,7 @@ class EngineConfig:
     seed: int = 1
     backend: str = "cpu"    # "cpu" (event-driven numba) or "gpu" (WebGPU, needs `uv sync --extra gpu`)
     adapter: int | None = None   # GPU adapter index (see list_gpus); None = first discrete GPU
+    symmetry: str = "individual"  # "individual" (default; FlyWire connectome) or "symmetric" (hemisphere-balanced)
 
 
 GPU_AUTO_MIN_NEURONS = 50_000   # "auto" uses a GPU from this tier on: the CPU holds smaller ones in real time
@@ -85,7 +86,7 @@ def build_network(cfg: EngineConfig):
     if cfg.circuit == "flywire":
         from . import flywire
 
-        return flywire.load_tier(cfg.n)
+        return flywire.load_tier(cfg.n, symmetry=cfg.symmetry)
     from .toy_circuit import build
 
     return build(cfg.n, cfg.seed)
@@ -222,6 +223,7 @@ class _Eye:
         self.cursor = None              # where the cursor was at the previous frame
         self.stamp = 0.0                # and the GUI clock reading of that sample
         self.last_seq = -1
+        self.last_cap_stamp = 0.0
         self.frame_now = None
         self.frame_prev = None
         self.origin_now = (0.0, 0.0)
@@ -273,13 +275,14 @@ class _Eye:
         self.on, self.cursor, self.stamp = True, None, 0.0
         self.frame_now = self.frame_prev = None
         self.last_seq = -1
+        self.last_cap_stamp = 0.0
         self.next_ms = self.last_ms = sim_ms
         out[O_VISION] = 1.0
 
     def _frame(self, brain, inp, sim_ms: float) -> None:
         import numpy as np
 
-        from .capture import CROP_H, CROP_W, META_ORIGIN_X, META_ORIGIN_Y, META_SEQ
+        from .capture import CROP_H, CROP_W, META_ORIGIN_X, META_ORIGIN_Y, META_SEQ, META_STAMP
         from .vision import image_scene
         from .visual import cursor_scene
 
@@ -298,22 +301,37 @@ class _Eye:
         if self.cap_frame is not None and self.cap_meta is not None:
             seq = int(self.cap_meta[META_SEQ])
             if seq > 0:
-                if seq != self.last_seq:
+                is_new = (seq != self.last_seq)
+                if is_new:
                     raw = np.frombuffer(self.cap_frame, dtype=np.uint8).reshape((CROP_H, CROP_W)).copy()
                     ox = self.cap_meta[META_ORIGIN_X]
                     oy = self.cap_meta[META_ORIGIN_Y]
+                    cap_stamp = float(self.cap_meta[META_STAMP])
+                    dt_screen = max(cap_stamp - self.last_cap_stamp, dt) if self.last_cap_stamp > 0.0 else dt
+                    self.last_cap_stamp = cap_stamp
                     self.frame_prev = self.frame_now if self.frame_now is not None else raw
                     self.origin_prev = self.origin_now if self.frame_now is not None else (ox, oy)
                     self.frame_now = raw
                     self.origin_now = (ox, oy)
                     self.last_seq = seq
+                    scale_screen = min(1.0, dt / dt_screen)
+                else:
+                    scale_screen = 0.0
 
                 if self.frame_now is not None and self.frame_prev is not None:
+                    # When cursor_model == "sphere" (default), do not draw the flat disk onto the 2D plane image;
+                    # composite it at eye level onto the columns inside d.step (B2).
+                    plane_cursor = cursor if p.cursor_model != "sphere" else None
+                    plane_prev = prev if p.cursor_model != "sphere" else None
                     scene_now = image_scene(self.frame_now, origin=self.origin_now, outside=p.background,
-                                            cursor=cursor, cursor_radius=d.halo_px)
+                                            cursor=plane_cursor, cursor_radius=d.halo_px)
                     scene_prev = image_scene(self.frame_prev, origin=self.origin_prev, outside=p.background,
-                                             cursor=prev, cursor_radius=d.halo_px)
-                    idx, rates = d.step(scene_now, scene_prev, inp[I_X], inp[I_Y], inp[I_HEAD], dt)
+                                             cursor=plane_prev, cursor_radius=d.halo_px)
+                    idx, rates = d.step(scene_now, scene_prev, inp[I_X], inp[I_Y], inp[I_HEAD], dt,
+                                        cursor=cursor, prev_cursor=prev, screen_scale=scale_screen)
+                    # Next ticks before a new capture frame arrives must treat the screen background as unchanged (B1)
+                    self.frame_prev = self.frame_now
+                    self.origin_prev = self.origin_now
                     used_screen = True
 
         if not used_screen:

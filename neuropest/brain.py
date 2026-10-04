@@ -42,6 +42,8 @@ class BrainSpec:
     groom_on_hz: float = 8.0          # mean rate of the grooming DNs (aDN1, aDN2)
     groom_off_hz: float = 3.0
     walk_min_hz: float = 3.0
+    walk_on_hz: float = 3.5           # C1: hysteresis threshold to initiate walk
+    walk_off_hz: float = 2.0          # C1: hysteresis threshold to stop walk
     min_dwell_ms: float = 600.0       # a stand/walk state lasts at least this long
     min_fly_ms: float = 300.0
     min_retreat_ms: float = 400.0
@@ -98,6 +100,11 @@ class Brain:
         self._dwell = 0.0
         self.walk_bias = 0.0
         self.skittish = 1.0
+        self.arousal = 0.0                  # B3: defensive arousal state (0..1)
+        self.tau_arousal_s = 30.0           # slow arousal decay constant (Gibson et al. 2015)
+        self._last_arousal_drive = 0.0
+        self.walk_smoothed = 0.0            # C1: 400 ms smoothed DNp09 rate for robust walking decision
+        self.walk_smooth_ms = 400.0
         self._stim = (1e6, 0.0, 0.0, 0.0)
         self._vision_expansion = 0.0
         self._vision = None        # (neuron indices, rates in Hz) from the image, replaces the cursor numbers
@@ -145,7 +152,9 @@ class Brain:
     def _drive(self):
         s = self.spec
         dist, closing, bearing, touch = self._stim
-        expansion = max(0.0, closing) / max(dist, 30.0) * self.skittish
+        effective_skittish = self.skittish * (1.0 + 0.5 * self.arousal)
+        effective_walk_bias = min(1.0, self.walk_bias * (1.0 + 0.3 * self.arousal))
+        expansion = max(0.0, closing) / max(dist, 30.0) * effective_skittish
         loom = min(s.loom_max_hz, expansion * s.loom_gain)
         retreat = min(s.retreat_max_hz, expansion * s.retreat_gain)
         vis = s.vis_max_hz / (1.0 + dist / s.vis_falloff_px)
@@ -155,7 +164,7 @@ class Brain:
         fi, fr = [], []
         # an object in contact is not approaching: a cursor wiggling over the head must not freeze the grooming fly
         self._loom_in = 0.0 if touch > 0 else (self._vision_expansion if self._vision is not None
-                                               else max(0.0, closing) / max(dist, 30.0)) * self.skittish
+                                               else max(0.0, closing) / max(dist, 30.0)) * effective_skittish
         if self._vision is not None:                     # the image replaces the visual part of the cursor drive
             fi.append(self._vision[0])
             fr.append(self._vision[1])
@@ -172,7 +181,7 @@ class Brain:
         ci, cr, cw = [], [], []
         walk, rest = self.group("WALK"), self.group("REST")
         ci += [walk]
-        cr += [np.full(len(walk), s.walk_drive[0] * self.walk_bias)]
+        cr += [np.full(len(walk), s.walk_drive[0] * effective_walk_bias)]
         cw += [np.full(len(walk), s.walk_drive[1])]
         if s.rest_drive is not None:
             ci += [rest]
@@ -193,6 +202,13 @@ class Brain:
                 self.rates[k] += a * (inst - self.rates[k])
         self.loom += a * (self._loom_in - self.loom)
         self._track_gf_spikes(ms, int(cs[self._mon_edges[self._gf_slot + 1]] - cs[self._mon_edges[self._gf_slot]]))
+        # B3: decay defensive arousal
+        if self.arousal > 1e-4:
+            decay = math.exp(-ms / (self.tau_arousal_s * 1000.0))
+            self.arousal = max(0.0, self.arousal * decay)
+            if abs(self.arousal - self._last_arousal_drive) > 0.05:
+                self._last_arousal_drive = self.arousal
+                self._drive()
         self._decode(ms)
         return self.state
 
@@ -217,7 +233,14 @@ class Brain:
         retreat_on = mdn > s.mdn_on_hz
         freeze_on = s.freeze_on > 0 and self.loom > s.freeze_on
         groom_on = s.groom_on_hz > 0 and groom > s.groom_on_hz
-        quiet = WALK if walk > max(s.walk_min_hz, rest * 1.2) else STAND
+
+        # C1: 400 ms decision reader smoothing and hysteresis
+        a_w = 1.0 - math.exp(-ms / self.walk_smooth_ms)
+        self.walk_smoothed += a_w * (walk - self.walk_smoothed)
+        if cur == WALK:
+            quiet = STAND if self.walk_smoothed < max(s.walk_off_hz, rest * 1.2) else WALK
+        else:
+            quiet = WALK if self.walk_smoothed > max(s.walk_on_hz, rest * 1.2) else STAND
 
         def settle(skip=()):
             return next((st for st, on in ((RETREAT, retreat_on), (FREEZE, freeze_on), (GROOM, groom_on))
@@ -250,3 +273,16 @@ class Brain:
             new = quiet
         if new != cur:
             self.state, self._dwell = new, 0.0
+            # B3: defensive arousal surge on threat
+            if new == FLY:
+                self.arousal = min(1.0, self.arousal + 0.5)
+                self._last_arousal_drive = self.arousal
+                self._drive()
+            elif new == RETREAT:
+                self.arousal = min(1.0, self.arousal + 0.05)
+                self._last_arousal_drive = self.arousal
+                self._drive()
+            elif new == FREEZE:
+                self.arousal = min(1.0, self.arousal + 0.02)
+                self._last_arousal_drive = self.arousal
+                self._drive()

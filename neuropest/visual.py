@@ -70,12 +70,24 @@ class VisionDrive:
     def reset(self):
         self._fresh = True                  # the next frame sets the slow baseline to what the eye sees then
 
-    def step(self, scene_now, scene_prev, x: float, y: float, heading: float, dt: float):
+    def step(self, scene_now, scene_prev, x: float, y: float, heading: float, dt: float,
+             cursor: tuple[float, float] | None = None, prev_cursor: tuple[float, float] | None = None,
+             screen_scale: float = 1.0):
         """One frame: returns (neuron indices, rates in Hz). `scene_prev` is the previous frame's scene, sampled
         here at the CURRENT pose so that the fly's own movement does not count as change."""
         p = self.params
         lum_now, lum_prev = sample_scenes(self.retina, (scene_now, scene_prev), x, y, heading, self.eye_height,
                                           sky=p.background)
+        if screen_scale < 1.0:
+            lum_prev = lum_now - (lum_now - lum_prev) * np.float32(screen_scale)
+        if cursor is not None and p.cursor_model == "sphere":
+            cd = self.field.col_dir
+            cur_now = sphere_luminance(cd, cursor, x, y, heading, p.halo_px, p.background)
+            cur_prev = sphere_luminance(cd, prev_cursor or cursor, x, y, heading, p.halo_px, p.background)
+            cov_now = np.clip((p.background - cur_now) / max(p.background, 1e-4), 0.0, 1.0)
+            cov_prev = np.clip((p.background - cur_prev) / max(p.background, 1e-4), 0.0, 1.0)
+            lum_now = lum_now * (1.0 - cov_now)
+            lum_prev = lum_prev * (1.0 - cov_prev)
         return self._detect(lum_now, lum_prev, dt, self.height_gain, min(1.0, p.eye_height / self.eye_height))
 
     def step_cursor(self, now: tuple[float, float], prev: tuple[float, float], x: float, y: float, heading: float,

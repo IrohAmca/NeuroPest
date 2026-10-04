@@ -120,9 +120,10 @@ def test_expansion_stays_silent_for_contraction_translation_and_wide_field_chang
 
 
 def test_small_object_feature_prefers_a_small_contrasting_spot(field):
-    spot = peaks(field, lambda i: disk(field, AHEAD_BELOW, 4.0), 20)
+    spot = peaks(field, lambda i: disk(field, direction(max(i, 0) * 1.5, -20.0), 4.0), 20)
     flat = peaks(field, lambda i: np.full(len(field.col_dir), 0.2, np.float32), 20)
-    assert spot["object"] > 0.5 and flat["object"] < 0.01
+    still = peaks(field, lambda i: disk(field, AHEAD_BELOW, 4.0), 20)
+    assert spot["object"] > 0.5 and flat["object"] < 0.01 and still["object"] < 0.01
 
 
 def test_pooled_outputs_follow_the_requested_rows(field):

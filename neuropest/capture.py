@@ -134,6 +134,8 @@ class GDIScreenCapturer:
         self.hbm = self._gdi32.CreateDIBSection(
             self.hdc_screen, ctypes.byref(bmi), 0, ctypes.byref(self.p_bits), None, 0
         )
+        if not self.hdc_screen or not self.hdc_mem or not self.hbm or not self.p_bits.value:
+            raise RuntimeError("Failed to initialize GDI screen capture context")
         self.old_bm = self._gdi32.SelectObject(self.hdc_mem, self.hbm)
 
         self._bgra_view = np.ctypeslib.as_array(

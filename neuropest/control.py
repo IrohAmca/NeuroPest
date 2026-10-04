@@ -366,6 +366,26 @@ class Control(QWidget):
         labeled(card, "Zaman adımı dt (küçük: daha doğru, daha ağır)", self.dt)
         lay.addWidget(card)
 
+        # Gelişmiş Seçenekler
+        adv_card = Card("Gelişmiş Seçenekler")
+        self.sym_options = [
+            ("individual", "Bireysel (FlyWire orijinal)"),
+            ("symmetric", "Simetrik (Sağ-sol dengeli)"),
+        ]
+        self.sym_combo = QComboBox()
+        self.sym_combo.addItems([label for _, label in self.sym_options])
+        cur_sym = getattr(self.runner.cfg, "symmetry", "individual")
+        self.sym_combo.setCurrentIndex(0 if cur_sym == "individual" else 1)
+        self.sym_combo.setEnabled(self._kind() == "flywire")
+        self.sym_combo.currentIndexChanged.connect(lambda _: self._debounce.start())
+        labeled(adv_card, "Bağlantı Simetrisi", self.sym_combo)
+        self.sym_hint = _label(
+            "Bireysel: FlyWire'ın tek sinek beyni (orijinal biyolojik asimetri korunur).\n"
+            "Simetrik: Sağ ve sol yarımküre bağlantı ağırlıkları ortalamaya eşitlenir (sağ-sol dönüş döngüsünü dengeler).",
+            "Faint", wrap=True)
+        adv_card.body.addWidget(self.sym_hint)
+        lay.addWidget(adv_card)
+
         # Compute sub-card
         comp_card = Card("Hesaplama Donanımı")
         self.hw = QComboBox()
@@ -423,6 +443,7 @@ class Control(QWidget):
 
     def _circuit_changed(self, _):
         self._load_sizes(FLYWIRE_DEFAULT if self._kind() == "flywire" else TOY_SIZES[0])
+        self.sym_combo.setEnabled(self._kind() == "flywire")
         self._debounce.start()
 
     def _size_moved(self, _):
@@ -496,7 +517,9 @@ class Control(QWidget):
             self._scan_gpus()
             return
         backend, adapter = self._hardware(n)
-        cfg = EngineConfig(self._kind(), n, DTS[self.dt.currentIndex()][1], backend=backend, adapter=adapter)
+        sym = self.sym_options[self.sym_combo.currentIndex()][0]
+        cfg = EngineConfig(self._kind(), n, DTS[self.dt.currentIndex()][1], backend=backend, adapter=adapter,
+                           symmetry=sym)
         if cfg != self.runner.cfg:
             self.runner.start(cfg)
 
