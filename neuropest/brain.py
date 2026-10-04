@@ -10,12 +10,14 @@ measured response of the anchor neurons (tools/probe_circuit.py).
 from __future__ import annotations
 
 import math
+import warnings
 from collections import deque
 from dataclasses import dataclass
 
 import numpy as np
 
 from .engine import Network, create_engine
+from .mushroom import MushroomBody
 from .states import FLY, FREEZE, GROOM, RETREAT, STAND, STATES, WALK  # noqa: F401  (re-exported)
 
 
@@ -82,7 +84,8 @@ def spec_for(net: Network) -> BrainSpec:
 
 class Brain:
     def __init__(self, net: Network, dt: float = 0.5, seed: int = 0, ema_ms: float = 80.0,
-                 spec: BrainSpec | None = None, backend: str = "cpu", adapter: int | None = None):
+                 spec: BrainSpec | None = None, backend: str = "cpu", adapter: int | None = None,
+                 learning: bool = True, mb_wiring: str = "random"):
         self.net = net
         self.spec = spec or spec_for(net)
         self.engine = create_engine(net, dt=dt, seed=seed, backend=backend, adapter=adapter)
@@ -110,11 +113,30 @@ class Brain:
         self._vision = None        # (neuron indices, rates in Hz) from the image, replaces the cursor numbers
         self._loom_in = 0.0        # expansion rate (1/s) of the nearest object now, from the cursor numbers or the image
         self.loom = 0.0            # the same, smoothed like the rates: what the freeze rule reads
+        # learned valence (mushroom body, mushroom.py): a designed layer, 0 for a naive fly
+        self.mb = None
+        if learning:
+            self.mb = MushroomBody()
+            if mb_wiring == "flywire":                  # opt-in: the real FlyWire KC / MBON / DAN / PN wiring
+                try:
+                    self.mb = MushroomBody.from_flywire()
+                except OSError as e:                    # tools/build_mushroom.py has not been run
+                    warnings.warn(f"real mushroom-body wiring not available ({e}); using the random model")
+        self.valence = 0.0                  # -1 fear .. +1 desire, for the cues present now
+        self._mb_ms = 0.0
+        self._reward = 0.0                  # PAM drive: feeding, held ~0.8 s after the contact
+        self._punish = 0.0                  # PPL1 drive: threat read from the spiking escape / retreat outputs
+        self._valence_driven = 0.0          # the valence the drive was last built with
         self.phero_steer = 0.0     # bilateral tropotaxis steering bias (Hz)
         self.phero_drive = 0.0     # attractive pheromone intensity (0..1)
         self.phero_repel = 0.0     # repulsive warning/border intensity (0..1)
         self.at_target = 0.0       # 1.0 if arrived at attractive source
         self.flight_urge = 0.0     # accumulated motivation to initiate long-mode pursuit flight
+        # central motor pool (diagram): V_motor = threat + desire + unreachability tension. A READOUT of what drives the
+        # state machine below, not its input: the state still comes from the spiking descending neurons.
+        self.v_threat = self.v_desire = 0.0
+        self.v_motor = 0.0
+        self.flight_mode = ""      # "short" (escape, Giant Fiber) or "long" (pursuit, non-GF) while in FLY
         self._last_fi: np.ndarray | None = None
         self._last_fr: np.ndarray | None = None
         self._last_ci: np.ndarray | None = None
@@ -137,6 +159,13 @@ class Brain:
     def clear_vision(self):
         self._vision = None
         self._drive()
+
+    @property
+    def gear(self) -> str:
+        """The diagram's gear: stand, walk, fly_short (escape), fly_long (chase / search); other states count as stand."""
+        if self.state == FLY:
+            return "fly_long" if self.flight_mode == "long" else "fly_short"
+        return WALK if self.state == WALK else STAND
 
     @property
     def steer(self) -> float:
@@ -172,8 +201,12 @@ class Brain:
     def _drive(self):
         s = self.spec
         dist, closing, bearing, touch = self._stim
-        effective_skittish = self.skittish * (1.0 + 0.5 * self.arousal)
-        effective_walk_bias = min(1.0, (self.walk_bias + 0.65 * self.phero_drive) * (1.0 + 0.3 * self.arousal))
+        v = self.valence
+        self._valence_driven = v
+        desire, fear = max(0.0, v), max(0.0, -v)
+        effective_skittish = self.skittish * (1.0 + 0.5 * self.arousal) * (1.0 + 0.8 * fear)
+        effective_walk_bias = min(1.0, (self.walk_bias + 0.65 * self.phero_drive + 0.4 * desire)
+                                  * (1.0 + 0.3 * self.arousal))
         # Food odor / attractant actively suppresses predator looming escape (GF) and backward retreat (MDN)
         if self.phero_drive > 0.05:
             expansion = 0.0
@@ -198,8 +231,13 @@ class Brain:
         side = math.sin(bearing)                         # >0: cursor to the right
 
         # Bilateral steering drive combining cursor angle and pheromone tropotaxis
-        steer_r = steer * max(0.0, side) + max(0.0, self.phero_steer)
-        steer_l = steer * max(0.0, -side) + max(0.0, -self.phero_steer)
+        # learned valence scales it: toward what the fly learned to want, away from what it learned to fear
+        gain = min(2.5, max(-1.0, 1.0 + 1.5 * v))
+        cur_r, cur_l = steer * max(0.0, side), steer * max(0.0, -side)
+        ph_r, ph_l = max(0.0, self.phero_steer), max(0.0, -self.phero_steer)
+        if gain < 0:                                     # aversion reverses the turn: the opposite side is driven
+            cur_r, cur_l, ph_r, ph_l = cur_l, cur_r, ph_l, ph_r
+        cur_r, cur_l, ph_r, ph_l = (abs(gain) * x for x in (cur_r, cur_l, ph_r, ph_l))
 
         e = self.engine
         fi, fr = [], []
@@ -211,10 +249,10 @@ class Brain:
             fi.append(self._vision[0])
             fr.append(self._vision[1])
             cursor_drive = (("VIS", vis), ("BULK_DRIVE", s.bulk_hz),
-                            ("LC10_R", max(0.0, self.phero_steer)), ("LC10_L", max(0.0, -self.phero_steer)))
+                            ("LC10_R", ph_r), ("LC10_L", ph_l))
         else:
             cursor_drive = (("LOOM", loom), ("RETREAT_IN", retreat), ("VIS", vis), ("BULK_DRIVE", s.bulk_hz),
-                            ("LC10_R", steer_r), ("LC10_L", steer_l))
+                            ("LC10_R", cur_r + ph_r), ("LC10_L", cur_l + ph_l))
         touch_drive = (("TOUCH_R", s.touch_hz * touch * (side >= 0)), ("TOUCH_L", s.touch_hz * touch * (side < 0)))
         for name, hz in cursor_drive + touch_drive:      # touch is mechanical, not visual: it always comes from the cursor
             idx = self.group(name)
@@ -275,7 +313,36 @@ class Brain:
                 self._last_arousal_drive = self.arousal
                 self._drive()
         self._decode(ms)
+        if self.mb is not None:
+            self._learn(ms)
         return self.state
+
+    MB_STEP_MS = 50.0
+
+    def _learn(self, ms: float):
+        """Mushroom-body step every 50 ms: cues in, dopamine from the unconditioned stimuli, valence out.
+
+        Reward (PAM) = feeding at a pheromone source. Punishment (PPL1) = threat read from the spiking outputs: Giant
+        Fiber (escape), MDN (backward retreat), touch. A chase (food odor / pursuit urge) is not a threat even though it
+        drives the Giant Fiber, so punishment is held off then."""
+        s = self.spec
+        self._reward = 1.0 if self.at_target > 0.5 else self._reward * math.exp(-ms / 800.0)
+        threat = max(self.rates["GF"] / (2.0 * s.gf_on_hz), self.rates["MDN"] / (3.0 * s.mdn_on_hz))
+        if self.gf_window >= max(1, s.gf_event_spikes):
+            threat = 1.0
+        if self.phero_drive > 0.05 or self.flight_urge >= 0.5:
+            threat = 0.0
+        self._punish = min(1.0, threat)
+        self._mb_ms += ms
+        if self._mb_ms < self.MB_STEP_MS:
+            return
+        dt, self._mb_ms = self._mb_ms / 1000.0, 0.0
+        dist, _, _, touch = self._stim
+        cues = (self.phero_drive, self.phero_repel, 1.0 / (1.0 + dist / 250.0) if dist < 1e5 else 0.0,
+                min(1.0, self.loom / 3.0), touch)
+        self.valence = self.mb.step(cues, self._reward, self._punish, dt)
+        if abs(self.valence - self._valence_driven) > 0.05:
+            self._drive()
 
     def _track_gf_spikes(self, ms: float, spikes: int):
         """Keep the GF spike counts of the last `gf_event_ms` (rounded up to whole chunks)."""
@@ -311,9 +378,17 @@ class Brain:
             return next((st for st, on in ((RETREAT, retreat_on), (FREEZE, freeze_on), (GROOM, groom_on))
                          if on and st not in skip), quiet)
 
-        # Long-mode voluntary takeoff / goal-directed pursuit accumulation
-        if cur == WALK and self.phero_drive > 0.25 and self.at_target < 0.5:
-            self.flight_urge = min(1.2, self.flight_urge + (ms / 1000.0) * (self.phero_drive * 0.85))
+        # V_motor terms. threat: how hard the escape / retreat outputs and the alarm odor push; desire: the odor plus
+        # what the fly learned to want; tension: the urge to fly that builds while a wanted goal stays out of reach.
+        self.v_threat = min(1.5, max(gf / (2.0 * s.gf_on_hz), mdn / (2.0 * s.mdn_on_hz), self.phero_repel))
+        self.v_desire = min(1.5, self.phero_drive + max(0.0, self.valence))
+        self.v_motor = self.v_threat + self.v_desire + self.flight_urge
+
+        # Long-mode voluntary takeoff / goal-directed pursuit accumulation; learned desire speeds it up, a threat
+        # stops it (a chase does not start under attack)
+        if cur == WALK and self.phero_drive > 0.25 and self.at_target < 0.5 and self.v_threat < 0.5:
+            pull = self.phero_drive * (1.0 + max(0.0, self.valence))
+            self.flight_urge = min(1.2, self.flight_urge + (ms / 1000.0) * (pull * 0.85))
         else:
             self.flight_urge = max(0.0, self.flight_urge - (ms / 1000.0) * 0.35)
 
@@ -321,6 +396,8 @@ class Brain:
         event = s.gf_event_spikes > 0 and self.gf_window >= s.gf_event_spikes
         if event or gf > s.gf_on_hz:
             new = FLY                                   # take-off: driven directly by Giant Fiber neural output
+            if cur != FLY:
+                self.flight_mode = "long" if self.flight_urge >= 0.5 and self.v_threat < 0.5 else "short"
         elif cur == FLY:
             landing_ready = False
             # Dynamic landing decision: not hardcoded time
@@ -353,6 +430,8 @@ class Brain:
             new = quiet
         if new != cur:
             self.state, self._dwell = new, 0.0
+            if new != FLY:
+                self.flight_mode = ""
             # B3: defensive arousal surge on threat
             if new == FLY:
                 self.arousal = min(1.0, self.arousal + 0.5)

@@ -177,9 +177,10 @@ class Control(QWidget):
             ("Canlı İzleme", 0),
             ("Davranış", 1),
             ("Görsel Girdi", 2),
-            ("Feromon & Koku", 3),
-            ("Devre & Donanım", 4),
+            ("Feromon && Koku", 3),
+            ("Devre && Donanım", 4),
             ("Görünüm", 5),
+            ("Öğrenme && Hafıza", 6),
         ]
         for title, idx in nav_items:
             btn = QPushButton(title)
@@ -269,6 +270,15 @@ class Control(QWidget):
         self._build_view_page(p5_lay)
         p5_lay.addStretch(1)
         self.stack.addWidget(p5)
+
+        # Page 6: Öğrenme & Hafıza
+        p6 = QWidget()
+        p6_lay = QVBoxLayout(p6)
+        p6_lay.setContentsMargins(0, 0, 0, 0)
+        p6_lay.setSpacing(14)
+        self._build_learning_page(p6_lay)
+        p6_lay.addStretch(1)
+        self.stack.addWidget(p6)
 
         content_lay.addWidget(self.stack)
         parent_layout.addWidget(scroll, 1)
@@ -406,6 +416,37 @@ class Control(QWidget):
     def _on_cursor_phero_changed(self, idx: int):
         if self.overlay is not None and 0 <= idx < len(self.cursor_phero_modes):
             self.overlay.cursor_phero_mode = self.cursor_phero_modes[idx][0]
+
+    def _build_learning_page(self, lay: QVBoxLayout):
+        card = Card("Öğrenme & Hafıza")
+        card.body.addWidget(_label(
+            "Sinek yaşadıklarından öğrenir. Bir kokuyla ya da imleçle birlikte beslenirse onu sever ve ona yönelir; "
+            "o sırada korkarsa ondan kaçınır. Öğrendiği, uygulama kapanınca da saklanır.\n\n"
+            "Unutma üç şekilde olur: anılar zamanla yavaşça silinir, ödül ya da korku gelmeden tekrarlanan "
+            "ipucu onu çabuk unutturur, \"Hafızayı sil\" ile de hepsi hemen silinir.", "Muted", wrap=True))
+        grid = QGridLayout()
+        grid.setHorizontalSpacing(16)
+        self.s_val = Stat("Değerlik", "Şu an algıladığı şeye karşı öğrenilmiş his: + arzu, − korku")
+        self.s_vm = Stat("V_motor", "Tehdit + arzu + ulaşamama gerilimi")
+        self.s_gear = Stat("Vites", "Durma, yürüme, kaçış uçuşu ya da kovalama uçuşu")
+        for i, s in enumerate((self.s_val, self.s_vm, self.s_gear)):
+            grid.addWidget(s, 0, i)
+        card.body.addLayout(grid)
+        self.learn_enable = QCheckBox("Öğrenme açık")
+        self.learn_enable.setToolTip("Kapalıysa sinek hiçbir şey öğrenmez; motor yeniden başlar.")
+        self.learn_enable.setChecked(getattr(self.runner.cfg, "learning", True))
+        self.learn_enable.toggled.connect(lambda _: self._apply())
+        card.body.addWidget(self.learn_enable)
+        self.forget_btn = QPushButton("Hafızayı sil")
+        self.forget_btn.setToolTip("Sinek öğrendiği her şeyi hemen unutur.")
+        self.forget_btn.clicked.connect(self._forget)
+        card.body.addWidget(self.forget_btn)
+        lay.addWidget(card)
+
+    def _forget(self):
+        forget = getattr(self.runner, "forget", None)
+        if forget:
+            forget()
 
     def _build_circuit_page(self, lay: QVBoxLayout):
         card = Card("Sinir Devresi")
@@ -591,7 +632,8 @@ class Control(QWidget):
         backend, adapter = self._hardware(n)
         sym = self.sym_options[self.sym_combo.currentIndex()][0]
         cfg = EngineConfig(self._kind(), n, DTS[self.dt.currentIndex()][1], backend=backend, adapter=adapter,
-                           symmetry=sym)
+                           symmetry=sym, memory_path=self.runner.cfg.memory_path,
+                           learning=self.learn_enable.isChecked(), mb_wiring=self.runner.cfg.mb_wiring)
         if cfg != self.runner.cfg:
             self.runner.start(cfg)
 
@@ -610,7 +652,8 @@ class Control(QWidget):
         self.warn.setVisible(bool(text))
 
     def _clear_stats(self):
-        for s in (self.s_gf, self.s_mdn, self.s_steer, self.s_rt, self.s_cpu, self.s_spk):
+        for s in (self.s_gf, self.s_mdn, self.s_steer, self.s_rt, self.s_cpu, self.s_spk,
+                  self.s_val, self.s_vm, self.s_gear):
             s.set("–")
         self.active.setText("")
 
@@ -638,6 +681,11 @@ class Control(QWidget):
         self.s_rt.set(f"×{st['rt']:.1f}")
         self.s_cpu.set(f"%{100 * st['cpu']:.0f}")
         self.s_spk.set(f"{st['spikes']:,.0f}")
+        v = st.get("valence", 0.0)
+        self.s_val.set(f"{v:+.2f} " + ("arzu" if v > 0.05 else "korku" if v < -0.05 else "nötr"))
+        self.s_vm.set(f"{st.get('v_motor', 0.0):.2f}")
+        self.s_gear.set({"stand": "durma", "walk": "yürüme", "fly_short": "kaçış uçuşu",
+                         "fly_long": "kovalama uçuşu"}.get(st.get("gear", "stand"), "–"))
         self.active.setText(f"Aktif nöron: {st['active']:,.0f} / {st['n']:,}" if st["active"] >= 0
                             else f"Nöron: {st['n']:,} (GPU hepsini her adımda günceller)")
         where = "CPU"

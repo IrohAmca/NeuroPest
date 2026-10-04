@@ -9,4 +9,5 @@ data/*.pickle
 sprites_preview.png
 data/raw/
 data/circuits/
+data/memory/
 ui_preview/

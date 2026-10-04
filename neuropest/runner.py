@@ -9,25 +9,28 @@ from __future__ import annotations
 
 import math
 import multiprocessing as mp
+import os
 import threading
 import time
 from dataclasses import dataclass
 
 from .paths import CACHE
-from .states import STAND, STATES
+from .states import GEARS, STAND, STATES
 
 # input slots
 I_DIST, I_CLOSING, I_BIAS, I_SKITTISH, I_BEARING, I_TOUCH = 0, 1, 2, 3, 4, 5
 I_X, I_Y, I_HEAD, I_CX, I_CY, I_VISION, I_HEIGHT = 6, 7, 8, 9, 10, 11, 12     # fly pose, cursor, vision switch
 I_STAMP = 13                # clock reading (s) of the frame the GUI sampled the cursor and pose at; 0 = not sent
 I_PHERO_STEER, I_PHERO_DRIVE, I_PHERO_REPEL, I_AT_TARGET = 14, 15, 16, 17
+I_FORGET = 18               # counter: every increase makes the fly forget what it learned
 # output slots
 (O_READY, O_STATE, O_GF, O_WALK, O_REST, O_RT, O_ACTIVE, O_N, O_CPU, O_LAG, O_SIM_S, O_BEAT, O_MDN, O_STEER,
- O_SPIKES, O_GROOM, O_VISION) = range(17)
+ O_SPIKES, O_GROOM, O_VISION, O_VALENCE, O_VMOTOR, O_GEAR) = range(20)
 
 CHUNK_MS = 4.0              # simulated time advanced per loop iteration
 CHUNK_MS_GPU = 12.0         # a GPU read-back costs ~1 ms regardless of size; measured x1.8 -> x2.8-4 on a GTX 1650
 STATS_EVERY_S = 0.25
+MEMORY_SAVE_S = 60.0        # the learned weights are written this often (and on exit) when they changed
 VISION_PERIOD_MS = 20.0     # the vision pipeline looks at a new image this often: 5 CPU chunks (60 Hz was rounded up to this anyway)
 MAX_FRAME_GAP_S = 0.25      # two cursor samples further apart than this say nothing about its speed (a stalled GUI)
 MAX_LAG_S = 0.25            # beyond this the backlog is dropped (slow motion instead of catching up)
@@ -42,6 +45,9 @@ class EngineConfig:
     backend: str = "cpu"    # "cpu" (event-driven numba) or "gpu" (WebGPU, needs `uv sync --extra gpu`)
     adapter: int | None = None   # GPU adapter index (see list_gpus); None = first discrete GPU
     symmetry: str = "individual"  # "individual" (default; FlyWire connectome) or "symmetric" (hemisphere-balanced)
+    learning: bool = True   # mushroom-body valence learning (mushroom.py); a naive fly behaves as without it
+    memory_path: str | None = None   # where the learned weights are kept between runs; None = forget on exit
+    mb_wiring: str = "random"   # mushroom body: "random" (designed) or "flywire" (real KC/MBON/DAN/PN cells, mushroom.py)
 
 
 GPU_AUTO_MIN_NEURONS = 50_000   # "auto" uses a GPU from this tier on: the CPU holds smaller ones in real time
@@ -80,7 +86,11 @@ def pick_gpu(gpus: list[dict]) -> int | None:
 def default_config() -> EngineConfig:
     """The real connectome at 15,000 neurons (within ~2% of the full brain for every cursor
     stimulus, tools/fidelity.py) when its cache has been built, else the toy circuit."""
-    return EngineConfig("flywire", 15_000) if CACHE.exists() else EngineConfig()
+    from .paths import MEMORY
+
+    # NEUROPEST_MB=flywire switches the mushroom body to the real cells (needs tools/build_mushroom.py to have been run)
+    wiring = "flywire" if os.environ.get("NEUROPEST_MB", "").lower() == "flywire" else "random"
+    return EngineConfig("flywire", 15_000, memory_path=str(MEMORY), mb_wiring=wiring) if CACHE.exists() else EngineConfig()
 
 
 def build_network(cfg: EngineConfig):
@@ -108,16 +118,25 @@ def _run(cfg: EngineConfig, inp, out, stop, cap_frame=None, cap_meta=None) -> No
     from .brain import Brain
 
     net = build_network(cfg)
-    brain = Brain(net, dt=cfg.dt, seed=cfg.seed, backend=cfg.backend, adapter=cfg.adapter)
+    brain = Brain(net, dt=cfg.dt, seed=cfg.seed, backend=cfg.backend, adapter=cfg.adapter, learning=cfg.learning,
+                  mb_wiring=cfg.mb_wiring)
+    memory = brain.mb.memory_file(cfg.memory_path) if brain.mb is not None and cfg.memory_path else None
+    if memory is not None:
+        brain.mb.load(memory)
     try:
-        _loop(cfg, brain, net, inp, out, stop, cap_frame, cap_meta)
+        _loop(cfg, brain, net, inp, out, stop, cap_frame, cap_meta, memory)
     finally:
+        if memory is not None:
+            try:
+                brain.mb.save(memory)
+            except OSError:
+                pass
         close = getattr(brain.engine, "close", None)
         if close:
             close()                                 # free the GPU buffers
 
 
-def _loop(cfg: EngineConfig, brain, net, inp, out, stop, cap_frame=None, cap_meta=None) -> None:
+def _loop(cfg: EngineConfig, brain, net, inp, out, stop, cap_frame=None, cap_meta=None, memory=None) -> None:
     brain.advance(cfg.dt * 4)                       # triggers/loads the compiled kernel
     out[O_N] = net.n
     out[O_READY] = 1.0
@@ -126,6 +145,8 @@ def _loop(cfg: EngineConfig, brain, net, inp, out, stop, cap_frame=None, cap_met
     eye = _Eye(net, cap_frame, cap_meta)
     approach = _Approach()
     last_in = None
+    forget_seen = inp[I_FORGET]
+    last_save = time.perf_counter()
     t0 = time.perf_counter()
     sim_ms = 0.0
     spikes0 = brain.engine.total_spikes
@@ -145,6 +166,9 @@ def _loop(cfg: EngineConfig, brain, net, inp, out, stop, cap_frame=None, cap_met
         if cur != last_in:
             brain.set_stimulus(*cur)
             last_in = cur
+        if inp[I_FORGET] != forget_seen and brain.mb is not None:
+            forget_seen = inp[I_FORGET]
+            brain.mb.reset()
         state = brain.advance(chunk)
         spent = time.perf_counter() - t
         w_comp += spent
@@ -157,6 +181,14 @@ def _loop(cfg: EngineConfig, brain, net, inp, out, stop, cap_frame=None, cap_met
         out[O_STATE] = float(STATES.index(state))
         out[O_GF], out[O_WALK], out[O_REST] = (brain.rates["GF"], brain.rates["WALK"], brain.rates["REST"])
         out[O_MDN], out[O_STEER], out[O_GROOM] = brain.rates["MDN"], brain.steer, brain.rates["GROOM"]
+        out[O_VALENCE] = brain.valence
+        out[O_VMOTOR], out[O_GEAR] = brain.v_motor, float(GEARS.index(brain.gear))
+        if memory is not None and brain.mb.dirty and time.perf_counter() - last_save > MEMORY_SAVE_S:
+            last_save = time.perf_counter()
+            try:
+                brain.mb.save(memory)
+            except OSError:
+                pass
 
         ahead = t0 + sim_ms / 1000.0 - time.perf_counter()
         if ahead > 0:
@@ -442,6 +474,24 @@ class Runner:
             self.capture.update_target(cx, cy, enabled=self.vision)
 
     @property
+    def valence(self) -> float:
+        """Learned valence of what the fly senses now, -1 (fear) .. +1 (desire); 0 for a naive fly."""
+        return self.out[O_VALENCE] if self.ready else 0.0
+
+    @property
+    def v_motor(self) -> float:
+        """Central motor pool value: threat + desire + tension (see Brain)."""
+        return self.out[O_VMOTOR] if self.ready else 0.0
+
+    @property
+    def gear(self) -> str:
+        return GEARS[int(self.out[O_GEAR])] if self.ready else GEARS[0]
+
+    def forget(self) -> None:
+        """Amnesia: the worker resets the learned weights (and saves the empty memory soon after)."""
+        self.inp[I_FORGET] += 1.0
+
+    @property
     def steer(self) -> float:
         """Right minus left DNa02 rate, Hz (positive: turn right)."""
         return self.out[O_STEER] if self.ready else 0.0
@@ -468,7 +518,7 @@ class Runner:
         return dict(ready=self.ready, n=int(o[O_N]), rt=o[O_RT], active=o[O_ACTIVE], cpu=o[O_CPU],
                     lag_ms=o[O_LAG], gf=o[O_GF], walk=o[O_WALK], rest=o[O_REST], mdn=o[O_MDN],
                     steer=o[O_STEER], groom=o[O_GROOM], sim_s=o[O_SIM_S], spikes=o[O_SPIKES],
-                    vision=o[O_VISION])
+                    vision=o[O_VISION], valence=o[O_VALENCE], v_motor=o[O_VMOTOR], gear=GEARS[int(o[O_GEAR])])
 
 
 def _retire(proc, stop) -> None:

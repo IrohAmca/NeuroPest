@@ -56,6 +56,7 @@ cp /tmp/fwann/supplemental_files/Supplemental_file1_neuron_annotations.tsv data/
 git hash-object data/raw/*               # tablodaki SHA-1'lerle aynı olmalı
 uv run python tools/build_flywire.py     # ~30 s: data/circuits/flywire_v783.npz (125 MB) + data/circuits/tiers/ (katman başına küçük dosya)
 uv run python tools/build_eye.py         # göz verisi: data/circuits/eye.npz ve field.npz (görsel girdi için)
+uv run python tools/build_mushroom.py    # isteğe bağlı: gerçek mantar-cisim (KC/MBON/DAN/PN) bağlantısı, data/circuits/mushroom_flywire.npz (~200 kB); `NEUROPEST_MB=flywire` ile açılır
 uv run python tools/fidelity.py          # ~5 dk: data/circuits/tiers.json (arayüzdeki doğruluk/hız bilgisi)
 # isteğe bağlı: tools/fidelity.py 5000 15000 30000 --dt 0.1 0.5 1.0 | --image | --mirror (tablolar data/probes/)
 ```
@@ -393,9 +394,23 @@ parçalar, gerçek zamana hızlanma bekleyerek) GTX 1650'de tam beyin ×5, işle
 5. **Feromon Simülasyonu ve Kemotaksis (Tropotaxis):** İmlece ve ekran sınırlarına tanımlanabilir kimyasal alanlar
    (itici/çekici cVA ve agregasyon profilleri); sineğin kafa açısına göre iki anten arasındaki konsantrasyon farkı
    ($\Delta C = C_R - C_L$) ile yön (DNa02) ve yürüme (DNp09/GF) sürüşü; etki alanı ve şiddeti konfigürasyonu.
-6. **Mushroom Body & Pekiştirmeli Öğrenme (RL / Sinaptik Plastisite):** Kenyon hücreleri $\to$ MBON sinapslarında
+6. **[İlk adım tamamlandı: `mushroom.py`]** **Mushroom Body & Pekiştirmeli Öğrenme (RL / Sinaptik Plastisite):** Kenyon hücreleri $\to$ MBON sinapslarında
    dopaminerjik (PAM ödül / PPL1 ceza) 3 faktörlü sinaptik plastisite kuralı; imleç veya görsel desenlerle
    ödüllendirilen/cezalandırılan davranışların deneyimle öğrenilmesi (klasik koşullanma ve hafıza).
+   Şu an: tasarlanmış (bağlantıdan okunmayan) hız modeli; rastgele PN→KC (%5 seyrek), KC→MBON (yaklaşma/kaçınma),
+   PAM (besleme) / PPL1 (GF-MDN kaynaklı tehdit) ile kapılı depresyon; çıktı değerlik (−1 korku … +1 arzu) yürüme
+   eğilimini, ürkekliği ve DNa02 yönünü ölçekler (korkuda yön ters döner). Saf sinek değerliği 0'dır, davranış değişmez.
+   Tamamlandı: dopamin bir **tahmin hatası** (pekiştirme eksi ipucunun zaten öğrenilmiş değerliği; öğrenilmiş ipucu daha az öğretir),
+   **söndürme** (beklenen ödül/tehdit gelmezse bellek geri çekilir, `eta_ext`; yavaş unutmanın üstüne), belleğin diske yazılması
+   ve **arayüz** (Davranış sayfasında "Öğrenme ve Hafıza": kısa açıklama, sineğin o an algıladığı değerlik, "Hafızayı Sil").
+   Sonra: ikinci derece koşullanma ve bölme başına farklı zaman ölçekleri.
+   **Gerçek hücreler (isteğe bağlı, `MushroomBody.from_flywire()`, `NEUROPEST_MB=flywire`):** FlyWire v783'ten 5177 Kenyon hücresi,
+   96 MBON (35 tip), PAM/PPL1 DAN'larının MBON'lara sinaps sayıları ve PN→KC bağlantısı (`tools/build_mushroom.py`). Gerçek olan: KC→MBON
+   bölme yapısı, DAN→MBON bağlaşımı (ödül→PAM, ceza→PPL1 hangi MBON'un sinapslarını bastırır), PN→KC pençe bağlantısı. Tasarım/varsayım
+   kalanlar: hangi PN tipinin hangi ipucunu temsil ettiği (masaüstü sineğin anteni yok; görsel PN'ler göz modelinin sürdüğü hücreler
+   değil, dokunma için PN yolu hiç yok), MBON işaretleri (8 tip literatürden; kalanı DAN bağlaşımından türetilmiş, bkz. `mbon_sign_src`),
+   seyreklik (APL hâlâ "en çok sürülen %5"), okuma ve hız sabitleri. Varsayılan rastgele model değişmedi; bellek dosyası ayrı
+   (`fly_memory_flywire.npz`). Adım başı maliyet: `tools/bench_mushroom.py`.
 7. **Canlı 3D Beyin Görselleştirici (Hafif GPU/Nokta Bulutu):** Nöron soma koordinatlarının 3D nokta bulutu ve
    arka planda şeffaf nöropil kabuğu; simülasyon sürecinden gelen spike listesiyle parıldayan aksiyon potansiyeli
    dalgaları; serbest kamera (orbit), sekme gizliyken sıfır ek GPU/CPU yükü.

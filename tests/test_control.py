@@ -18,6 +18,8 @@ class FakeRunner:
         self.vision, self.eye_height = False, 100.0
         self.state, self.ready, self.failed, self.alive = "walk", True, False, True
         self.rt = 5.0
+        self.valence = 0.0
+        self.forgotten = 0
         self.started = []
 
     def stats(self):
@@ -27,6 +29,9 @@ class FakeRunner:
     def start(self, cfg):
         self.started.append(cfg)
         self.cfg = cfg
+
+    def forget(self):
+        self.forgotten += 1
 
 
 class FakeOverlay:
@@ -148,3 +153,18 @@ def test_gpus_are_listed_only_when_asked_for_or_needed(app, monkeypatch):
     assert not r2.started and c2._gpu_scanning
     finish(c2)
     assert r2.started[-1].backend == "gpu" and r2.started[-1].adapter == 3 and len(calls) == 2
+
+
+def test_learning_page_shows_valence_forgets_and_switches_learning(app):
+    r = FakeRunner()
+    r.forgot = 0
+    r.forget = lambda: setattr(r, "forgot", r.forgot + 1)
+    base = r.stats
+    r.stats = lambda: dict(base(), valence=-0.6, v_motor=1.25, gear="fly_long")
+    c = Control(FakeOverlay(), r)
+    c._refresh()
+    assert "korku" in c.s_val.value.text() and c.s_vm.value.text() == "1.25" and "kovalama" in c.s_gear.value.text()
+    c.forget_btn.click()
+    assert r.forgot == 1
+    c.learn_enable.setChecked(False)
+    assert r.started and r.started[-1].learning is False

@@ -28,7 +28,8 @@ class FakeRunner:
 
     def stats(self):
         return dict(ready=True, n=15_000, rt=self._rt, active=3_412, cpu=0.38, lag_ms=12, gf=0, walk=41,
-                    rest=0, mdn=3, steer=-7, sim_s=12.0, spikes=48_230, vision=0.0)
+                    rest=0, mdn=3, steer=-7, sim_s=12.0, spikes=48_230, vision=0.0, valence=0.42, v_motor=1.3,
+                    gear="walk")
 
     def start(self, cfg):
         self.cfg = cfg
@@ -60,7 +61,8 @@ def main():
         app.processEvents()
         ctrl.grab().save(str(out / name))
         if name == "control.png":
-            tab_names = ["tab_live.png", "tab_behaviour.png", "tab_vision.png", "tab_circuit.png", "tab_view.png"]
+            tab_names = ["tab_live.png", "tab_behaviour.png", "tab_vision.png", "tab_pheromone.png", "tab_circuit.png",
+                         "tab_view.png", "tab_learning.png"]
             for i, tname in enumerate(tab_names):
                 ctrl._switch_tab(i)
                 app.processEvents()
