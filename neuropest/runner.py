@@ -512,7 +512,7 @@ class Runner:
         return dict(ready=self.ready, n=int(o[O_N]), rt=o[O_RT], active=o[O_ACTIVE], cpu=o[O_CPU],
                     lag_ms=o[O_LAG], gf=o[O_GF], walk=o[O_WALK], rest=o[O_REST], mdn=o[O_MDN],
                     steer=o[O_STEER], groom=o[O_GROOM], sim_s=o[O_SIM_S], spikes=o[O_SPIKES],
-                    vision=o[O_VISION])
+                    vision=o[O_VISION], valence=o[O_VALENCE], v_motor=o[O_VMOTOR], gear=GEARS[int(o[O_GEAR])])
 
 
 def _retire(proc, stop) -> None:
