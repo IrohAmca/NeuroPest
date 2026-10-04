@@ -390,3 +390,16 @@ parçalar, gerçek zamana hızlanma bekleyerek) GTX 1650'de tam beyin ×5, işle
    her biri için sıralamayı yeniden kurmak.
 3. Otomatik boyut/donanım seçimi (makineyi ölç, gerçek zamanı tutan en küçük maliyet).
 4. Gerçek sprite'lar ve daha iyi yürüme/uçma/geri yürüme animasyonu.
+5. **Feromon Simülasyonu ve Kemotaksis (Tropotaxis):** İmlece ve ekran sınırlarına tanımlanabilir kimyasal alanlar
+   (itici/çekici cVA ve agregasyon profilleri); sineğin kafa açısına göre iki anten arasındaki konsantrasyon farkı
+   ($\Delta C = C_R - C_L$) ile yön (DNa02) ve yürüme (DNp09/GF) sürüşü; etki alanı ve şiddeti konfigürasyonu.
+6. **Mushroom Body & Pekiştirmeli Öğrenme (RL / Sinaptik Plastisite):** Kenyon hücreleri $\to$ MBON sinapslarında
+   dopaminerjik (PAM ödül / PPL1 ceza) 3 faktörlü sinaptik plastisite kuralı; imleç veya görsel desenlerle
+   ödüllendirilen/cezalandırılan davranışların deneyimle öğrenilmesi (klasik koşullanma ve hafıza).
+7. **Canlı 3D Beyin Görselleştirici (Hafif GPU/Nokta Bulutu):** Nöron soma koordinatlarının 3D nokta bulutu ve
+   arka planda şeffaf nöropil kabuğu; simülasyon sürecinden gelen spike listesiyle parıldayan aksiyon potansiyeli
+   dalgaları; serbest kamera (orbit), sekme gizliyken sıfır ek GPU/CPU yükü.
+8. **Kanonik vs. Eğitilmiş Sinek Karşılaştırma Arayüzü (Connectome Diff & Hafıza):** Orijinal (naive) FlyWire v783
+   referans ağırlıkları ile öğrenme sonrası plastisiteye uğramış ağırlıkların fark matrisi ($\Delta W = W_{öğrenilmiş} - W_{kanonik}$);
+   davranışsal sapma grafiği (aynı uyaran karşısında bazal vs. eğitilmiş tepki eğrileri); sinek hafızasını profil
+   olarak dışa aktarma/içe aktarma ve fabrika ayarlarına sıfırlama (amnesia).
