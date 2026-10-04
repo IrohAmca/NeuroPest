@@ -261,9 +261,12 @@ class WGPUEngine:
         self.dmask = self._new(np.zeros((n + 31) // 32, np.uint32), usage=U.STORAGE | U.COPY_DST)
         self.indptr = self._new(net.indptr.astype(np.uint32), usage=U.STORAGE)
         # create_buffer_with_data is the cheapest in host commit memory on Windows (write_buffer chunks keep
-        # ~2x the size in staging, mapped_at_creation ~4x; measured with a 60 MB buffer)
         self.indices = self._new(net.indices.view(np.uint32), usage=U.STORAGE)    # same bits, no copy (>= 0)
         scaled = net.data * np.float32(FIX)
+        max_f32 = np.nextafter(np.float32(2**31), np.float32(0))
+        min_f32 = np.float32(-2**31)
+        np.nan_to_num(scaled, copy=False, nan=0.0, posinf=max_f32, neginf=min_f32)
+        np.clip(scaled, min_f32, max_f32, out=scaled)
         np.rint(scaled, out=scaled)
         self.wfix = self._new(scaled.astype(np.int32), usage=U.STORAGE)
         del scaled

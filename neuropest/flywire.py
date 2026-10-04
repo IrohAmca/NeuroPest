@@ -299,9 +299,10 @@ def symmetrize(net: Network, raw_dir: Path = RAW_DIR) -> Network:
     v_post_s = side_code[post_idx[valid]]
     v_ipsi = (v_pre_s == v_post_s).astype(np.int8)
     v_w = weights[valid]
+    v_sign = (v_w > 0).astype(np.int8)
 
     N_T = len(unique_types)
-    raw_key = (v_pre_t.astype(np.int64) * N_T + v_post_t.astype(np.int64)) * 2 + v_ipsi.astype(np.int64)
+    raw_key = ((v_pre_t.astype(np.int64) * N_T + v_post_t.astype(np.int64)) * 2 + v_ipsi.astype(np.int64)) * 2 + v_sign.astype(np.int64)
     u_keys, dense_key = np.unique(raw_key, return_inverse=True)
     K = len(u_keys)
 
@@ -310,12 +311,12 @@ def symmetrize(net: Network, raw_dir: Path = RAW_DIR) -> Network:
     sum_L = np.bincount(dense_key[left_mask], weights=v_w[left_mask].astype(np.float64), minlength=K)
     sum_R = np.bincount(dense_key[right_mask], weights=v_w[right_mask].astype(np.float64), minlength=K)
 
-    symmetrized = (sum_L != 0) & (sum_R != 0) & ((sum_L > 0) == (sum_R > 0))
+    symmetrized = (np.abs(sum_L) > 1e-3) & (np.abs(sum_R) > 1e-3) & ((sum_L > 0) == (sum_R > 0))
     avg = (sum_L + sum_R) * 0.5
     scale_L = np.ones(K, dtype=np.float32)
     scale_R = np.ones(K, dtype=np.float32)
-    scale_L[symmetrized] = (avg[symmetrized] / sum_L[symmetrized]).astype(np.float32)
-    scale_R[symmetrized] = (avg[symmetrized] / sum_R[symmetrized]).astype(np.float32)
+    scale_L[symmetrized] = np.clip(avg[symmetrized] / sum_L[symmetrized], 0.2, 5.0).astype(np.float32)
+    scale_R[symmetrized] = np.clip(avg[symmetrized] / sum_R[symmetrized], 0.2, 5.0).astype(np.float32)
 
     new_data = weights.copy()
     new_data[valid[left_mask]] *= scale_L[dense_key[left_mask]]
