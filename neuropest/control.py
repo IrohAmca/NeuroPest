@@ -323,6 +323,25 @@ class Control(QWidget):
 
         lay.addWidget(card)
 
+        learn = Card("Öğrenme ve Hafıza")
+        learn.body.addWidget(_label(
+            "Sinek deneyimden öğrenir: onu besleyen bir ipucunu sever, korkutan bir ipucundan çekinir. "
+            "Öğrendiği zamanla silinir; ödül gelmeden tekrarlanan ipucu da onu çabuk unutturur. "
+            "Hafıza kapanışta kaydedilir.", "Faint", wrap=True))
+        self.learn_now = _label("", "Muted", wrap=True)
+        learn.body.addWidget(self.learn_now)
+        self.forget_btn = QPushButton("Hafızayı Sil (Unut)")
+        self.forget_btn.setToolTip("Sineği saf haline döndürür: öğrendiği tüm sevgi ve korkular silinir.")
+        self.forget_btn.clicked.connect(lambda: self.runner.forget())
+        learn.body.addWidget(self.forget_btn)
+        lay.addWidget(learn)
+
+    @staticmethod
+    def _valence_text(v: float) -> str:
+        if abs(v) < 0.05:
+            return "Şu an algıladığı şeyde: nötr (ya yeni ya da öğrenilmiş bir şey yok)"
+        return f"Şu an algıladığı şeyde: {'istek' if v > 0 else 'korku'} ({v:+.2f})"
+
     def _on_touch_groom_toggled(self, checked: bool):
         if self.overlay is not None:
             self.overlay.touch_groom_enabled = checked
@@ -628,6 +647,7 @@ class Control(QWidget):
         if not st["ready"]:
             self._set_pill("Başlıyor", MUTED)
             self._clear_stats()
+            self.learn_now.setText("")
             self.telemetry.setText("Motor başlıyor (ilk açılışta derleme birkaç saniye sürer)…")
             self._show_warn("")
             return
@@ -639,6 +659,7 @@ class Control(QWidget):
         self.s_rt.set(f"×{st['rt']:.1f}")
         self.s_cpu.set(f"%{100 * st['cpu']:.0f}")
         self.s_spk.set(f"{st['spikes']:,.0f}")
+        self.learn_now.setText(self._valence_text(r.valence))
         self.active.setText(f"Aktif nöron: {st['active']:,.0f} / {st['n']:,}" if st["active"] >= 0
                             else f"Nöron: {st['n']:,} (GPU hepsini her adımda günceller)")
         where = "CPU"

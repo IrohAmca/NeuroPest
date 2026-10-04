@@ -14,8 +14,12 @@ what does not:
   * valence = approach MBON - avoidance MBON, in -1..+1: >0 desire, <0 fear. A naive fly has valence 0 for every cue,
     so with no experience the behaviour is unchanged.
 
-Not modelled (yet): dopamine as a prediction error, KC->KC and MBON->DAN loops (extinction, second-order conditioning),
-and different time scales per compartment.
+  * dopamine is a prediction error: the valence a cue already has is subtracted from the reinforcement (the role of the
+    MBON -> DAN feedback), so a learned cue stops teaching (blocking, saturation) and a predicted reinforcement that does
+    not come (a desired cue with no food, a feared cue with no threat) is an omission that undoes the memory a little
+    (extinction, `eta_ext`), on top of the slow forgetting.
+
+Not modelled (yet): KC->KC loops and second-order conditioning, and different time scales per compartment.
 
 Cost: one 50 ms step is a gather of ~6 values per KC and two dot products, a few tens of microseconds for 2000 KCs.
 
@@ -47,6 +51,8 @@ class MBParams:
     eta: float = 0.8                  # depression rate (1/s) per unit of dopamine on a fully eligible KC
     tau_trace_s: float = 2.0          # KC eligibility trace: a cue slightly before the reinforcement still pairs
     tau_forget_s: float = 1800.0      # weights recover toward baseline with this time constant
+    pred_gain: float = 0.8            # dopamine = reinforcement minus what the learned valence already predicts (0: off)
+    eta_ext: float = 0.05             # extinction: recovery rate (1/s) of the memory while the predicted reinforcement is missing
     w_min: float = 0.0
     seed: int = 7
 
@@ -94,20 +100,30 @@ class MushroomBody:
         p = self.p
         self.kc = self.encode(cues)
         self.trace += (self.kc - self.trace) * (1.0 - math.exp(-dt / p.tau_trace_s))
-        self.pam, self.ppl1 = float(reward), float(punishment)
+        n = float(self.k_active)
+        # dopamine = reinforcement - prediction (the valence this cue already has); a missing predicted reinforcement
+        # is an omission (extinction)
+        v0 = float(self.kc @ (self.w_app - self.w_av)) / n if p.pred_gain > 0.0 and self.kc.any() else 0.0
+        pe_r = reward - p.pred_gain * max(v0, 0.0)
+        pe_p = punishment - p.pred_gain * max(-v0, 0.0)
+        dop_r, dop_p, ext_r, ext_p = max(pe_r, 0.0), max(pe_p, 0.0), max(-pe_r, 0.0), max(-pe_p, 0.0)
+        self.pam, self.ppl1 = dop_r, dop_p
         # three-factor rule: eligibility (KC) x dopamine -> depression of that KC's output synapse
-        self.dirty = self.dirty or reward > 0.0 or punishment > 0.0
-        if reward > 0.0:
-            self.w_av -= p.eta * reward * dt * self.trace * self.w_av
-        if punishment > 0.0:
-            self.w_app -= p.eta * punishment * dt * self.trace * self.w_app
+        self.dirty = self.dirty or dop_r > 0.0 or dop_p > 0.0 or (ext_r > 0.0 or ext_p > 0.0) and bool(self.trace.any())
+        if dop_r > 0.0:
+            self.w_av -= p.eta * dop_r * dt * self.trace * self.w_av
+        if dop_p > 0.0:
+            self.w_app -= p.eta * dop_p * dt * self.trace * self.w_app
+        if ext_r > 0.0:                                  # reward predicted, none came: the avoidance MBON recovers
+            self.w_av += (1.0 - self.w_av) * (p.eta_ext * ext_r * dt) * self.trace
+        if ext_p > 0.0:
+            self.w_app += (1.0 - self.w_app) * (p.eta_ext * ext_p * dt) * self.trace
         np.maximum(self.w_av, p.w_min, out=self.w_av)
         np.maximum(self.w_app, p.w_min, out=self.w_app)
         # slow forgetting toward the naive state
         r = dt / p.tau_forget_s
         self.w_app += (1.0 - self.w_app) * r
         self.w_av += (1.0 - self.w_av) * r
-        n = float(self.k_active)
         self.mbon_app = float(self.kc @ self.w_app) / n
         self.mbon_av = float(self.kc @ self.w_av) / n
         self.valence = self.mbon_app - self.mbon_av if self.kc.any() else 0.0
@@ -346,22 +362,35 @@ class FlywireMushroomBody(MushroomBody):
         a = 1.0 - math.exp(-dt / p.tau_trace_s)
         self.trace *= 1.0 - a
         self.trace[act] += a
-        self.pam, self.ppl1 = float(reward), float(punishment)
-        if reward > 0.0 or punishment > 0.0:
-            self.dirty = True
-            # three-factor rule, Euler step per synapse: eligibility (KC trace) x dopamine (per MBON) x what is left
+        # dopamine = reinforcement - prediction (the valence this cue already has); a missing predicted reinforcement
+        # is an omission (extinction)
+        v0 = self._readout(act) if p.pred_gain > 0.0 else 0.0
+        pe_r = reward - p.pred_gain * max(v0, 0.0)
+        pe_p = punishment - p.pred_gain * max(-v0, 0.0)
+        dop_r, dop_p, ext_r, ext_p = max(pe_r, 0.0), max(pe_p, 0.0), max(-pe_r, 0.0), max(-pe_p, 0.0)
+        self.pam, self.ppl1 = dop_r, dop_p
+        changed = False
+        if dop_r > 0.0 or dop_p > 0.0 or ext_r > 0.0 or ext_p > 0.0:
             rows = np.flatnonzero(self.trace > LEARN_TRACE_MIN)
             if rows.size:
-                x = np.outer(self.trace[rows], p.eta * dt * (self.c_reward * reward + self.c_punish * punishment))
+                # three-factor rule, Euler step per synapse: eligibility (KC trace) x dopamine (per MBON) x what is left;
+                # extinction takes back a part of the depression at the compartments of the missing reinforcement
+                dep = np.outer(self.trace[rows], p.eta * dt * (self.c_reward * dop_r + self.c_punish * dop_p))
+                rec = np.outer(self.trace[rows], p.eta_ext * dt * (self.c_reward * ext_r + self.c_punish * ext_p))
                 d = self.dev[rows]
-                d += (self.W[rows] / self.g - d) * x
+                d += (self.W[rows] / self.g - d) * dep - d * rec
                 self.dev[rows] = d
+                changed = bool(dep.any() or (rec.any() and d.any()))
+                self.dirty = self.dirty or changed
         # slow forgetting toward the naive state, for every synapse at once
         self.g *= math.exp(-dt / p.tau_forget_s)
         if self.g < 1e-3:
             self.dev *= self.g
             self.g = 1.0
-        self.valence = self._readout(act)
+        if changed or p.pred_gain <= 0.0:
+            self.valence = self._readout(act)
+        else:
+            self.valence = v0
         return self.valence
 
     def read(self, cues: np.ndarray) -> float:

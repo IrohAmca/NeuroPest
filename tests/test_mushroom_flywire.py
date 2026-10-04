@@ -201,6 +201,27 @@ def test_forgetting_survives_a_rescale_of_the_shared_factor(wiring):
     assert abs(a.read(FOOD) - b.read(FOOD)) < 1e-4
 
 
+def test_a_predicted_reward_that_does_not_come_extinguishes_the_memory(wiring):
+    mb = _mb(wiring)
+    _pair(mb, FOOD, reward=1.0)
+    v0 = mb.read(FOOD)
+    for _ in range(int(60 / 0.05)):
+        mb.step(FOOD, 0, 0, 0.05)
+    assert mb.read(FOOD) < 0.5 * v0
+    off = _mb(wiring, params=MBParams(pred_gain=0.0))
+    _pair(off, FOOD, reward=1.0)
+    for _ in range(int(60 / 0.05)):
+        off.step(FOOD, 0, 0, 0.05)
+    assert off.read(FOOD) > 0.95 * v0
+
+
+def test_naive_fly_stays_clean_with_the_prediction_error(wiring):
+    mb = _mb(wiring)
+    for _ in range(200):
+        mb.step(FOOD, 0, 0, 0.05)
+    assert mb.read(FOOD) == 0.0 and not mb.dirty and not mb.dev.any()
+
+
 # ---------------------------------------------------------------------------------------------- the memory
 def test_memory_roundtrip_and_what_it_refuses(wiring, tmp_path):
     mb = _mb(wiring)

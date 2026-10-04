@@ -18,6 +18,8 @@ class FakeRunner:
         self.vision, self.eye_height = False, 100.0
         self.state, self.ready, self.failed, self.alive = "walk", True, False, True
         self.rt = 5.0
+        self.valence = 0.0
+        self.forgotten = 0
         self.started = []
 
     def stats(self):
@@ -27,6 +29,9 @@ class FakeRunner:
     def start(self, cfg):
         self.started.append(cfg)
         self.cfg = cfg
+
+    def forget(self):
+        self.forgotten += 1
 
 
 class FakeOverlay:
@@ -99,6 +104,24 @@ def test_pheromone_controls_reach_overlay(app):
     c.cursor_phero_combo.setCurrentIndex(0)  # attract
     assert o.cursor_phero_mode == "attract"
 
+
+
+def test_learning_card_shows_the_valence_and_forgets_on_demand(app):
+    r = FakeRunner()
+    c = Control(FakeOverlay(), r)
+    c._refresh()
+    assert "nötr" in c.learn_now.text()                  # a naive fly
+    r.valence = 0.62
+    c._refresh()
+    assert "istek" in c.learn_now.text() and "+0.62" in c.learn_now.text()
+    r.valence = -0.4
+    c._refresh()
+    assert "korku" in c.learn_now.text()
+    c.forget_btn.click()
+    assert r.forgotten == 1
+    r.ready = False
+    c._refresh()
+    assert c.learn_now.text() == ""
 
 
 def test_tray_tooltip_and_open_control(app):

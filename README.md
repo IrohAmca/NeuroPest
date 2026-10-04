@@ -400,7 +400,10 @@ parçalar, gerçek zamana hızlanma bekleyerek) GTX 1650'de tam beyin ×5, işle
    Şu an: tasarlanmış (bağlantıdan okunmayan) hız modeli; rastgele PN→KC (%5 seyrek), KC→MBON (yaklaşma/kaçınma),
    PAM (besleme) / PPL1 (GF-MDN kaynaklı tehdit) ile kapılı depresyon; çıktı değerlik (−1 korku … +1 arzu) yürüme
    eğilimini, ürkekliği ve DNa02 yönünü ölçekler (korkuda yön ters döner). Saf sinek değerliği 0'dır, davranış değişmez.
-   Sonra: hata (RPE) sinyali, söndürme, belleğin diske yazılması ve arayüzü.
+   Tamamlandı: dopamin bir **tahmin hatası** (pekiştirme eksi ipucunun zaten öğrenilmiş değerliği; öğrenilmiş ipucu daha az öğretir),
+   **söndürme** (beklenen ödül/tehdit gelmezse bellek geri çekilir, `eta_ext`; yavaş unutmanın üstüne), belleğin diske yazılması
+   ve **arayüz** (Davranış sayfasında "Öğrenme ve Hafıza": kısa açıklama, sineğin o an algıladığı değerlik, "Hafızayı Sil").
+   Sonra: ikinci derece koşullanma ve bölme başına farklı zaman ölçekleri.
    **Gerçek hücreler (isteğe bağlı, `MushroomBody.from_flywire()`, `NEUROPEST_MB=flywire`):** FlyWire v783'ten 5177 Kenyon hücresi,
    96 MBON (35 tip), PAM/PPL1 DAN'larının MBON'lara sinaps sayıları ve PN→KC bağlantısı (`tools/build_mushroom.py`). Gerçek olan: KC→MBON
    bölme yapısı, DAN→MBON bağlaşımı (ödül→PAM, ceza→PPL1 hangi MBON'un sinapslarını bastırır), PN→KC pençe bağlantısı. Tasarım/varsayım
