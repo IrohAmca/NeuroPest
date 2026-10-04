@@ -10,11 +10,20 @@ Two ways to show the fly the cursor:
 Either way the retinotopic detectors of `vision.Features` run on the column luminances and their output becomes
 forced-spike rates of LPLC2, LC4 (looming), LPC1 (retreat) and LC10 (small object) neurons through the receptive
 fields found in the connectome.
+
+The mushroom body reads the image the same way. The visual projection neurons that reach the Kenyon cells
+(`mushroom.CUE_PN_TYPES`: aMe12, MTe32, MTe30, LTe25, MTe40 for the cursor, aMe26, LTe72, MTe37 for looming) get their
+drive from the same detectors through their own receptive fields, and `mb_cue` holds each group's strongest drive as a
+share of its maximum rate. ASSUMPTIONS: what these cells encode is poorly known; here the cursor group is driven like
+LC10 (the small-object detector) and the looming group like LC4 (the expansion detector). Most of them are not in the
+smaller simulated tiers (none of the cursor ones at 15,000), so their spikes are not forced in the engine: only the cue
+level is computed.
 """
 from __future__ import annotations
 
 import numpy as np
 
+from .mushroom import CUE_PN_TYPES
 from .vision import Features, VisualField, sample_scenes, sphere_luminance
 from .visionparams import DISK_PLANE, VisionParams  # noqa: F401  (re-exported)
 
@@ -40,8 +49,13 @@ class VisionDrive:
         self.ret_idx, self.ret_col = self.field.neurons(net, ["LPC1"])
         self.obj_idx, self.obj_col = self.field.neurons(net, ["LC10a", "LC10c-2", "LC10d"])
         self.idx = np.concatenate([self.loom_idx, self.ret_idx, self.obj_idx]).astype(np.int32)
-        self.loom_rows = np.unique(self.loom_col).astype(np.int32)       # the columns whose pooled values are read
-        self.obj_rows = np.unique(self.obj_col).astype(np.int32)
+        # mushroom-body visual projection neurons: receptive-field columns of the cursor and the looming group
+        self.mb_near_col = self.field.cell_columns(CUE_PN_TYPES["cursor_near"])
+        self.mb_loom_col = self.field.cell_columns(CUE_PN_TYPES["looming"])
+        self.mb_cue = {"cursor_near": 0.0, "looming": 0.0}              # 0..1, from the last frame
+        # the columns whose pooled values are read
+        self.loom_rows = np.unique(np.concatenate([self.loom_col, self.mb_loom_col])).astype(np.int32)
+        self.obj_rows = np.unique(np.concatenate([self.obj_col, self.mb_near_col])).astype(np.int32)
         self.eye_height = params.eye_height          # px above the screen; the GUI can change both while running
         self.skittish = 1.0                          # multiplier on the looming and retreat gains
         self._fresh = True
@@ -118,6 +132,11 @@ class VisionDrive:
         ee = eye[self.ret_col]
         retreat = np.minimum(self.skittish * p.gain_retreat * ee, p.max_retreat) * np.clip(
             (p.flee_hi - ee) / (p.flee_hi - p.flee_lo), 0.0, 1.0)
+        # mushroom-body cues: the rate each cell would get (as LC10 / LC4 above) as a share of its maximum rate
+        near = float(o[self.mb_near_col].max()) * p.gain_object / p.max_object if len(self.mb_near_col) else 0.0
+        loom = float(e[self.mb_loom_col].max()) * self.skittish * p.gain_loom / p.max_loom if len(self.mb_loom_col) else 0.0
+        self.mb_cue["cursor_near"] = min(1.0, near)
+        self.mb_cue["looming"] = min(1.0, loom)
         rates = np.concatenate([np.minimum(self.skittish * p.gain_loom * el, p.max_loom), retreat,
                                 np.minimum(go * p.gain_object * o[self.obj_col], go * p.max_object)])
         return self.idx, rates.astype(np.float32)

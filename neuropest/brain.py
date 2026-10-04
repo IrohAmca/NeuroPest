@@ -111,6 +111,7 @@ class Brain:
         self._stim = (1e6, 0.0, 0.0, 0.0)
         self._vision_expansion = 0.0
         self._vision = None        # (neuron indices, rates in Hz) from the image, replaces the cursor numbers
+        self._vision_cues = None   # (cursor, looming) drive of the mushroom-body visual PNs from the image, or None
         self._loom_in = 0.0        # expansion rate (1/s) of the nearest object now, from the cursor numbers or the image
         self.loom = 0.0            # the same, smoothed like the rates: what the freeze rule reads
         # learned valence (mushroom body, mushroom.py): a designed layer, 0 for a naive fly
@@ -148,17 +149,22 @@ class Brain:
     def group(self, name: str) -> np.ndarray:
         return self.g.get(name, np.zeros(0, np.int32))
 
-    def set_vision(self, idx: np.ndarray, rates: np.ndarray, expansion: float = 0.0):
+    def set_vision(self, idx: np.ndarray, rates: np.ndarray, expansion: float = 0.0,
+                   mb_cues: tuple[float, float] | None = None):
         """Forced spike rates of individual projection neurons computed from the screen image (see vision.py).
 
         While set, they replace the looming / retreat / bearing drive derived from the cursor position.
-        `expansion` is the strongest looming expansion rate in the image (1/s), the input of the freeze rule."""
+        `expansion` is the strongest looming expansion rate in the image (1/s), the input of the freeze rule.
+        `mb_cues` (cursor, looming), each 0..1, is the drive of the visual projection neurons that reach the Kenyon
+        cells (visual.VisionDrive.mb_cue): the mushroom body reads these instead of the cursor numbers."""
         self._vision = (np.asarray(idx, np.int32), np.asarray(rates, np.float32))
         self._vision_expansion = float(expansion)
+        self._vision_cues = mb_cues
         self._drive()
 
     def clear_vision(self):
         self._vision = None
+        self._vision_cues = None
         self._drive()
 
     @property
@@ -352,8 +358,12 @@ class Brain:
             return
         dt, self._mb_ms = self._mb_ms / 1000.0, 0.0
         dist, _, _, touch = self._stim
-        cues = (eff_phero_drive, self.phero_repel, 1.0 / (1.0 + dist / 250.0) if dist < 1e5 else 0.0,
-                min(1.0, self.loom / 3.0), touch)
+        if self._vision is not None and self._vision_cues is not None:
+            near, loom = self._vision_cues                 # seen: the cells' own drive from the image
+        else:
+            near = 1.0 / (1.0 + dist / 250.0) if dist < 1e5 else 0.0      # numbers standing in for the same stimulus
+            loom = min(1.0, self.loom / 3.0)
+        cues = (eff_phero_drive, self.phero_repel, near, loom, touch)
         self.valence = self.mb.step(cues, self._reward, self._punish, dt)
         if abs(self.valence - self._valence_driven) > 0.05:
             self._drive()

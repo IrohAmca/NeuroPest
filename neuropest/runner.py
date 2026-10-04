@@ -383,7 +383,7 @@ class _Eye:
                                     cursor_scene(prev[0], prev[1], d.halo_px, p.background),
                                     inp[I_X], inp[I_Y], inp[I_HEAD], dt)
 
-        brain.set_vision(idx, rates, d.expansion)
+        brain.set_vision(idx, rates, d.expansion, (d.mb_cue["cursor_near"], d.mb_cue["looming"]))
         self.cursor, self.last_ms, self.stamp = cursor, sim_ms, stamp
         self.next_ms = sim_ms + VISION_PERIOD_MS
 

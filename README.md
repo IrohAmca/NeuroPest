@@ -412,6 +412,12 @@ parçalar, gerçek zamana hızlanma bekleyerek) GTX 1650'de tam beyin ×5, işle
    değil, dokunma için PN yolu hiç yok), MBON işaretleri (8 tip literatürden; kalanı DAN bağlaşımından türetilmiş, bkz. `mbon_sign_src`),
    seyreklik (APL hâlâ "en çok sürülen %5"), okuma ve hız sabitleri. Varsayılan rastgele model değişmedi; bellek dosyası ayrı
    (`fly_memory_flywire.npz`). Adım başı maliyet: `tools/bench_mushroom.py`.
+   **Görüntüden öğrenme:** "Görsel girdi" açıkken imleç ipucu artık sayılardan (`dist`, `loom`) değil görüntüden gelir: Kenyon hücrelerine
+   ulaşan görsel projeksiyon nöronları (imleç: aMe12, MTe32, MTe30, LTe25, MTe40; yaklaşan cisim: aMe26, LTe72, MTe37) kendi bağlantı
+   alıcı alanlarından aynı dedektörlerle sürülür (`visual.VisionDrive.mb_cue`; varsayım: imleç grubu LC10 gibi küçük-nesne, yaklaşma
+   grubu LC4 gibi genişleme dedektörü). Hareketsiz imge sessizdir (statik masaüstü öğrenilmez); hareket eden pencere/video ise imleç gibi
+   okunur. 15.000 katmanında imleç grubundan hiçbiri simüle ağda yok, bu yüzden motora spike yazılmaz, yalnızca ipucu düzeyi hesaplanır.
+   Kapalıyken eski sayılar yolu sürer. Probe: `tools/probe_mb_vision.py`.
 7. **Canlı 3D Beyin Görselleştirici (Hafif GPU/Nokta Bulutu):** Nöron soma koordinatlarının 3D nokta bulutu ve
    arka planda şeffaf nöropil kabuğu; simülasyon sürecinden gelen spike listesiyle parıldayan aksiyon potansiyeli
    dalgaları; serbest kamera (orbit), sekme gizliyken sıfır ek GPU/CPU yükü.
