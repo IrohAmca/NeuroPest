@@ -189,8 +189,6 @@ class PlayArea:
             if nx > s.usable_r:
                 nx = s.usable_r
                 nh = math.pi - nh
-                if math.cos(nh) > -0.25:
-                    nh = math.pi - 0.4 if math.sin(nh) >= 0 else -math.pi + 0.4
                 hit_wall = True
 
         portal = self.has_portal(s, "left", x, y)
@@ -204,8 +202,6 @@ class PlayArea:
             if nx < s.usable_l:
                 nx = s.usable_l
                 nh = math.pi - nh
-                if math.cos(nh) < 0.25:
-                    nh = 0.4 if math.sin(nh) >= 0 else -0.4
                 hit_wall = True
 
         portal = self.has_portal(s, "bottom", nx, y)
@@ -219,8 +215,6 @@ class PlayArea:
             if ny > s.usable_b:
                 ny = s.usable_b
                 nh = -nh
-                if math.sin(nh) > -0.25:
-                    nh = -0.4 if math.cos(nh) >= 0 else -math.pi + 0.4
                 hit_wall = True
 
         portal = self.has_portal(s, "top", nx, y)
@@ -234,8 +228,6 @@ class PlayArea:
             if ny < s.usable_t:
                 ny = s.usable_t
                 nh = -nh
-                if math.sin(nh) < 0.25:
-                    nh = 0.4 if math.cos(nh) >= 0 else math.pi - 0.4
                 hit_wall = True
 
         min_x = s.raw_l if self.has_portal(s, "left", nx, ny) else s.usable_l
