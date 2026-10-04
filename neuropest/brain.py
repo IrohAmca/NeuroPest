@@ -124,6 +124,11 @@ class Brain:
         self.phero_repel = 0.0     # repulsive warning/border intensity (0..1)
         self.at_target = 0.0       # 1.0 if arrived at attractive source
         self.flight_urge = 0.0     # accumulated motivation to initiate long-mode pursuit flight
+        # central motor pool (diagram): V_motor = threat + desire + unreachability tension. A READOUT of what drives the
+        # state machine below, not its input: the state still comes from the spiking descending neurons.
+        self.v_threat = self.v_desire = 0.0
+        self.v_motor = 0.0
+        self.flight_mode = ""      # "short" (escape, Giant Fiber) or "long" (pursuit, non-GF) while in FLY
         self._last_fi: np.ndarray | None = None
         self._last_fr: np.ndarray | None = None
         self._last_ci: np.ndarray | None = None
@@ -146,6 +151,13 @@ class Brain:
     def clear_vision(self):
         self._vision = None
         self._drive()
+
+    @property
+    def gear(self) -> str:
+        """The diagram's gear: stand, walk, fly_short (escape), fly_long (chase / search); other states count as stand."""
+        if self.state == FLY:
+            return "fly_long" if self.flight_mode == "long" else "fly_short"
+        return WALK if self.state == WALK else STAND
 
     @property
     def steer(self) -> float:
@@ -358,9 +370,17 @@ class Brain:
             return next((st for st, on in ((RETREAT, retreat_on), (FREEZE, freeze_on), (GROOM, groom_on))
                          if on and st not in skip), quiet)
 
-        # Long-mode voluntary takeoff / goal-directed pursuit accumulation
-        if cur == WALK and self.phero_drive > 0.25 and self.at_target < 0.5:
-            self.flight_urge = min(1.2, self.flight_urge + (ms / 1000.0) * (self.phero_drive * 0.85))
+        # V_motor terms. threat: how hard the escape / retreat outputs and the alarm odor push; desire: the odor plus
+        # what the fly learned to want; tension: the urge to fly that builds while a wanted goal stays out of reach.
+        self.v_threat = min(1.5, max(gf / (2.0 * s.gf_on_hz), mdn / (2.0 * s.mdn_on_hz), self.phero_repel))
+        self.v_desire = min(1.5, self.phero_drive + max(0.0, self.valence))
+        self.v_motor = self.v_threat + self.v_desire + self.flight_urge
+
+        # Long-mode voluntary takeoff / goal-directed pursuit accumulation; learned desire speeds it up, a threat
+        # stops it (a chase does not start under attack)
+        if cur == WALK and self.phero_drive > 0.25 and self.at_target < 0.5 and self.v_threat < 0.5:
+            pull = self.phero_drive * (1.0 + max(0.0, self.valence))
+            self.flight_urge = min(1.2, self.flight_urge + (ms / 1000.0) * (pull * 0.85))
         else:
             self.flight_urge = max(0.0, self.flight_urge - (ms / 1000.0) * 0.35)
 
@@ -368,6 +388,8 @@ class Brain:
         event = s.gf_event_spikes > 0 and self.gf_window >= s.gf_event_spikes
         if event or gf > s.gf_on_hz:
             new = FLY                                   # take-off: driven directly by Giant Fiber neural output
+            if cur != FLY:
+                self.flight_mode = "long" if self.flight_urge >= 0.5 and self.v_threat < 0.5 else "short"
         elif cur == FLY:
             landing_ready = False
             # Dynamic landing decision: not hardcoded time
@@ -400,6 +422,8 @@ class Brain:
             new = quiet
         if new != cur:
             self.state, self._dwell = new, 0.0
+            if new != FLY:
+                self.flight_mode = ""
             # B3: defensive arousal surge on threat
             if new == FLY:
                 self.arousal = min(1.0, self.arousal + 0.5)

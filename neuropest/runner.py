@@ -14,7 +14,7 @@ import time
 from dataclasses import dataclass
 
 from .paths import CACHE
-from .states import STAND, STATES
+from .states import GEARS, STAND, STATES
 
 # input slots
 I_DIST, I_CLOSING, I_BIAS, I_SKITTISH, I_BEARING, I_TOUCH = 0, 1, 2, 3, 4, 5
@@ -24,7 +24,7 @@ I_PHERO_STEER, I_PHERO_DRIVE, I_PHERO_REPEL, I_AT_TARGET = 14, 15, 16, 17
 I_FORGET = 18               # counter: every increase makes the fly forget what it learned
 # output slots
 (O_READY, O_STATE, O_GF, O_WALK, O_REST, O_RT, O_ACTIVE, O_N, O_CPU, O_LAG, O_SIM_S, O_BEAT, O_MDN, O_STEER,
- O_SPIKES, O_GROOM, O_VISION, O_VALENCE) = range(18)
+ O_SPIKES, O_GROOM, O_VISION, O_VALENCE, O_VMOTOR, O_GEAR) = range(20)
 
 CHUNK_MS = 4.0              # simulated time advanced per loop iteration
 CHUNK_MS_GPU = 12.0         # a GPU read-back costs ~1 ms regardless of size; measured x1.8 -> x2.8-4 on a GTX 1650
@@ -176,6 +176,7 @@ def _loop(cfg: EngineConfig, brain, net, inp, out, stop, cap_frame=None, cap_met
         out[O_GF], out[O_WALK], out[O_REST] = (brain.rates["GF"], brain.rates["WALK"], brain.rates["REST"])
         out[O_MDN], out[O_STEER], out[O_GROOM] = brain.rates["MDN"], brain.steer, brain.rates["GROOM"]
         out[O_VALENCE] = brain.valence
+        out[O_VMOTOR], out[O_GEAR] = brain.v_motor, float(GEARS.index(brain.gear))
         if brain.mb is not None and cfg.memory_path and brain.mb.dirty and time.perf_counter() - last_save > MEMORY_SAVE_S:
             last_save = time.perf_counter()
             try:
@@ -470,6 +471,15 @@ class Runner:
     def valence(self) -> float:
         """Learned valence of what the fly senses now, -1 (fear) .. +1 (desire); 0 for a naive fly."""
         return self.out[O_VALENCE] if self.ready else 0.0
+
+    @property
+    def v_motor(self) -> float:
+        """Central motor pool value: threat + desire + tension (see Brain)."""
+        return self.out[O_VMOTOR] if self.ready else 0.0
+
+    @property
+    def gear(self) -> str:
+        return GEARS[int(self.out[O_GEAR])] if self.ready else GEARS[0]
 
     def forget(self) -> None:
         """Amnesia: the worker resets the learned weights (and saves the empty memory soon after)."""

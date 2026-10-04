@@ -181,3 +181,31 @@ def test_runner_remembers_across_restarts_and_forgets_on_request(tmp_path):
     mb2 = MushroomBody()
     mb2.load(f)
     assert mb2.read(np.array([0.9, 0, 0, 0, 0.])) == 0.0
+
+
+def test_v_motor_adds_threat_desire_and_tension_and_names_the_gear():
+    b = _toy_brain(learning=False)
+    b.set_stimulus(900, 0, 0.0)
+    for _ in range(10):
+        b.advance(50.0)
+    assert b.v_motor < 0.1 and b.gear == "stand"
+    b.set_stimulus(900, 0, 0.0, phero_drive=0.8)
+    b.advance(50.0)
+    assert abs(b.v_desire - 0.8) < 1e-6 and b.v_motor >= 0.8
+    b.valence = 0.5
+    b.advance(50.0)
+    assert b.v_desire > 1.0
+
+
+def test_learned_desire_speeds_up_the_chase_and_a_threat_stops_it():
+    def urge_after(valence, repel=0.0):
+        b = _toy_brain(learning=False)
+        b.state = "walk"
+        b.set_stimulus(900, 0, 0.0, phero_drive=0.6, phero_repel=repel)
+        b.valence = valence
+        for _ in range(10):
+            b.state = "walk"
+            b.advance(50.0)
+        return b.flight_urge
+    assert urge_after(0.8) > urge_after(0.0) > 0.0
+    assert urge_after(0.0, repel=0.9) == 0.0
