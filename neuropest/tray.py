@@ -43,10 +43,15 @@ class Tray(QSystemTrayIcon):
     def _refresh(self):
         r = self.runner
         state = r.state if r.ready and r.alive else None
-        if state == self._shown:
+        hunger_str = ""
+        overlay = getattr(self.ctrl, "overlay", None)
+        if overlay and hasattr(overlay, "metabolism") and overlay.metabolism.enabled:
+            hunger_str = f" · Açlık: %{overlay.metabolism.hunger_pct}"
+        key = (state, hunger_str)
+        if key == self._shown:
             return
-        self._shown = state
+        self._shown = key
         name = STATE_STYLE[state][1] if state in STATE_STYLE else ("Başlıyor" if r.alive else "Durdu")
         self.setIcon(self._icons.get(state, self._icons["stand"]))
-        self.setToolTip(f"NeuroPest · {name}")
-        self.status.setText(f"Sinek: {name}")
+        self.setToolTip(f"NeuroPest · {name}{hunger_str}")
+        self.status.setText(f"Sinek: {name}{hunger_str}")

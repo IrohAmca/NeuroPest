@@ -9,6 +9,7 @@ from PySide6.QtWidgets import QApplication, QWidget
 
 from .control import Control
 from .fly import Fly, PlayArea, _wrap
+from .metabolism import MetabolicState
 from .pheromone import PheromoneField
 from .render import RewardEffect, draw_fly, draw_reward_plus
 from .runner import Runner
@@ -53,6 +54,7 @@ class Overlay(QWidget):
         self.feed_glow: float = 0.0
         self._last_cursor_reward: float = 0.0
         self.touch_groom_enabled = False  # cursor touch grooming toggle (default: False/off)
+        self.metabolism = MetabolicState()
         self._cached_play_area: PlayArea | None = None
         self.last = time.perf_counter()
         self.prev_dist = None
@@ -182,10 +184,12 @@ class Overlay(QWidget):
                 consumed = self.pheromone.consume_at(self.fly.x, self.fly.y, consume_radius=target_radius,
                                                      screen_boxes=area.screens if hasattr(area, "screens") else None)
                 if consumed:
+                    self.metabolism.feed()
                     self.feed_effects.append(RewardEffect(self.fly.x, self.fly.y))
                     self.feed_glow = 1.0
                 elif at_cursor and (now - self._last_cursor_reward > 3.0):
                     self._last_cursor_reward = now
+                    self.metabolism.feed()
                     self.feed_effects.append(RewardEffect(self.fly.x, self.fly.y))
                     self.feed_glow = 1.0
         else:
@@ -193,6 +197,9 @@ class Overlay(QWidget):
             phero_drive = 0.0
             phero_repel = 0.0
             at_target = False
+
+        # Update metabolic energy depletion based on active state (fly burns ~16x rest)
+        self.metabolism.update(dt, self.runner.state)
 
         # pose and cursor in screen px feed visual input; pheromone feeds antennae
         cursor_is_attract = self.pheromone_enabled and (self.cursor_phero_mode == "attract")
@@ -202,7 +209,8 @@ class Overlay(QWidget):
                          (self.fly.x, self.fly.y, self.fly.heading), (cur_x, cur_y), stamp=now,
                          capture_pos=(self.fly.x, self.fly.y),
                          phero_steer=phero_steer, phero_drive=phero_drive,
-                         phero_repel=phero_repel, at_target=at_target)
+                         phero_repel=phero_repel, at_target=at_target,
+                         hunger=self.metabolism.hunger)
 
         effective_cursor = (cur_x, cur_y)
         self.fly.update(dt, self.runner.state, effective_cursor, area, self.runner.steer)

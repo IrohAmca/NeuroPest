@@ -27,13 +27,14 @@ uv run neuropest
   yerine görüntü kullanılır; "Göz yüksekliği" ekranın kaç px üstünden bakıldığını ayarlar. Göz verisi
   (`tools/build_eye.py`) yoksa kutu kapalıdır.
 - "Hareketlilik" yürüme sürücüsünü ayarlar: düşükse durur, ortada arada yürür, yüksekse yürür.
+- "Açlık ve Metabolizma": Sinek duruma bağlı metabolik enerji harcar (durma/temizlenme bazal ~0,005/s, yürüme ~0,015/s, uçuş ~0,080/s - uçuş 16× tüketir). Tokken koku algısı kapanır, sinek dinlenir ve temizlenir; acıktıkça içsel yürüme dürtüsü (DNp09 açlık hiperaktivitesi) ve feromon hassasiyeti artar, besin aramaya çıkar. Kontrol panelinden açılıp kapatılabilir, hızı ayarlanabilir veya butonlarla anında acıktırılıp doyurulabilir; tepsi simgesinde anlık açlık yüzdesi görünür.
 - Sinek varsayılan olarak bağlı tüm monitörler arasında görev çubuklarının üstünde kesintisiz ve bağımsız gezer (farklı DPI ve çözünürlüklerdeki ekran sınırları portallarla bağlanır); istenirse kontrol penceresinden ("Görünüm" sekmesi) tek bir monitöre sabitlenebilir. Overlay tıklamayı geçirir.
 - Kontrol penceresi (koyu tema, kartlar halinde): sineğin anlık durumu, canlı ölçümler (Giant Fiber,
   MDN, yön, gerçek zaman çarpanı, CPU, aktif nöron), davranış ayarları, devre ve boyut (seçilen katmanın
   ölçülmüş doğruluğu ve hızıyla), zaman adımı, hesaplama donanımı, görünüm. Pencereyi kapatmak yalnız
   gizler; tepsi simgesine tıklayınca geri gelir, çıkış tepsi menüsünden.
 - Tepsi simgesi: sineğin gözleri durumuna göre renk alır (yürüme yeşil, geri çekilme turuncu, kaçış
-  kırmızı); menüde durum, pencereyi açma, sineği gizleme ve çıkış var.
+  kırmızı); menüde ve ipucunda sineğin durumu ile canlı açlık yüzdesi görünür.
 - `uv run python tools/ui_preview.py` arayüzü motor çalıştırmadan PNG olarak çizer.
 
 ## Gerçek veri (FlyWire v783)

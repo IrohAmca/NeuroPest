@@ -131,6 +131,7 @@ class Brain:
         self.phero_drive = 0.0     # attractive pheromone intensity (0..1)
         self.phero_repel = 0.0     # repulsive warning/border intensity (0..1)
         self.at_target = 0.0       # 1.0 if arrived at attractive source
+        self.hunger = 1.0          # internal hunger drive in [0, 1]
         self.flight_urge = 0.0     # accumulated motivation to initiate long-mode pursuit flight
         # central motor pool (diagram): V_motor = threat + desire + unreachability tension. A READOUT of what drives the
         # state machine below, not its input: the state still comes from the spiking descending neurons.
@@ -176,7 +177,7 @@ class Brain:
     def set_stimulus(self, dist: float, closing_speed: float, walk_bias: float | None = None,
                      skittish: float | None = None, bearing: float | None = None, touch: float = 0.0,
                      phero_steer: float = 0.0, phero_drive: float = 0.0, phero_repel: float = 0.0,
-                     at_target: float = 0.0):
+                     at_target: float = 0.0, hunger: float = 1.0):
         """dist: px to the cursor; closing_speed: px/s, positive when the cursor approaches;
         bearing: angle of the cursor relative to the fly's heading, radians, positive to the right.
         touch: 0..1, the cursor is on the fly (hover); it touches the side given by the bearing.
@@ -186,7 +187,8 @@ class Brain:
         phero_steer: right minus left tropotaxis bias (Hz), drives DNa02 steering.
         phero_drive: attractive pheromone intensity (0..1), boosts walking/foraging.
         phero_repel: repulsive warning/border intensity (0..1).
-        at_target: 1.0 when arrived at target/nectar source."""
+        at_target: 1.0 when arrived at target/nectar source.
+        hunger: 0..1 internal metabolic hunger drive."""
         self._stim = (dist, closing_speed, self._stim[2] if bearing is None else bearing, touch)
         if walk_bias is not None:
             self.walk_bias = walk_bias
@@ -196,19 +198,26 @@ class Brain:
         self.phero_drive = phero_drive
         self.phero_repel = phero_repel
         self.at_target = at_target
+        self.hunger = float(hunger)
         self._drive()
 
     def _drive(self):
         s = self.spec
         dist, closing, bearing, touch = self._stim
         v = self.valence
+        h = self.hunger
         self._valence_driven = v
         desire, fear = max(0.0, v), max(0.0, -v)
         effective_skittish = self.skittish * (1.0 + 0.5 * self.arousal) * (1.0 + 0.8 * fear)
-        effective_walk_bias = min(1.0, (self.walk_bias + 0.65 * self.phero_drive + 0.4 * desire)
+
+        # Hunger gates olfactory sensitivity
+        eff_phero_drive = self.phero_drive * h
+        effective_walk_bias = min(1.0, (self.walk_bias + 0.65 * eff_phero_drive + 0.4 * desire)
                                   * (1.0 + 0.3 * self.arousal))
+
         # Food odor / attractant actively suppresses predator looming escape (GF) and backward retreat (MDN)
-        if self.phero_drive > 0.05:
+        # Satiated flies (eff_phero_drive == 0) maintain normal predator avoidance
+        if eff_phero_drive > 0.05:
             expansion = 0.0
             loom = 0.0
             retreat = min(s.retreat_max_hz, self.phero_repel * 8.0)
@@ -234,7 +243,8 @@ class Brain:
         # learned valence scales it: toward what the fly learned to want, away from what it learned to fear
         gain = min(2.5, max(-1.0, 1.0 + 1.5 * v))
         cur_r, cur_l = steer * max(0.0, side), steer * max(0.0, -side)
-        ph_r, ph_l = max(0.0, self.phero_steer), max(0.0, -self.phero_steer)
+        eff_phero_steer = self.phero_steer * h
+        ph_r, ph_l = max(0.0, eff_phero_steer), max(0.0, -eff_phero_steer)
         if gain < 0:                                     # aversion reverses the turn: the opposite side is driven
             cur_r, cur_l, ph_r, ph_l = cur_l, cur_r, ph_l, ph_r
         cur_r, cur_l, ph_r, ph_l = (abs(gain) * x for x in (cur_r, cur_l, ph_r, ph_l))
@@ -242,7 +252,7 @@ class Brain:
         e = self.engine
         fi, fr = [], []
         # an object in contact or food being approached is not an attacking predator
-        self._loom_in = 0.0 if (touch > 0 or self.phero_drive > 0.05) else (
+        self._loom_in = 0.0 if (touch > 0 or eff_phero_drive > 0.05) else (
             self._vision_expansion if self._vision is not None
             else max(0.0, closing) / max(dist, 30.0)) * effective_skittish
         if self._vision is not None:                     # the image replaces the visual part of the cursor drive
@@ -326,11 +336,15 @@ class Brain:
         Fiber (escape), MDN (backward retreat), touch. A chase (food odor / pursuit urge) is not a threat even though it
         drives the Giant Fiber, so punishment is held off then."""
         s = self.spec
-        self._reward = 1.0 if self.at_target > 0.5 else self._reward * math.exp(-ms / 800.0)
+        h = self.hunger
+        eff_phero_drive = self.phero_drive * h
+        # Reward is strictly gated by hunger (Krashes et al. 2009): satiated feeding does not reinforce
+        reward_in = (1.0 if self.at_target > 0.5 else 0.0) * h
+        self._reward = reward_in if self.at_target > 0.5 else self._reward * math.exp(-ms / 800.0)
         threat = max(self.rates["GF"] / (2.0 * s.gf_on_hz), self.rates["MDN"] / (3.0 * s.mdn_on_hz))
         if self.gf_window >= max(1, s.gf_event_spikes):
             threat = 1.0
-        if self.phero_drive > 0.05 or self.flight_urge >= 0.5:
+        if eff_phero_drive > 0.05 or self.flight_urge >= 0.5:
             threat = 0.0
         self._punish = min(1.0, threat)
         self._mb_ms += ms
@@ -338,7 +352,7 @@ class Brain:
             return
         dt, self._mb_ms = self._mb_ms / 1000.0, 0.0
         dist, _, _, touch = self._stim
-        cues = (self.phero_drive, self.phero_repel, 1.0 / (1.0 + dist / 250.0) if dist < 1e5 else 0.0,
+        cues = (eff_phero_drive, self.phero_repel, 1.0 / (1.0 + dist / 250.0) if dist < 1e5 else 0.0,
                 min(1.0, self.loom / 3.0), touch)
         self.valence = self.mb.step(cues, self._reward, self._punish, dt)
         if abs(self.valence - self._valence_driven) > 0.05:
@@ -380,14 +394,16 @@ class Brain:
 
         # V_motor terms. threat: how hard the escape / retreat outputs and the alarm odor push; desire: the odor plus
         # what the fly learned to want; tension: the urge to fly that builds while a wanted goal stays out of reach.
+        h = self.hunger
+        eff_phero_drive = self.phero_drive * h
         self.v_threat = min(1.5, max(gf / (2.0 * s.gf_on_hz), mdn / (2.0 * s.mdn_on_hz), self.phero_repel))
-        self.v_desire = min(1.5, self.phero_drive + max(0.0, self.valence))
+        self.v_desire = min(1.5, eff_phero_drive + max(0.0, self.valence))
         self.v_motor = self.v_threat + self.v_desire + self.flight_urge
 
         # Long-mode voluntary takeoff / goal-directed pursuit accumulation; learned desire speeds it up, a threat
         # stops it (a chase does not start under attack)
-        if cur == WALK and self.phero_drive > 0.25 and self.at_target < 0.5 and self.v_threat < 0.5:
-            pull = self.phero_drive * (1.0 + max(0.0, self.valence))
+        if cur == WALK and eff_phero_drive > 0.25 and self.at_target < 0.5 and self.v_threat < 0.5:
+            pull = eff_phero_drive * (1.0 + max(0.0, self.valence))
             self.flight_urge = min(1.2, self.flight_urge + (ms / 1000.0) * (pull * 0.85))
         else:
             self.flight_urge = max(0.0, self.flight_urge - (ms / 1000.0) * 0.35)

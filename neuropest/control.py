@@ -333,9 +333,65 @@ class Control(QWidget):
 
         lay.addWidget(card)
 
+        # Hunger and metabolism card
+        hunger_card = Card("Açlık & Metabolizma")
+        self.hunger_enable_box = QCheckBox("Açlık ve Metabolizma Simülasyonu")
+        self.hunger_enable_box.setToolTip(
+            "Açıkken sinek metabolik enerji harcar ve acıktıkça besin arar. "
+            "Kapalıyken sürekli aç (v0.6) modunda çalışır."
+        )
+        is_hunger_on = getattr(getattr(self.overlay, "metabolism", None), "enabled", True)
+        self.hunger_enable_box.setChecked(is_hunger_on)
+        self.hunger_enable_box.toggled.connect(self._on_hunger_enable_toggled)
+        hunger_card.body.addWidget(self.hunger_enable_box)
+
+        cur_mult = getattr(getattr(getattr(self.overlay, "metabolism", None), "cfg", None), "rate_mult", 1.0)
+        h_slider = QSlider(Qt.Horizontal, minimum=20, maximum=300, value=int(cur_mult * 100))
+        h_slider.valueChanged.connect(self._on_metabolic_rate_changed)
+        slider_row(hunger_card, "Metabolizma Hızı",
+                   "Açlığın ne kadar hızlı geliştiğini belirler (Yavaş: ~5 dk, Dengeli: ~90 sn, Hızlı: ~30 sn).",
+                   h_slider, lambda v: f"×{v/100:.1f}")
+
+        status_row = QHBoxLayout()
+        status_row.addWidget(_label("Mevcut Durum:"))
+        status_row.addStretch(1)
+        self.hunger_label = _label("–", "Value")
+        status_row.addWidget(self.hunger_label)
+        hunger_card.body.addLayout(status_row)
+
+        btn_row = QHBoxLayout()
+        self.btn_starve = QPushButton("⚡ Sineği Acıktır")
+        self.btn_starve.setToolTip("Sineğin enerjisini anında tüketerek besin arama dürtüsünü (foraging) tetikler.")
+        self.btn_starve.clicked.connect(self._on_starve_clicked)
+        btn_row.addWidget(self.btn_starve)
+
+        self.btn_feed = QPushButton("🍯 Karnını Doyur")
+        self.btn_feed.setToolTip("Sineği anında doyurur; koku ilgisini kapatır ve dinlenme/temizlenme durumuna geçirir.")
+        self.btn_feed.clicked.connect(self._on_feed_clicked)
+        btn_row.addWidget(self.btn_feed)
+
+        hunger_card.body.addLayout(btn_row)
+        lay.addWidget(hunger_card)
+
     def _on_touch_groom_toggled(self, checked: bool):
         if self.overlay is not None:
             self.overlay.touch_groom_enabled = checked
+
+    def _on_hunger_enable_toggled(self, checked: bool):
+        if self.overlay and hasattr(self.overlay, "metabolism"):
+            self.overlay.metabolism.enabled = checked
+
+    def _on_metabolic_rate_changed(self, value: int):
+        if self.overlay and hasattr(self.overlay, "metabolism"):
+            self.overlay.metabolism.cfg.rate_mult = value / 100.0
+
+    def _on_starve_clicked(self):
+        if self.overlay and hasattr(self.overlay, "metabolism"):
+            self.overlay.metabolism.starve()
+
+    def _on_feed_clicked(self):
+        if self.overlay and hasattr(self.overlay, "metabolism"):
+            self.overlay.metabolism.satiate()
 
     def _build_vision_page(self, lay: QVBoxLayout):
         card = Card("Görsel Girdi & Ekran Yakalama")
@@ -694,6 +750,14 @@ class Control(QWidget):
             where = f"GPU {g['name']} ({g['backend']})" if g else "GPU"
         self.telemetry.setText(f"Çalışan: {where} · zaman adımı {r.cfg.dt:g} ms")
         self._describe_vision(st.get("vision", 0.0))
+        if hasattr(self, "hunger_label") and self.overlay and hasattr(self.overlay, "metabolism"):
+            m = self.overlay.metabolism
+            if not m.enabled:
+                self.hunger_label.setText("Devre Dışı (Sürekli Aç)")
+            else:
+                pct = m.hunger_pct
+                status_desc = "Çok Aç" if pct >= 75 else "İştahlı" if pct >= 40 else "Tok"
+                self.hunger_label.setText(f"Açlık: %{pct} ({status_desc})")
         slow = st["rt"] < 1.0 or st["lag_ms"] > 100
         self._show_warn("Bu ayar bu bilgisayar için ağır: sinek yavaş çekimde. "
                         "Boyutu küçült ya da zaman adımını büyüt." if slow else "")
