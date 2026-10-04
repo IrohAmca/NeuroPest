@@ -20,6 +20,7 @@ from .states import STAND, STATES
 I_DIST, I_CLOSING, I_BIAS, I_SKITTISH, I_BEARING, I_TOUCH = 0, 1, 2, 3, 4, 5
 I_X, I_Y, I_HEAD, I_CX, I_CY, I_VISION, I_HEIGHT = 6, 7, 8, 9, 10, 11, 12     # fly pose, cursor, vision switch
 I_STAMP = 13                # clock reading (s) of the frame the GUI sampled the cursor and pose at; 0 = not sent
+I_PHERO_STEER, I_PHERO_DRIVE, I_PHERO_REPEL, I_AT_TARGET = 14, 15, 16, 17
 # output slots
 (O_READY, O_STATE, O_GF, O_WALK, O_REST, O_RT, O_ACTIVE, O_N, O_CPU, O_LAG, O_SIM_S, O_BEAT, O_MDN, O_STEER,
  O_SPIKES, O_GROOM, O_VISION) = range(17)
@@ -133,10 +134,14 @@ def _loop(cfg: EngineConfig, brain, net, inp, out, stop, cap_frame=None, cap_met
         t = time.perf_counter()
         eye.update(brain, inp, out, sim_ms)
         closing = approach.update(inp)
-        cur = (inp[I_DIST], inp[I_CLOSING] if closing is None else closing, inp[I_BIAS], inp[I_SKITTISH],
-               round(inp[I_BEARING], 2), inp[I_TOUCH])
+        raw_closing = inp[I_CLOSING] if closing is None else closing
+        eff_closing = 0.0 if inp[I_PHERO_DRIVE] > 0.05 else raw_closing
+        cur = (round(inp[I_DIST], 1), round(eff_closing, 1), inp[I_BIAS], inp[I_SKITTISH],
+               round(inp[I_BEARING], 2), inp[I_TOUCH],
+               round(inp[I_PHERO_STEER], 1), round(inp[I_PHERO_DRIVE], 2),
+               round(inp[I_PHERO_REPEL], 2), inp[I_AT_TARGET])
         if eye.on:                                      # the image, not cursor numbers, drives the looming inputs;
-            cur = (1e6, 0.0, cur[2], cur[3], cur[4] if cur[5] else 0.0, cur[5])    # touch still needs its side
+            cur = (1e6, 0.0, cur[2], cur[3], cur[4] if cur[5] else 0.0, cur[5], cur[6], cur[7], cur[8], cur[9])
         if cur != last_in:
             brain.set_stimulus(*cur)
             last_in = cur
@@ -377,7 +382,7 @@ class Runner:
         self.cfg = cfg
         self._gen += 1
         gen = self._gen
-        inp, out = self._ctx.Array("d", 16, lock=False), self._ctx.Array("d", 24, lock=False)
+        inp, out = self._ctx.Array("d", 24, lock=False), self._ctx.Array("d", 24, lock=False)
         old = (self._proc, self._stop)
         self._proc = self._stop = None
         self.inp, self.out = inp, out
@@ -413,7 +418,9 @@ class Runner:
 
     def send(self, dist: float, closing: float, bearing: float = 0.0, touch: float = 0.0,
              pose=(0.0, 0.0, 0.0), cursor=(0.0, 0.0), stamp: float = 0.0,
-             capture_pos=None) -> None:
+             capture_pos=None,
+             phero_steer: float = 0.0, phero_drive: float = 0.0,
+             phero_repel: float = 0.0, at_target: bool = False) -> None:
         """Per-frame input. pose = fly (x, y, heading) and cursor = (x, y) in screen px feed the visual input.
 
         stamp: `time.perf_counter()` of the frame. With it the worker measures the cursor's closing speed itself from
@@ -425,6 +432,10 @@ class Runner:
         inp[I_CX], inp[I_CY] = cursor
         inp[I_STAMP] = stamp
         inp[I_VISION], inp[I_HEIGHT] = float(self.vision), self.eye_height
+        inp[I_PHERO_STEER] = phero_steer
+        inp[I_PHERO_DRIVE] = phero_drive
+        inp[I_PHERO_REPEL] = phero_repel
+        inp[I_AT_TARGET] = 1.0 if at_target else 0.0
 
         if hasattr(self, "capture") and self.capture is not None:
             cx, cy = capture_pos if capture_pos is not None else (pose[0], pose[1])

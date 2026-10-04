@@ -110,6 +110,16 @@ class Brain:
         self._vision = None        # (neuron indices, rates in Hz) from the image, replaces the cursor numbers
         self._loom_in = 0.0        # expansion rate (1/s) of the nearest object now, from the cursor numbers or the image
         self.loom = 0.0            # the same, smoothed like the rates: what the freeze rule reads
+        self.phero_steer = 0.0     # bilateral tropotaxis steering bias (Hz)
+        self.phero_drive = 0.0     # attractive pheromone intensity (0..1)
+        self.phero_repel = 0.0     # repulsive warning/border intensity (0..1)
+        self.at_target = 0.0       # 1.0 if arrived at attractive source
+        self.flight_urge = 0.0     # accumulated motivation to initiate long-mode pursuit flight
+        self._last_fi: np.ndarray | None = None
+        self._last_fr: np.ndarray | None = None
+        self._last_ci: np.ndarray | None = None
+        self._last_cr: np.ndarray | None = None
+        self._last_cw: np.ndarray | None = None
         self._drive()
 
     def group(self, name: str) -> np.ndarray:
@@ -135,49 +145,93 @@ class Brain:
 
     # ----------------------------------------------------------------- input
     def set_stimulus(self, dist: float, closing_speed: float, walk_bias: float | None = None,
-                     skittish: float | None = None, bearing: float | None = None, touch: float = 0.0):
+                     skittish: float | None = None, bearing: float | None = None, touch: float = 0.0,
+                     phero_steer: float = 0.0, phero_drive: float = 0.0, phero_repel: float = 0.0,
+                     at_target: float = 0.0):
         """dist: px to the cursor; closing_speed: px/s, positive when the cursor approaches;
         bearing: angle of the cursor relative to the fly's heading, radians, positive to the right.
         touch: 0..1, the cursor is on the fly (hover); it touches the side given by the bearing.
 
         walk_bias in [0, 1]: tonic drive of the walking command neurons.
-        skittish: multiplier on the looming and retreat sensitivity (1 = calibrated)."""
+        skittish: multiplier on the looming and retreat sensitivity (1 = calibrated).
+        phero_steer: right minus left tropotaxis bias (Hz), drives DNa02 steering.
+        phero_drive: attractive pheromone intensity (0..1), boosts walking/foraging.
+        phero_repel: repulsive warning/border intensity (0..1).
+        at_target: 1.0 when arrived at target/nectar source."""
         self._stim = (dist, closing_speed, self._stim[2] if bearing is None else bearing, touch)
         if walk_bias is not None:
             self.walk_bias = walk_bias
         if skittish is not None:
             self.skittish = skittish
+        self.phero_steer = phero_steer
+        self.phero_drive = phero_drive
+        self.phero_repel = phero_repel
+        self.at_target = at_target
         self._drive()
 
     def _drive(self):
         s = self.spec
         dist, closing, bearing, touch = self._stim
         effective_skittish = self.skittish * (1.0 + 0.5 * self.arousal)
-        effective_walk_bias = min(1.0, self.walk_bias * (1.0 + 0.3 * self.arousal))
-        expansion = max(0.0, closing) / max(dist, 30.0) * effective_skittish
-        loom = min(s.loom_max_hz, expansion * s.loom_gain)
-        retreat = min(s.retreat_max_hz, expansion * s.retreat_gain)
+        effective_walk_bias = min(1.0, (self.walk_bias + 0.65 * self.phero_drive) * (1.0 + 0.3 * self.arousal))
+        # Food odor / attractant actively suppresses predator looming escape (GF) and backward retreat (MDN)
+        if self.phero_drive > 0.05:
+            expansion = 0.0
+            loom = 0.0
+            retreat = min(s.retreat_max_hz, self.phero_repel * 8.0)
+        else:
+            expansion = max(0.0, closing) / max(dist, 30.0) * effective_skittish
+            loom = min(s.loom_max_hz, expansion * s.loom_gain)
+            retreat = min(s.retreat_max_hz, expansion * s.retreat_gain + self.phero_repel * 8.0)
+
+        # High chemical alarm repulsion excites the Giant Fiber escape pathway
+        if self.phero_repel > 0.6:
+            alarm_takeoff_hz = min(s.loom_max_hz, (self.phero_repel - 0.6) * 200.0)
+            loom = max(loom, alarm_takeoff_hz)
+
+        # High accumulated voluntary pursuit urge drives takeoff through the motor pathway
+        if self.flight_urge >= 1.0:
+            loom = max(loom, 80.0)
+
         vis = s.vis_max_hz / (1.0 + dist / s.vis_falloff_px)
         steer = s.steer_max_hz * max(0.0, 1.0 - dist / s.steer_range_px)
         side = math.sin(bearing)                         # >0: cursor to the right
+
+        # Bilateral steering drive combining cursor angle and pheromone tropotaxis
+        steer_r = steer * max(0.0, side) + max(0.0, self.phero_steer)
+        steer_l = steer * max(0.0, -side) + max(0.0, -self.phero_steer)
+
         e = self.engine
         fi, fr = [], []
-        # an object in contact is not approaching: a cursor wiggling over the head must not freeze the grooming fly
-        self._loom_in = 0.0 if touch > 0 else (self._vision_expansion if self._vision is not None
-                                               else max(0.0, closing) / max(dist, 30.0)) * effective_skittish
+        # an object in contact or food being approached is not an attacking predator
+        self._loom_in = 0.0 if (touch > 0 or self.phero_drive > 0.05) else (
+            self._vision_expansion if self._vision is not None
+            else max(0.0, closing) / max(dist, 30.0)) * effective_skittish
         if self._vision is not None:                     # the image replaces the visual part of the cursor drive
             fi.append(self._vision[0])
             fr.append(self._vision[1])
-            cursor_drive = (("VIS", vis), ("BULK_DRIVE", s.bulk_hz))
+            cursor_drive = (("VIS", vis), ("BULK_DRIVE", s.bulk_hz),
+                            ("LC10_R", max(0.0, self.phero_steer)), ("LC10_L", max(0.0, -self.phero_steer)))
         else:
             cursor_drive = (("LOOM", loom), ("RETREAT_IN", retreat), ("VIS", vis), ("BULK_DRIVE", s.bulk_hz),
-                            ("LC10_R", steer * max(0.0, side)), ("LC10_L", steer * max(0.0, -side)))
+                            ("LC10_R", steer_r), ("LC10_L", steer_l))
         touch_drive = (("TOUCH_R", s.touch_hz * touch * (side >= 0)), ("TOUCH_L", s.touch_hz * touch * (side < 0)))
         for name, hz in cursor_drive + touch_drive:      # touch is mechanical, not visual: it always comes from the cursor
             idx = self.group(name)
             fi.append(idx)
             fr.append(np.full(len(idx), hz))
-        e.set_drive(np.concatenate(fi), np.concatenate(fr))
+
+        new_fi = np.concatenate(fi)
+        new_fr = np.concatenate(fr)
+        drive_changed = True
+        if self._last_fi is not None and self._last_fr is not None:
+            if len(self._last_fi) == len(new_fi) and np.array_equal(self._last_fi, new_fi):
+                if np.max(np.abs(self._last_fr - new_fr)) < 0.2:
+                    drive_changed = False
+        if drive_changed:
+            self._last_fi, self._last_fr = new_fi, new_fr
+            e.set_drive(new_fi, new_fr)
+
         ci, cr, cw = [], [], []
         walk, rest = self.group("WALK"), self.group("REST")
         ci += [walk]
@@ -187,7 +241,18 @@ class Brain:
             ci += [rest]
             cr += [np.full(len(rest), s.rest_drive[0])]
             cw += [np.full(len(rest), s.rest_drive[1])]
-        e.set_current_drive(np.concatenate(ci), np.concatenate(cr), np.concatenate(cw))
+
+        new_ci = np.concatenate(ci)
+        new_cr = np.concatenate(cr)
+        new_cw = np.concatenate(cw)
+        curr_changed = True
+        if self._last_ci is not None and self._last_cr is not None and self._last_cw is not None:
+            if len(self._last_ci) == len(new_ci) and np.array_equal(self._last_ci, new_ci):
+                if np.max(np.abs(self._last_cr - new_cr)) < 0.2 and np.max(np.abs(self._last_cw - new_cw)) < 1e-4:
+                    curr_changed = False
+        if curr_changed:
+            self._last_ci, self._last_cr, self._last_cw = new_ci, new_cr, new_cw
+            e.set_current_drive(new_ci, new_cr, new_cw)
 
     # ---------------------------------------------------------------- run
     def advance(self, ms: float) -> str:
@@ -246,14 +311,29 @@ class Brain:
             return next((st for st, on in ((RETREAT, retreat_on), (FREEZE, freeze_on), (GROOM, groom_on))
                          if on and st not in skip), quiet)
 
-        # take-off is an event, not a rate: a few GF spikes in ~10 ms (the animal takes off on one or two); the
-        # smoothed rate stays as the second path and as the way out of the state
+        # Long-mode voluntary takeoff / goal-directed pursuit accumulation
+        if cur == WALK and self.phero_drive > 0.25 and self.at_target < 0.5:
+            self.flight_urge = min(1.2, self.flight_urge + (ms / 1000.0) * (self.phero_drive * 0.85))
+        else:
+            self.flight_urge = max(0.0, self.flight_urge - (ms / 1000.0) * 0.35)
+
+        # take-off is an event, not a rate: a few GF spikes in ~10 ms (the animal takes off on one or two);
         event = s.gf_event_spikes > 0 and self.gf_window >= s.gf_event_spikes
         if event or gf > s.gf_on_hz:
-            new = FLY                                   # escape: immediate
+            new = FLY                                   # take-off: driven directly by Giant Fiber neural output
         elif cur == FLY:
-            if gf < s.gf_off_hz and self._dwell >= s.min_fly_ms:
+            landing_ready = False
+            # Dynamic landing decision: not hardcoded time
+            if self._dwell >= 180.0:                    # min takeoff completion dwell
+                if self.at_target > 0.5:                # arrived at target/nectar source -> land on target
+                    landing_ready = True
+                elif gf < s.gf_off_hz and self.phero_repel < 0.25 and self.loom < 0.3 and self.flight_urge <= 0.2:
+                    landing_ready = True                # threat has dissipated -> land on safe surface
+                elif self._dwell >= 4500.0:             # flight fatigue safeguard
+                    landing_ready = True
+            if landing_ready:
                 new = settle()
+                self.flight_urge = 0.0
         elif cur == RETREAT:
             if mdn < s.mdn_off_hz and self._dwell >= s.min_retreat_ms:
                 new = settle(skip=(RETREAT,))

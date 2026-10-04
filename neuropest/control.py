@@ -177,8 +177,9 @@ class Control(QWidget):
             ("Canlı İzleme", 0),
             ("Davranış", 1),
             ("Görsel Girdi", 2),
-            ("Devre & Donanım", 3),
-            ("Görünüm", 4),
+            ("Feromon & Koku", 3),
+            ("Devre & Donanım", 4),
+            ("Görünüm", 5),
         ]
         for title, idx in nav_items:
             btn = QPushButton(title)
@@ -242,23 +243,32 @@ class Control(QWidget):
         p2_lay.addStretch(1)
         self.stack.addWidget(p2)
 
-        # Page 3: Devre & Donanım
+        # Page 3: Feromon & Koku
         p3 = QWidget()
         p3_lay = QVBoxLayout(p3)
         p3_lay.setContentsMargins(0, 0, 0, 0)
         p3_lay.setSpacing(14)
-        self._build_circuit_page(p3_lay)
+        self._build_pheromone_page(p3_lay)
         p3_lay.addStretch(1)
         self.stack.addWidget(p3)
 
-        # Page 4: Görünüm
+        # Page 4: Devre & Donanım
         p4 = QWidget()
         p4_lay = QVBoxLayout(p4)
         p4_lay.setContentsMargins(0, 0, 0, 0)
         p4_lay.setSpacing(14)
-        self._build_view_page(p4_lay)
+        self._build_circuit_page(p4_lay)
         p4_lay.addStretch(1)
         self.stack.addWidget(p4)
+
+        # Page 5: Görünüm
+        p5 = QWidget()
+        p5_lay = QVBoxLayout(p5)
+        p5_lay.setContentsMargins(0, 0, 0, 0)
+        p5_lay.setSpacing(14)
+        self._build_view_page(p5_lay)
+        p5_lay.addStretch(1)
+        self.stack.addWidget(p5)
 
         content_lay.addWidget(self.stack)
         parent_layout.addWidget(scroll, 1)
@@ -300,7 +310,22 @@ class Control(QWidget):
         slider_row(card, "Ürkeklik (Kaçış Duyarlılığı)",
                    "Yaklaşan nesnelere karşı hassasiyet: geri çekilme ve uçuş eşiklerini çarpar.",
                    k, lambda v: f"×{2.0 ** ((v - 50) / 25.0):.2f}")
+
+        self.touch_groom_box = QCheckBox("İmleç Dokunduğunda Kaşınma / Tımar (Grooming)")
+        self.touch_groom_box.setToolTip(
+            "İmleç sineğin üzerine geldiğinde mekanik dokunma nöronlarını (aDN1/aDN2) uyararak "
+            "sineğin durup başını kaşımasını sağlar. Kapalıyken (varsayılan) imleç teması kaşınmayı zorlamaz."
+        )
+        is_touch_on = getattr(self.overlay, "touch_groom_enabled", False) if self.overlay is not None else False
+        self.touch_groom_box.setChecked(is_touch_on)
+        self.touch_groom_box.toggled.connect(self._on_touch_groom_toggled)
+        card.body.addWidget(self.touch_groom_box)
+
         lay.addWidget(card)
+
+    def _on_touch_groom_toggled(self, checked: bool):
+        if self.overlay is not None:
+            self.overlay.touch_groom_enabled = checked
 
     def _build_vision_page(self, lay: QVBoxLayout):
         card = Card("Görsel Girdi & Ekran Yakalama")
@@ -334,6 +359,53 @@ class Control(QWidget):
             text = ""
         self.vision_info.setText(text)
         self.vision_info.setVisible(bool(text))
+
+    def _build_pheromone_page(self, lay: QVBoxLayout):
+        card = Card("Feromon Alanı & Koku Duyusu")
+
+        self.phero_enable = QCheckBox("Feromon ve Koku Duyusunu Etkinleştir")
+        self.phero_enable.setToolTip("Sineğin iki anteniyle (tropotaksis) feromon gradyanını koklayıp yönelmesini sağlar.")
+        is_on = getattr(self.overlay, "pheromone_enabled", True) if self.overlay is not None else True
+        self.phero_enable.setChecked(is_on)
+        self.phero_enable.toggled.connect(self._on_phero_toggled)
+        card.body.addWidget(self.phero_enable)
+
+        self.cursor_phero_combo = QComboBox()
+        self.cursor_phero_modes = [
+            ("attract", "Olumlu / Çekici (Besin / Nektar kokusu — sinek yaklaşır)"),
+            ("repel", "Olumsuz / İtici (Tehdit kokusu — sinek uzaklaşır)"),
+            ("none", "Kapalı (İmleç feromon yaymaz)"),
+        ]
+        self.cursor_phero_combo.addItems([label for _, label in self.cursor_phero_modes])
+        cur_mode = getattr(self.overlay, "cursor_phero_mode", "attract") if self.overlay is not None else "attract"
+        cur_idx = next((i for i, (m, _) in enumerate(self.cursor_phero_modes) if m == cur_mode), 0)
+        self.cursor_phero_combo.setCurrentIndex(cur_idx)
+        self.cursor_phero_combo.currentIndexChanged.connect(self._on_cursor_phero_changed)
+        labeled(card, "İmleç Feromon Modu", self.cursor_phero_combo)
+        lay.addWidget(card)
+
+        desc_card = Card("Feromon & Tropotaksis Nedir?")
+        info_text = (
+            "• Çift Antenle Koku Yönelimi (Tropotaksis): Sinek, sağ ve sol antenlerindeki koku "
+            "reseptörleri arasındaki yoğunluk farkını karşılaştırarak kokunun yoğun olduğu tarafa "
+            "doğru yönelir veya itici kokudan kaçar (DNa02 dönüş nöronları üzerinden).\n\n"
+            "• Görünmez Besin Kaynakları: Ekranda rastgele noktalarda görünmez nektar/besin kaynakları bulunur. "
+            "Sinek kokuyu takip ederek besine ulaşır, hedefe vardığında besini tüketir ve duraklar.\n\n"
+            "• Kenar İticiliği: Ekranın en dış sınırlarında (18 px) sineğin ekran arkasına/dışına kaçmasını "
+            "önleyen ince ve görünmez bir itici alan bulunur.\n\n"
+            "• İmleç Etkisi: İmleci olumlu seçerseniz sinek imlecin peşinden koşar ve üstüne konar; "
+            "olumsuz seçerseniz imleçten kaçar."
+        )
+        desc_card.body.addWidget(_label(info_text, "Faint", wrap=True))
+        lay.addWidget(desc_card)
+
+    def _on_phero_toggled(self, checked: bool):
+        if self.overlay is not None:
+            self.overlay.pheromone_enabled = checked
+
+    def _on_cursor_phero_changed(self, idx: int):
+        if self.overlay is not None and 0 <= idx < len(self.cursor_phero_modes):
+            self.overlay.cursor_phero_mode = self.cursor_phero_modes[idx][0]
 
     def _build_circuit_page(self, lay: QVBoxLayout):
         card = Card("Sinir Devresi")

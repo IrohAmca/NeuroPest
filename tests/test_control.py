@@ -32,6 +32,7 @@ class FakeRunner:
 class FakeOverlay:
     scale = 1.4
     home = None
+    touch_groom_enabled = False
 
     def __init__(self):
         self.shown = False
@@ -78,6 +79,26 @@ def test_vision_switch_and_eye_height_reach_the_runner(app):
     c._refresh()                                        # the worker reports the flag back; no crash either way
     c.vision.setChecked(False)
     assert r.vision is False
+
+
+def test_pheromone_controls_reach_overlay(app):
+    r, o = FakeRunner(), FakeOverlay()
+    c = Control(o, r)
+    # Check default enabled and mode
+    assert c.phero_enable.isChecked() is True
+    c.phero_enable.setChecked(False)
+    assert o.pheromone_enabled is False
+    c.phero_enable.setChecked(True)
+    assert o.pheromone_enabled is True
+
+    # Check cursor pheromone mode switching
+    c.cursor_phero_combo.setCurrentIndex(1)  # repel
+    assert o.cursor_phero_mode == "repel"
+    c.cursor_phero_combo.setCurrentIndex(2)  # none
+    assert o.cursor_phero_mode == "none"
+    c.cursor_phero_combo.setCurrentIndex(0)  # attract
+    assert o.cursor_phero_mode == "attract"
+
 
 
 def test_tray_tooltip_and_open_control(app):

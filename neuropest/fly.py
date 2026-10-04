@@ -233,7 +233,7 @@ class PlayArea:
 
 
 class Fly:
-    def __init__(self, x: float, y: float, alpha_steer: float = 0.8):
+    def __init__(self, x: float, y: float, alpha_steer: float = 0.4):
         self.x, self.y, self.heading = x, y, random.uniform(0, math.tau)
         self.phase = 0.0
         self.turn_t = 0.0
@@ -248,34 +248,26 @@ class Fly:
     def update(self, dt: float, state: str, cursor: tuple[float, float], rect: Rect | PlayArea, steer: float = 0.0):
         """steer: right-minus-left DNa02 rate (Hz) from the brain; turns a walking or retreating fly."""
         speed = {STAND: 0.0, WALK: 70.0, FLY: 420.0, RETREAT: -45.0, GROOM: 0.0, FREEZE: 0.0}[state]     # retreat = backward walking
-        margin = 24.0 if state == FLY else 14.0
+        margin = 12.0 if state == FLY else 4.0
 
         # Transient filter on DNa02 steer (Rayshubskiy et al. 2025 biphasic filter: persistent input adapts)
         a_steer = 1.0 - math.exp(-dt / 0.4)
         self.steer_ema += a_steer * (steer - self.steer_ema)
         steer_eff = steer - self.alpha_steer * self.steer_ema
 
-        if isinstance(rect, PlayArea):
-            wx, wy = rect.wall_push(self.x, self.y, margin)
-        else:
-            wx, wy = _wall_push(self.x, self.y, rect, margin)
-
         if state == FLY:
-            # flee from the cursor, bending away from walls so it never pins itself to an edge
-            ax, ay = self.x - cursor[0], self.y - cursor[1]
-            n = math.hypot(ax, ay) or 1.0
-            desired = math.atan2(ay / n + 1.6 * wy, ax / n + 1.6 * wx)
-            self.heading += _wrap(desired - self.heading) * min(1.0, 8 * dt)
+            # Flight turning is driven purely by descending steering command neurons (DNa02 tropotaxis/pursuit)
+            self.heading += (steer_eff * TURN_GAIN * 1.5) * dt
+            self.heading = _wrap(self.heading)
         elif state == WALK:
             self.turn_t -= dt
             if self.turn_t <= 0:
                 self.turn, self.turn_t = random.uniform(-1.5, 1.5), random.uniform(0.3, 1.2)
             self.heading += (self.turn * 0.5 + steer_eff * TURN_GAIN) * dt
-            w = math.hypot(wx, wy)
-            if w > 0:
-                self.heading += _wrap(math.atan2(wy, wx) - self.heading) * min(1.0, 5 * w * dt)
+            self.heading = _wrap(self.heading)
         elif state == RETREAT:
-            self.heading += steer_eff * TURN_GAIN * dt          # keeps facing the cursor while backing away
+            self.heading += steer_eff * TURN_GAIN * dt          # keeps facing the stimulus while backing away
+            self.heading = _wrap(self.heading)
 
         if isinstance(rect, PlayArea):
             self.x, self.y, self.heading = rect.step(self.x, self.y, self.heading, speed, dt)

@@ -9,7 +9,8 @@ from PySide6.QtWidgets import QApplication, QWidget
 
 from .control import Control
 from .fly import Fly, PlayArea, _wrap
-from .render import draw_fly
+from .pheromone import PheromoneField
+from .render import RewardEffect, draw_fly, draw_reward_plus
 from .runner import Runner
 from .theme import apply_theme
 from .tray import Tray
@@ -44,6 +45,15 @@ class Overlay(QWidget):
         cx = float(pg.x()) + float(pg.width()) * pdpr / 2.0
         cy = float(pg.y()) + float(pg.height()) * pdpr / 2.0
         self.fly = Fly(cx, cy)
+        self.pheromone = PheromoneField(border_margin=0.0, border_strength=0.0)
+        self.pheromone.spawn_random_sources(self.play_area().screens, count=7)
+        self.pheromone_enabled = True
+        self.cursor_phero_mode = "attract"  # "attract", "repel", or "none"
+        self.feed_effects: list[RewardEffect] = []
+        self.feed_glow: float = 0.0
+        self._last_cursor_reward: float = 0.0
+        self.touch_groom_enabled = False  # cursor touch grooming toggle (default: False/off)
+        self._cached_play_area: PlayArea | None = None
         self.last = time.perf_counter()
         self.prev_dist = None
         self._watch_screens()
@@ -51,6 +61,7 @@ class Overlay(QWidget):
         self.timer.start()
 
     def _update_geometry(self):
+        self._cached_play_area = None
         if sys.platform == "win32":
             import ctypes
             u = ctypes.windll.user32
@@ -77,11 +88,15 @@ class Overlay(QWidget):
                 pass
 
     def _on_screens_changed(self, *args):
+        self._cached_play_area = None
         self._update_geometry()
         self.fly.clamp(self.play_area())
+        if not self.pheromone.sources:
+            self.pheromone.spawn_random_sources(self.play_area().screens, count=7, attract_ratio=0.75)
 
     def set_home(self, screen):
         """Set a specific monitor to constrain the fly, or None to roam freely across all monitors."""
+        self._cached_play_area = None
         self.home = screen
         if screen is not None:
             g = screen.geometry()
@@ -93,10 +108,13 @@ class Overlay(QWidget):
 
     def play_area(self) -> PlayArea:
         """Playable domain: all screens (multi-monitor roaming) or the chosen monitor."""
-        m = 2.0 * self.scale
-        if self.home is not None:
-            return PlayArea.from_screens([self.home], margin=m)
-        return PlayArea.from_screens(QApplication.screens(), margin=m)
+        if self._cached_play_area is None:
+            m = 2.0 * self.scale
+            if self.home is not None:
+                self._cached_play_area = PlayArea.from_screens([self.home], margin=m)
+            else:
+                self._cached_play_area = PlayArea.from_screens(QApplication.screens(), margin=m)
+        return self._cached_play_area
 
     def play_rect(self):
         """Compatibility helper returning the active play area."""
@@ -127,28 +145,85 @@ class Overlay(QWidget):
         dist = (pdx ** 2 + pdy ** 2) ** 0.5
         closing = 0.0 if self.prev_dist is None else (self.prev_dist - dist) / max(elapsed, 1e-3)
         self.prev_dist = dist
-        touch = 1.0 if dist < TOUCH_RADIUS_PX * self.scale else 0.0
+        touch = 1.0 if (self.touch_groom_enabled and dist < TOUCH_RADIUS_PX * self.scale) else 0.0
 
         # Physical bearing of cursor relative to fly heading
         import math
         bearing = _wrap(math.atan2(pdy, pdx) - self.fly.heading)
 
-        # pose and cursor in screen px feed the visual input (runner.vision); the numbers feed the cursor drive
-        self.runner.send(dist, closing, bearing, touch,
+        # Update pheromone field, cursor attractant and sample bilateral antennae
+        area = self.play_area()
+        if self.pheromone_enabled:
+            self.pheromone.update(dt)
+            cursor_enabled = (self.cursor_phero_mode != "none")
+            cursor_kind = self.cursor_phero_mode if cursor_enabled else "attract"
+            self.pheromone.update_cursor(cur_x, cur_y, kind=cursor_kind, enabled=cursor_enabled)
+            ant = self.pheromone.sample_antennae(self.fly.x, self.fly.y, self.fly.heading, area,
+                                                 antenna_dist=12.0 * self.scale)
+
+            # Tropotaxis steering bias (Hz): attract delta (+) turns right, repel delta (+) turns left
+            phero_steer = ant["delta_attr"] * 180.0 - ant["delta_rep"] * 220.0
+            phero_drive = ant["total_attr"]
+            phero_repel = ant["total_rep"]
+
+            # Check if arrived at any attractive source/nectar
+            at_target = False
+            target_radius = 28.0 * self.scale
+            for src in self.pheromone.sources:
+                if math.hypot(src.x - self.fly.x, src.y - self.fly.y) < target_radius:
+                    at_target = True
+                    break
+            at_cursor = (self.pheromone.cursor_active and cursor_kind == "attract" and dist < target_radius)
+            if not at_target and at_cursor:
+                at_target = True
+
+            # When fly lands or arrives at food source, consume it so it disappears!
+            if at_target:
+                consumed = self.pheromone.consume_at(self.fly.x, self.fly.y, consume_radius=target_radius,
+                                                     screen_boxes=area.screens if hasattr(area, "screens") else None)
+                if consumed:
+                    self.feed_effects.append(RewardEffect(self.fly.x, self.fly.y))
+                    self.feed_glow = 1.0
+                elif at_cursor and (now - self._last_cursor_reward > 3.0):
+                    self._last_cursor_reward = now
+                    self.feed_effects.append(RewardEffect(self.fly.x, self.fly.y))
+                    self.feed_glow = 1.0
+        else:
+            phero_steer = 0.0
+            phero_drive = 0.0
+            phero_repel = 0.0
+            at_target = False
+
+        # pose and cursor in screen px feed visual input; pheromone feeds antennae
+        cursor_is_attract = self.pheromone_enabled and (self.cursor_phero_mode == "attract")
+        effective_closing = 0.0 if cursor_is_attract else closing
+
+        self.runner.send(dist, effective_closing, bearing, touch,
                          (self.fly.x, self.fly.y, self.fly.heading), (cur_x, cur_y), stamp=now,
-                         capture_pos=(self.fly.x, self.fly.y))
+                         capture_pos=(self.fly.x, self.fly.y),
+                         phero_steer=phero_steer, phero_drive=phero_drive,
+                         phero_repel=phero_repel, at_target=at_target)
 
         effective_cursor = (cur_x, cur_y)
-
-        area = self.play_area()
         self.fly.update(dt, self.runner.state, effective_cursor, area, self.runner.steer)
+
+        # Update feeding animation and floating reward effects
+        if self.feed_glow > 0.0:
+            self.feed_glow = max(0.0, self.feed_glow - dt / 0.8)
+        if self.feed_effects:
+            self.feed_effects = [e for e in self.feed_effects if e.update(dt)]
+
         self.update()
 
     def paintEvent(self, _):
         p = QPainter(self)
         g = self.geometry()
+        # Draw fly with feeding animation and crop glow
         draw_fly(p, self.fly.x - g.left(), self.fly.y - g.top(), self.fly.heading,
-                 self.runner.state, self.fly.phase, self.scale)
+                 self.runner.state, self.fly.phase, self.scale, feed_glow=self.feed_glow)
+        # Draw floating reward plus effects
+        for eff in self.feed_effects:
+            draw_reward_plus(p, eff.x - g.left(), eff.y - g.top(), eff.progress, scale=self.scale)
 
 
 def main():
