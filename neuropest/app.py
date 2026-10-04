@@ -25,7 +25,7 @@ class Overlay(QWidget):
         self.setWindowFlags(Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint
                             | Qt.Tool | Qt.WindowTransparentForInput)
         self.setAttribute(Qt.WA_TranslucentBackground)
-        self.setGeometry(QApplication.primaryScreen().virtualGeometry())
+        self._update_geometry()
 
         # Exclude this overlay window from screen capture (GDI/DWM BitBlt) so the fly doesn't see itself
         if sys.platform == "win32":
@@ -38,13 +38,29 @@ class Overlay(QWidget):
         self.runner = runner
         self.scale = 1.0
         self.home = None  # None = roam all screens, or QScreen = pinned to that monitor
-        c = QApplication.primaryScreen().availableGeometry().center()
-        self.fly = Fly(float(c.x()), float(c.y()))
+        ps = QApplication.primaryScreen()
+        pg = ps.geometry()
+        pdpr = float(ps.devicePixelRatio())
+        cx = float(pg.x()) + float(pg.width()) * pdpr / 2.0
+        cy = float(pg.y()) + float(pg.height()) * pdpr / 2.0
+        self.fly = Fly(cx, cy)
         self.last = time.perf_counter()
         self.prev_dist = None
         self._watch_screens()
         self.timer = QTimer(self, timeout=self.tick, interval=16)
         self.timer.start()
+
+    def _update_geometry(self):
+        if sys.platform == "win32":
+            import ctypes
+            u = ctypes.windll.user32
+            vx = u.GetSystemMetrics(76)   # SM_XVIRTUALSCREEN
+            vy = u.GetSystemMetrics(77)   # SM_YVIRTUALSCREEN
+            vw = u.GetSystemMetrics(78)   # SM_CXVIRTUALSCREEN
+            vh = u.GetSystemMetrics(79)   # SM_CYVIRTUALSCREEN
+            self.setGeometry(vx, vy, vw, vh)
+        else:
+            self.setGeometry(QApplication.primaryScreen().virtualGeometry())
 
     def _watch_screens(self):
         for s in QApplication.screens():
@@ -61,20 +77,23 @@ class Overlay(QWidget):
                 pass
 
     def _on_screens_changed(self, *args):
-        self.setGeometry(QApplication.primaryScreen().virtualGeometry())
+        self._update_geometry()
         self.fly.clamp(self.play_area())
 
     def set_home(self, screen):
         """Set a specific monitor to constrain the fly, or None to roam freely across all monitors."""
         self.home = screen
         if screen is not None:
-            c = screen.availableGeometry().center()
-            self.fly.x, self.fly.y = float(c.x()), float(c.y())
+            g = screen.geometry()
+            dpr = float(screen.devicePixelRatio())
+            cx = float(g.x()) + float(g.width()) * dpr / 2.0
+            cy = float(g.y()) + float(g.height()) * dpr / 2.0
+            self.fly.x, self.fly.y = cx, cy
         self.fly.clamp(self.play_area())
 
     def play_area(self) -> PlayArea:
         """Playable domain: all screens (multi-monitor roaming) or the chosen monitor."""
-        m = 18 * self.scale
+        m = 2.0 * self.scale
         if self.home is not None:
             return PlayArea.from_screens([self.home], margin=m)
         return PlayArea.from_screens(QApplication.screens(), margin=m)
@@ -84,39 +103,27 @@ class Overlay(QWidget):
         return self.play_area()
 
     def to_physical(self, x: float, y: float) -> tuple[float, float]:
-        """Maps Qt logical coordinates to physical screen coordinates for multi-monitor GDI capture."""
-        from PySide6.QtCore import QPoint
-        s = QApplication.screenAt(QPoint(int(x), int(y)))
-        if s is None:
-            screens = QApplication.screens()
-            if screens:
-                def dist_to(sc):
-                    g = sc.geometry()
-                    cx = min(max(int(x), g.left()), g.right())
-                    cy = min(max(int(y), g.top()), g.bottom())
-                    return (int(x) - cx) ** 2 + (int(y) - cy) ** 2
-                s = min(screens, key=dist_to)
-            else:
-                return x, y
-        dpr = s.devicePixelRatio()
-        if dpr == 1.0:
-            return x, y
-        g = s.geometry()
-        return g.x() + (x - g.x()) * dpr, g.y() + (y - g.y()) * dpr
+        """Coordinates are in physical screen space."""
+        return x, y
 
     def tick(self):
         now = time.perf_counter()
         elapsed = now - self.last
         dt = min(elapsed, 0.05)                 # the fly's physics never takes a step longer than this
         self.last = now
-        cur = QCursor.pos()
 
-        cap_pos = self.to_physical(self.fly.x, self.fly.y)
-        cur_pos = self.to_physical(cur.x(), cur.y())
+        if sys.platform == "win32":
+            import ctypes, ctypes.wintypes
+            pt = ctypes.wintypes.POINT()
+            ctypes.windll.user32.GetCursorPos(ctypes.byref(pt))
+            cur_x, cur_y = float(pt.x), float(pt.y)
+        else:
+            cur = QCursor.pos()
+            cur_x, cur_y = float(cur.x()), float(cur.y())
 
         # Physical Euclidean distance across monitor boundaries
-        pdx = cur_pos[0] - cap_pos[0]
-        pdy = cur_pos[1] - cap_pos[1]
+        pdx = cur_x - self.fly.x
+        pdy = cur_y - self.fly.y
         dist = (pdx ** 2 + pdy ** 2) ** 0.5
         closing = 0.0 if self.prev_dist is None else (self.prev_dist - dist) / max(elapsed, 1e-3)
         self.prev_dist = dist
@@ -128,14 +135,10 @@ class Overlay(QWidget):
 
         # pose and cursor in screen px feed the visual input (runner.vision); the numbers feed the cursor drive
         self.runner.send(dist, closing, bearing, touch,
-                         (self.fly.x, self.fly.y, self.fly.heading), (cur.x(), cur.y()), stamp=now,
-                         capture_pos=cap_pos)
+                         (self.fly.x, self.fly.y, self.fly.heading), (cur_x, cur_y), stamp=now,
+                         capture_pos=(self.fly.x, self.fly.y))
 
-        # In fly coordinate space, represent cursor vector accurately for fleeing
-        from PySide6.QtCore import QPoint
-        s_fly = QApplication.screenAt(QPoint(int(self.fly.x), int(self.fly.y)))
-        dpr_fly = s_fly.devicePixelRatio() if s_fly is not None else 1.0
-        effective_cursor = (self.fly.x + pdx / dpr_fly, self.fly.y + pdy / dpr_fly)
+        effective_cursor = (cur_x, cur_y)
 
         area = self.play_area()
         self.fly.update(dt, self.runner.state, effective_cursor, area, self.runner.steer)
@@ -149,6 +152,16 @@ class Overlay(QWidget):
 
 
 def main():
+    if sys.platform == "win32":
+        try:
+            import ctypes
+            u = ctypes.windll.user32
+            u.SetProcessDpiAwarenessContext.restype = ctypes.c_bool
+            u.SetProcessDpiAwarenessContext.argtypes = [ctypes.c_void_p]
+            u.SetProcessDpiAwarenessContext(ctypes.c_void_p(-4))
+        except Exception:
+            pass
+
     app = QApplication(sys.argv)
     app.setQuitOnLastWindowClosed(False)
     apply_theme(app)

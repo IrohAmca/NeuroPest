@@ -16,7 +16,7 @@ class ScreenBox:
     def __init__(self, id: int, name: str,
                  raw_l: float, raw_t: float, raw_r: float, raw_b: float,
                  phys_l: float, phys_t: float, phys_r: float, phys_b: float,
-                 dpr: float = 1.0, margin: float = 18.0):
+                 dpr: float = 1.0, margin: float = 2.0):
         self.id = id
         self.name = name
         self.raw_l = raw_l
@@ -91,25 +91,21 @@ class PlayArea:
         return cls([s])
 
     @classmethod
-    def from_screens(cls, screens, margin: float = 18.0) -> PlayArea:
+    def from_screens(cls, screens, margin: float = 2.0) -> PlayArea:
         boxes = []
         for i, s in enumerate(screens):
-            ag = s.availableGeometry()
             g = s.geometry()
             dpr = float(s.devicePixelRatio())
-            raw_l = float(ag.left())
-            raw_t = float(ag.top())
-            raw_r = float(ag.left() + ag.width())
-            raw_b = float(ag.top() + ag.height())
-            phys_l = float(g.x() + (ag.left() - g.x()) * dpr)
-            phys_t = float(g.y() + (ag.top() - g.y()) * dpr)
-            phys_r = float(phys_l + ag.width() * dpr)
-            phys_b = float(phys_t + ag.height() * dpr)
+            # In physical desktop coordinates (matching GDI capture and transparent Overlay HWND)
+            phys_l = float(g.x())
+            phys_t = float(g.y())
+            phys_r = float(g.x()) + float(g.width()) * dpr
+            phys_b = float(g.y()) + float(g.height()) * dpr
             boxes.append(ScreenBox(
                 id=i, name=s.name(),
-                raw_l=raw_l, raw_t=raw_t, raw_r=raw_r, raw_b=raw_b,
+                raw_l=phys_l, raw_t=phys_t, raw_r=phys_r, raw_b=phys_b,
                 phys_l=phys_l, phys_t=phys_t, phys_r=phys_r, phys_b=phys_b,
-                dpr=dpr, margin=margin,
+                dpr=1.0, margin=margin,
             ))
         return cls(boxes)
 
@@ -250,7 +246,7 @@ class Fly:
     def update(self, dt: float, state: str, cursor: tuple[float, float], rect: Rect | PlayArea, steer: float = 0.0):
         """steer: right-minus-left DNa02 rate (Hz) from the brain; turns a walking or retreating fly."""
         speed = {STAND: 0.0, WALK: 70.0, FLY: 420.0, RETREAT: -45.0, GROOM: 0.0, FREEZE: 0.0}[state]     # retreat = backward walking
-        margin = 160.0 if state == FLY else 110.0
+        margin = 24.0 if state == FLY else 14.0
 
         if isinstance(rect, PlayArea):
             wx, wy = rect.wall_push(self.x, self.y, margin)

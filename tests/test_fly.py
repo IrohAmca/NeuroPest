@@ -165,3 +165,75 @@ def test_multi_screen_taskbar_and_void_bounds():
     # At Y = 1200 (no portal, void to left):
     wx_wall, _ = area.wall_push(25.0, 1200.0, 110.0)
     assert wx_wall > 0.0, f"Expected inward wall push at solid wall, got {wx_wall}"
+
+
+def test_multi_screen_physical_continuity():
+    from neuropest.fly import Fly, PlayArea, ScreenBox
+    from neuropest.states import WALK
+
+    # Two monitors touching at x = 0 in physical desktop coordinates (matching Overlay HWND)
+    s0 = ScreenBox(
+        id=0, name="Main",
+        raw_l=0.0, raw_t=0.0, raw_r=2560.0, raw_b=1440.0,
+        phys_l=0.0, phys_t=0.0, phys_r=2560.0, phys_b=1440.0,
+        dpr=1.0, margin=2.0,
+    )
+    s1 = ScreenBox(
+        id=1, name="Left",
+        raw_l=-1920.0, raw_t=0.0, raw_r=0.0, raw_b=1080.0,
+        phys_l=-1920.0, phys_t=0.0, phys_r=0.0, phys_b=1080.0,
+        dpr=1.0, margin=2.0,
+    )
+    area = PlayArea([s0, s1])
+
+    # 1. Fly steps from Main (x=5) leftwards into Left screen (dt=0.2s, speed=70 -> delta 14px)
+    fly = Fly(5.0, 500.0)
+    fly.heading = math.pi
+    fly.turn, fly.turn_t = 0.0, 10.0
+    fly.update(0.2, WALK, (5.0, 500.0), area)
+    # 5.0 - 14.0 = -9.0. Exactly continuous across seam, no gap!
+    assert abs(fly.x - (-9.0)) < 0.1, f"Expected x=-9.0, got {fly.x}"
+    assert abs(fly.y - 500.0) < 0.1
+    assert abs(math.remainder(fly.heading - math.pi, math.tau)) < 0.1
+
+    # 2. Fly steps from Left (x=-5) rightwards into Main screen
+    fly2 = Fly(-5.0, 500.0)
+    fly2.heading = 0.0
+    fly2.turn, fly2.turn_t = 0.0, 10.0
+    fly2.update(0.2, WALK, (-5.0, 500.0), area)
+    # -5.0 + 14.0 = 9.0. Continuous across seam!
+    assert abs(fly2.x - 9.0) < 0.1, f"Expected x=9.0, got {fly2.x}"
+    assert abs(fly2.y - 500.0) < 0.1
+    assert abs(fly2.heading - 0.0) < 0.1
+
+    # 3. Fly can freely occupy the previously-skipped zone [-384, 0] on the left screen
+    fly3 = Fly(-200.0, 500.0)
+    fly3.heading = 0.0
+    fly3.turn, fly3.turn_t = 0.0, 10.0
+    fly3.update(0.1, WALK, (-200.0, 500.0), area)
+    assert abs(fly3.x - (-193.0)) < 0.1
+
+
+def test_tight_screen_boundary_margins():
+    from neuropest.fly import Fly, PlayArea, ScreenBox
+    from neuropest.states import WALK
+
+    s0 = ScreenBox(
+        id=0, name="Main",
+        raw_l=0.0, raw_t=0.0, raw_r=1920.0, raw_b=1080.0,
+        phys_l=0.0, phys_t=0.0, phys_r=1920.0, phys_b=1080.0,
+        dpr=1.0, margin=2.0,
+    )
+    area = PlayArea([s0])
+
+    # 1. Fly can reach right up to margin=2.0 at left border
+    fly = Fly(3.0, 500.0)
+    fly.heading = math.pi
+    fly.turn, fly.turn_t = 0.0, 10.0
+    fly.update(0.05, WALK, (3.0, 500.0), area)
+    assert fly.x >= 2.0 and fly.x < 2.5  # stopped right at 2px boundary
+
+    # 2. Wall push is 0 when 30px away from the boundary (since margin is now 14px for WALK)
+    wx, wy = area.wall_push(30.0, 500.0, 14.0)
+    assert wx == 0.0 and wy == 0.0
+
