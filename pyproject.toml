@@ -3,6 +3,7 @@ name = "neuropest"
 version = "0.1.0"
 description = "Desktop fly pet driven by a FlyWire-based reduced neural circuit"
 readme = "README.md"
+license = { file = "LICENSE" }
 requires-python = ">=3.11"
 dependencies = [
     "PySide6>=6.7",

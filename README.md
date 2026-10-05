@@ -50,8 +50,8 @@ If the pre-built FlyWire connectome is not found on first launch, a toy circuit 
     - **Cyborg (Sci-Fi):** Mecha robotic chassis, glowing cyan wings, cybernetic joints.
     - **Pastel (Fairy):** Translucent fairy wings, soft pastel palette, delicate footsteps.
     - **Cartoon (Retro):** Expressive compound eyes, retro stylized dorsal patterns.
-- **Visual Input (Eye View):**
-  - Toggle "See desktop through fly eyes" in the control panel to replace cursor coordinate math with optical sampling through ommatidia receptive fields.
+- **Screen Capture Vision (Compound Eye Perception):**
+  - Enable "Screen Capture Vision" in the control panel to replace cursor coordinate math with optical sampling of real screen pixels through ommatidia and medulla column receptive fields.
 - **Control Panel:**
   - Dark-themed card interface displaying real-time telemetry (Giant Fiber, MDN, Steering, real-time factor, CPU load, active neuron count, valence, hunger).
   - Collapsible **Advanced Behavior Settings** (Motility at 65%, Skittishness $\times 1.00$, Wall Pain $\times 1.00$, with a single-click reset).
@@ -95,15 +95,24 @@ uv run python tools/fidelity.py          # ~5min: data/circuits/tiers.json (fide
 
 **`tiers.json` is machine-specific.** Error columns (takeoff, retreat, steering, descending neuron correlation) are intrinsic to the circuit and drivers. Speed columns reflect single-core throughput measured on the benchmarking host; run `tools/fidelity.py` locally to calibrate for your CPU.
 
-### License and Attribution
+### License, Attribution & Scientific References
 
-- Code: Shiu et al. repository is MIT licensed.
-- **FlyWire data is CC BY-NC 4.0** (Attribution required, Non-Commercial use only; confirmed at flywire.ai/guidelines).
+- **Code License:** [PolyForm Noncommercial License 1.0.0](LICENSE) (SPDX: `PolyForm-Noncommercial-1.0.0`).
+- **FlyWire Dataset Terms:** **CC BY-NC 4.0** (Attribution required, Non-Commercial use only; confirmed at [flywire.ai/guidelines](https://flywire.ai/guidelines)).
+- **Upstream Code:** Shiu et al. (2024) LIF reference model is MIT licensed.
 - This project is distributed strictly for non-commercial research and educational use. Commercial use requires permission from FlyWire.
-- **Citations:**
-  - Dorkenwald et al. 2024 (*Nature*, FlyWire connectome).
-  - Schlegel et al. 2024 (*Nature*, cell types and annotations).
-  - Shiu et al. 2024 (*Nature*, whole-brain LIF model).
+- **Citing NeuroPest:** See [CITATION.cff](file:///d:/Projects/NeuroPest/CITATION.cff) for GitHub and software citation metadata.
+- **Comprehensive Bibliography:** See [REFERENCES.md](file:///d:/Projects/NeuroPest/REFERENCES.md) for full citations, biological mechanism mapping, and BibTeX entries covering all neural subsystems (Connectome, Descending Motor Control, Mushroom Body, Metabolism, and Vision).
+- **Foundational Studies:**
+  - Dorkenwald et al. 2024 (*Nature* 634:124–138, FlyWire connectome). [doi:10.1038/s41586-024-07558-y](https://doi.org/10.1038/s41586-024-07558-y)
+  - Schlegel et al. 2024 (*Nature* 634:139–152, cell types and annotations). [doi:10.1038/s41586-024-07686-5](https://doi.org/10.1038/s41586-024-07686-5)
+  - Shiu et al. 2024 (*Nature* 634:210–219, whole-brain LIF computational model). [doi:10.1038/s41586-024-07763-9](https://doi.org/10.1038/s41586-024-07763-9)
+  - Bidaye et al. 2014 (*Science* 344:97–101, MDN backward walking). [doi:10.1126/science.1249964](https://doi.org/10.1126/science.1249964)
+  - Bidaye et al. 2020 (*Neuron* 108:694–707, DNp09 forward walking drive). [doi:10.1016/j.neuron.2020.08.016](https://doi.org/10.1016/j.neuron.2020.08.016)
+  - Rayshubskiy et al. 2025 (*eLife* 14:RP103565, DNa02 steering). [doi:10.7554/eLife.103565.1](https://doi.org/10.7554/eLife.103565.1)
+  - Aso et al. 2014 (*eLife* 3:e04577 & e04580, Mushroom Body architecture & MBON valence). [doi:10.7554/eLife.04577](https://doi.org/10.7554/eLife.04577)
+  - Hige et al. 2015 (*Neuron* 88:985–998, dopamine-dependent plasticity). [doi:10.1016/j.neuron.2015.11.003](https://doi.org/10.1016/j.neuron.2015.11.003)
+  - Krashes et al. 2009 (*Cell* 139:416–427, hunger gating of dopamine memory). [doi:10.1016/j.cell.2009.08.035](https://doi.org/10.1016/j.cell.2009.08.035)
 
 ---
 
@@ -164,9 +173,9 @@ Benchmarked on Intel Core i5-10300H (single-core, $\text{d}t = 0.5\text{ ms}$; e
 
 ---
 
-## Visual Input & Desktop Capture
+## Screen Capture Vision & Desktop Perception
 
-When "See desktop through fly eyes" is enabled, the fly views the screen through an ommatidial cone matching Drosophila optics. Each medulla column points in a specific azimuth and elevation, sampling the desktop plane.
+When "Screen Capture Vision" is enabled in the control panel, the fly samples actual desktop pixels through an ommatidial cone matching Drosophila compound eye optics instead of receiving synthetic cursor coordinates. Each medulla column points in a specific azimuth and elevation, sampling the desktop plane.
 
 ```bash
 uv run python tools/build_eye.py       # builds eye.npz and field.npz (+ eye_map.png)
@@ -272,3 +281,21 @@ uv run pytest
 ```
 
 Tests validate engine equivalence, connectome tier indexing, screen capture memory isolation, Mushroom Body learning dynamics, metabolism states, pheromone tropotaxis, multi-skin rendering, and physical margin reflections.
+
+---
+
+## License & Attribution
+
+This project is licensed under the **[PolyForm Noncommercial License 1.0.0](LICENSE)** (SPDX: `PolyForm-Noncommercial-1.0.0`).
+
+### Permitted Uses
+- You are free to inspect, run, modify, fork, and distribute the code for **non-commercial purposes**, including personal study, research, education, experimentation, and hobby projects.
+
+### Restrictions
+- Any use primarily intended for or directed toward commercial advantage or monetary compensation is **strictly prohibited** without explicit written permission from the copyright holder.
+
+### Third-Party Data & Upstream Acknowledgements
+- **Drosophila Brain Model:** Leaky integrate-and-fire simulation baseline and synaptic parameters adapted from Shiu et al. (2024) (MIT License).
+- **FlyWire Connectome Dataset (v783):** Connectome wiring and annotations by Dorkenwald et al. (2024) and Schlegel et al. (2024) (licensed under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/)).
+- **PySide6 / Qt:** Licensed under LGPLv3.
+

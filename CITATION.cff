@@ -1,0 +1,354 @@
+cff-version: 1.2.0
+message: "If you use NeuroPest or its biological connectome models in your research, please cite the software and the underlying foundational studies as below."
+title: "NeuroPest: Biologically Grounded Drosophila Connectome Desktop Simulation"
+version: 0.1.0
+date-released: "2026-10-06"
+repository-code: "https://github.com/IrohAmca/NeuroPest"
+url: "https://github.com/IrohAmca/NeuroPest"
+license: "PolyForm-Noncommercial-1.0.0"
+abstract: >-
+  NeuroPest is an interactive computational biology system running a Leaky
+  Integrate-and-Fire (LIF) simulation of the adult fruit fly (Drosophila melanogaster)
+  whole-brain connectome from FlyWire (v783). It translates real-time sensory inputs
+  (cursor kinematics or optical desktop screen capture) into biophysical Poisson spike
+  trains across visual, antennal, and mechanosensory projection neurons, decoding motor
+  behaviors directly from descending command neurons (Giant Fiber, MDN, DNp09, DNa02,
+  aDN1/aDN2) and modeling associative reinforcement learning in the Mushroom Body.
+keywords:
+  - computational-neuroscience
+  - drosophila-melanogaster
+  - connectome
+  - flywire
+  - leaky-integrate-and-fire
+  - descending-neurons
+  - mushroom-body
+  - reinforcement-learning
+  - neuromorphic-simulation
+authors:
+  - name: "IrohAmca"
+    email: "aliaygun365@gmail.com"
+    website: "https://github.com/IrohAmca"
+references:
+  - type: article
+    title: "Neuronal wiring diagram of an adult brain"
+    authors:
+      - family-names: Dorkenwald
+        given-names: Sven
+      - family-names: Matsliah
+        given-names: Arie
+      - family-names: Sterling
+        given-names: Philipp
+      - family-names: Schlegel
+        given-names: Philipp
+      - family-names: Yu
+        given-names: Szi-chieh
+      - family-names: McKellar
+        given-names: Claire E.
+      - family-names: Lin
+        given-names: Amy
+      - family-names: Costa
+        given-names: Marta
+      - family-names: Eichler
+        given-names: Katharina
+      - family-names: Yin
+        given-names: Yijie
+      - family-names: Murthy
+        given-names: Mala
+      - family-names: Seung
+        given-names: H. Sebastian
+    journal: "Nature"
+    volume: 634
+    issue: 8032
+    start: 124
+    end: 138
+    year: 2024
+    doi: "10.1038/s41586-024-07558-y"
+
+  - type: article
+    title: "Whole-brain annotation and multi-connectome cell typing of Drosophila"
+    authors:
+      - family-names: Schlegel
+        given-names: Philipp
+      - family-names: Yin
+        given-names: Yijie
+      - family-names: Bates
+        given-names: Alexander Shakeel
+      - family-names: Dorkenwald
+        given-names: Sven
+      - family-names: Eichler
+        given-names: Katharina
+      - family-names: Brooks
+        given-names: Paul
+      - family-names: Han
+        given-names: Doug S.
+      - family-names: Gkantia
+        given-names: Marina
+      - family-names: dos Santos
+        given-names: Markus
+      - family-names: Jefferis
+        given-names: Gregory S. X. E.
+    journal: "Nature"
+    volume: 634
+    issue: 8032
+    start: 139
+    end: 152
+    year: 2024
+    doi: "10.1038/s41586-024-07686-5"
+
+  - type: article
+    title: "A leaky integrate-and-fire computational model based on the adult Drosophila connectome"
+    authors:
+      - family-names: Shiu
+        given-names: Philip K.
+      - family-names: Sterne
+        given-names: Gary R.
+      - family-names: Spiller
+        given-names: Noelle
+      - family-names: Romain
+        given-names: Celine P.
+      - family-names: Nojima
+        given-names: Tetsuya
+      - family-names: Cirillo
+        given-names: Matthew
+      - family-names: Scott
+        given-names: Kristin
+    journal: "Nature"
+    volume: 634
+    issue: 8032
+    start: 210
+    end: 219
+    year: 2024
+    doi: "10.1038/s41586-024-07763-9"
+
+  - type: article
+    title: "'Moonwalker' descending neurons that control backward walking in Drosophila"
+    authors:
+      - family-names: Bidaye
+        given-names: Salil S.
+      - family-names: Machacek
+        given-names: Christian
+      - family-names: Wu
+        given-names: Yang
+      - family-names: Dickson
+        given-names: Barry J.
+    journal: "Science"
+    volume: 344
+    issue: 6179
+    start: 97
+    end: 101
+    year: 2014
+    doi: "10.1126/science.1249964"
+
+  - type: article
+    title: "Two brain pathways initiate and modulate walking in Drosophila"
+    authors:
+      - family-names: Bidaye
+        given-names: Salil S.
+      - family-names: Laturney
+        given-names: Megan
+      - family-names: Chang
+        given-names: Andrew K.
+      - family-names: Liu
+        given-names: Yichun
+      - family-names: Hargreaves
+        given-names: Adam D.
+      - family-names: Dickson
+        given-names: Barry J.
+    journal: "Neuron"
+    volume: 108
+    issue: 4
+    start: 694
+    end: 707
+    year: 2020
+    doi: "10.1016/j.neuron.2020.08.016"
+
+  - type: article
+    title: "Visually mediated motor planning in the escape response of Drosophila"
+    authors:
+      - family-names: Card
+        given-names: Gwyneth
+      - family-names: Dickinson
+        given-names: Michael H.
+    journal: "Current Biology"
+    volume: 18
+    issue: 17
+    start: 1300
+    end: 1307
+    year: 2008
+    doi: "10.1016/j.cub.2008.07.094"
+
+  - type: article
+    title: "Feature extraction by a cell-type-specific neural circuit for visual escape in Drosophila"
+    authors:
+      - family-names: von Reyn
+        given-names: Catherine R.
+      - family-names: Nern
+        given-names: Aljoscha
+      - family-names: Williamson
+        given-names: W. Ryan
+      - family-names: Breads
+        given-names: Patrick
+      - family-names: Wu
+        given-names: Ming
+      - family-names: Namiki
+        given-names: Shigehiro
+      - family-names: Card
+        given-names: Gwyneth M.
+    journal: "Neuron"
+    volume: 93
+    issue: 4
+    start: 844
+    end: 858
+    year: 2017
+    doi: "10.1016/j.neuron.2017.01.034"
+
+  - type: article
+    title: "State-dependent visual processing in Drosophila during takeoff"
+    authors:
+      - family-names: Ache
+        given-names: Jan M.
+      - family-names: Namiki
+        given-names: Shigehiro
+      - family-names: Lee
+        given-names: Arthur
+      - family-names: Branson
+        given-names: Kristin
+      - family-names: Card
+        given-names: Gwyneth M.
+    journal: "Current Biology"
+    volume: 29
+    issue: 16
+    start: 2715
+    end: 2729
+    year: 2019
+    doi: "10.1016/j.cub.2019.07.026"
+
+  - type: article
+    title: "Neural circuit mechanisms for steering control in walking Drosophila"
+    authors:
+      - family-names: Rayshubskiy
+        given-names: Aleksandr
+      - family-names: Holtz
+        given-names: Stephen L.
+      - family-names: D'Alessandro
+        given-names: Isabella
+      - family-names: Li
+        given-names: An-An
+      - family-names: Vanderbeck
+        given-names: Quentin X.
+      - family-names: Haber
+        given-names: Isabel S.
+      - family-names: Wilson
+        given-names: Rachel I.
+    journal: "eLife"
+    volume: 14
+    start: "RP103565"
+    year: 2025
+    doi: "10.7554/eLife.103565.1"
+
+  - type: article
+    title: "A neural command circuit for grooming movement sequences"
+    authors:
+      - family-names: Hampel
+        given-names: Stefanie
+      - family-names: Franconville
+        given-names: Romain
+      - family-names: Simpson
+        given-names: Julie H.
+      - family-names: Seeds
+        given-names: Andrew M.
+    journal: "eLife"
+    volume: 4
+    start: "e08758"
+    year: 2015
+    doi: "10.7554/eLife.08758"
+
+  - type: article
+    title: "The neuronal architecture of the mushroom body provides a logic for associative learning"
+    authors:
+      - family-names: Aso
+        given-names: Yoshinori
+      - family-names: Hattori
+        given-names: Daisuke
+      - family-names: Yu
+        given-names: Yi
+      - family-names: Johnston
+        given-names: Rebecca M.
+      - family-names: Iyer
+        given-names: Nirmala A.
+      - family-names: Ngo
+        given-names: Teri-T. B.
+      - family-names: Rubin
+        given-names: Gerald M.
+    journal: "eLife"
+    volume: 3
+    start: "e04577"
+    year: 2014
+    doi: "10.7554/eLife.04577"
+
+  - type: article
+    title: "Mushroom body output neurons encode valence and guide memory-based action selection in Drosophila"
+    authors:
+      - family-names: Aso
+        given-names: Yoshinori
+      - family-names: Sitaraman
+        given-names: Divya
+      - family-names: Ichinose
+        given-names: Toshiharu
+      - family-names: Kaun
+        given-names: Karla R.
+      - family-names: Vogt
+        given-names: Katrin
+      - family-names: Tanimoto
+        given-names: Hiromu
+      - family-names: Rubin
+        given-names: Gerald M.
+    journal: "eLife"
+    volume: 3
+    start: "e04580"
+    year: 2014
+    doi: "10.7554/eLife.04580"
+
+  - type: article
+    title: "Heterosynaptic plasticity underlies aversive olfactory learning in Drosophila"
+    authors:
+      - family-names: Hige
+        given-names: Tatsuya
+      - family-names: Aso
+        given-names: Yoshinori
+      - family-names: Modi
+        given-names: Mehrab N.
+      - family-names: Rubin
+        given-names: Gerald M.
+      - family-names: Turner
+        given-names: Glenn C.
+    journal: "Neuron"
+    volume: 88
+    issue: 5
+    start: 985
+    end: 998
+    year: 2015
+    doi: "10.1016/j.neuron.2015.11.003"
+
+  - type: article
+    title: "A neural circuit mechanism integrating hunger and satiety states with odor-reward memory in Drosophila"
+    authors:
+      - family-names: Krashes
+        given-names: Michael J.
+      - family-names: DasGupta
+        given-names: Suewei
+      - family-names: Sengupta
+        given-names: Ananya
+      - family-names: Grosjean
+        given-names: Yael
+      - family-names: Florman
+        given-names: Zachary M.
+      - family-names: Waddell
+        given-names: Scott
+    journal: "Cell"
+    volume: 139
+    issue: 2
+    start: 416
+    end: 427
+    year: 2009
+    doi: "10.1016/j.cell.2009.08.035"
