@@ -49,6 +49,7 @@ class Overlay(QWidget):
 
         self.runner = runner
         self.scale = 1.0
+        self.skin = "classic"
         self.home = None  # None = roam all screens, or QScreen = pinned to that monitor
         ps = QApplication.primaryScreen()
         pg = ps.geometry()
@@ -269,7 +270,8 @@ class Overlay(QWidget):
         g = self.geometry()
         # Draw fly with feeding animation and crop glow
         draw_fly(p, self.fly.x - g.left(), self.fly.y - g.top(), self.fly.heading,
-                 self.runner.state, self.fly.phase, self.scale, feed_glow=self.feed_glow)
+                 self.runner.state, self.fly.phase, self.scale, feed_glow=self.feed_glow,
+                 skin=self.skin)
         # Draw floating reward plus effects
         for eff in self.feed_effects:
             draw_reward_plus(p, eff.x - g.left(), eff.y - g.top(), eff.progress, scale=self.scale)

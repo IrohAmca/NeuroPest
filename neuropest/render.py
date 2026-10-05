@@ -2,11 +2,14 @@
 from __future__ import annotations
 
 import math
+from pathlib import Path
 
-from PySide6.QtCore import QPointF, Qt
-from PySide6.QtGui import QColor, QPainter, QPen
+from PySide6.QtCore import QPointF, QRectF, Qt
+from PySide6.QtGui import QColor, QPainter, QPen, QPixmap
 
+from .paths import SKINS_DIR
 from .states import FLY, GROOM, RETREAT, WALK
+
 
 INK = QColor(235, 235, 235, 235)
 
@@ -80,8 +83,134 @@ def draw_reward_plus(p: QPainter, x: float, y: float, progress: float, scale: fl
     p.restore()
 
 
-def draw_fly(p: QPainter, x: float, y: float, heading: float, state: str,
-             phase: float, scale: float = 1.0, feed_glow: float = 0.0):
+SKIN_METADATA: dict[str, dict[str, str]] = {
+    "classic": {
+        "title": "Klasik",
+        "full_name": "Klasik (Vektör)",
+        "desc": "Bilimsel iskelet; proboscis, kafa, toraks ve 6 bacaklı tripod gait geometrisi.",
+    },
+    "chubby": {
+        "title": "Tombul",
+        "full_name": "Tombul Sinek (Chibi)",
+        "desc": "Pofuduk gövde, sevimli kanatlar ve 16 adımlık dorsal yürüyüş & uçuş animasyonu.",
+    },
+    "cyborg": {
+        "title": "Siber",
+        "full_name": "Siber Sinek (Cyborg)",
+        "desc": "Mecha robotik gövde, parlak mavi enerji kanatları ve sibernetik eklemler.",
+    },
+    "candy": {
+        "title": "Pastel",
+        "full_name": "Pastel Sinek (Peri / Candy)",
+        "desc": "Renkli peri/şeker kanatları, yumuşak pastel tonlar ve hafif adımlar.",
+    },
+    "cartoon": {
+        "title": "Çizgi Film",
+        "full_name": "Çizgi Film (Retro)",
+        "desc": "Karakteristik iri gözler, sırt deseni ve klasik çizgi film tarzı.",
+    },
+}
+
+AVAILABLE_SKINS: dict[str, str] = {k: v["full_name"] for k, v in SKIN_METADATA.items()}
+
+
+
+class SkinManager:
+    """Loads and caches sprite frames for top-down fly skins with transparent backgrounds."""
+
+    def __init__(self, skins_dir: Path | None = None):
+        if skins_dir is None:
+            skins_dir = SKINS_DIR
+        self.skins_dir = Path(skins_dir)
+        self._skins: dict[str, dict[str, list[QPixmap] | QPixmap | None]] = {}
+
+    def get_frame(self, skin_key: str, state: str, phase: float) -> QPixmap | None:
+        if skin_key not in self._skins:
+            self._load_skin(skin_key)
+        data = self._skins.get(skin_key)
+        if not data:
+            return None
+
+        idle = data.get("idle")
+        walk = data.get("walk") or []
+        fly = data.get("fly") or []
+
+        # Normalized phase [0.0, 1.0)
+        norm = (phase % math.tau) / math.tau if math.tau > 0 else 0.0
+
+        if state == FLY:
+            if fly:
+                idx = int(norm * len(fly)) % len(fly)
+                return fly[idx]
+        elif state in (WALK, RETREAT):
+            if walk:
+                idx = int(norm * len(walk)) % len(walk)
+                return walk[idx]
+        elif state == GROOM:
+            if walk:
+                idx = int((norm * 2.0) * len(walk)) % len(walk)
+                return walk[idx]
+            return idle
+
+        # STAND, FREEZE or fallback
+        if idle is not None:
+            return idle
+        return walk[0] if walk else (fly[0] if fly else None)
+
+    def _load_skin(self, skin_key: str):
+        sp = self.skins_dir / skin_key
+        if not sp.is_dir():
+            self._skins[skin_key] = {}
+            return
+
+        idle_path = sp / "idle.png"
+        idle_pm = QPixmap(str(idle_path)) if idle_path.exists() else None
+
+        walk_files = sorted(sp.glob("walk_*.png"), key=lambda p: int(p.stem.split("_")[1]) if p.stem.split("_")[1].isdigit() else 0)
+        walk_pms = [QPixmap(str(p)) for p in walk_files if not QPixmap(str(p)).isNull()]
+
+        fly_files = sorted(sp.glob("fly_*.png"), key=lambda p: int(p.stem.split("_")[1]) if p.stem.split("_")[1].isdigit() else 0)
+        fly_pms = [QPixmap(str(p)) for p in fly_files if not QPixmap(str(p)).isNull()]
+
+        self._skins[skin_key] = {
+            "idle": idle_pm,
+            "walk": walk_pms,
+            "fly": fly_pms,
+        }
+
+
+_SKIN_MANAGER = SkinManager()
+
+
+def _draw_fly_sprite(p: QPainter, x: float, y: float, heading: float, state: str,
+                     phase: float, scale: float, feed_glow: float, pixmap: QPixmap):
+    p.save()
+    p.translate(x, y)
+    p.rotate(math.degrees(heading))   # +x axis = head direction
+    p.scale(scale, scale)
+    p.setRenderHint(QPainter.Antialiasing)
+    p.setRenderHint(QPainter.SmoothPixmapTransform)
+
+    # Base display size: 46.0 px (matches procedural vector fly proportions)
+    s_size = 46.0
+    half = s_size / 2.0
+    target_rect = QRectF(-half, -half, s_size, s_size)
+    source_rect = QRectF(0, 0, pixmap.width(), pixmap.height())
+    p.drawPixmap(target_rect, pixmap, source_rect)
+
+    # Feeding effects: proboscis extension and emerald nectar glow at head
+    if feed_glow > 0.0:
+        glow_a = int(190 * feed_glow)
+        p.setBrush(QColor(46, 204, 113, glow_a))
+        p.setPen(Qt.NoPen)
+        ext = 2.0 + 1.2 * math.sin(phase * 4.0)
+        p.drawEllipse(QPointF(half * 0.72 + ext, 0.0), 3.6, 3.6)
+
+    p.restore()
+
+
+def _draw_fly_procedural(p: QPainter, x: float, y: float, heading: float, state: str,
+                         phase: float, scale: float = 1.0, feed_glow: float = 0.0):
     p.save()
     p.translate(x, y)
     p.rotate(math.degrees(heading))   # +x axis = head direction
@@ -140,6 +269,20 @@ def draw_fly(p: QPainter, x: float, y: float, heading: float, state: str,
             p.drawLine(QPointF(-1, s * 3), QPointF(-22, s * 5))
         _legs(p, phase if state in (WALK, RETREAT) else 0.0, tucked=False, groom=phase if state == GROOM else None)
     p.restore()
+
+
+def draw_fly(p: QPainter, x: float, y: float, heading: float, state: str,
+             phase: float, scale: float = 1.0, feed_glow: float = 0.0,
+             skin: str = "classic"):
+    """Draw fly using either procedural vector graphics or sprite-based skins."""
+    if skin and skin != "classic":
+        pixmap = _SKIN_MANAGER.get_frame(skin, state, phase)
+        if pixmap is not None and not pixmap.isNull():
+            _draw_fly_sprite(p, x, y, heading, state, phase, scale, feed_glow, pixmap)
+            return
+
+    _draw_fly_procedural(p, x, y, heading, state, phase, scale, feed_glow)
+
 
 
 def _legs(p: QPainter, phase: float, tucked: bool, groom: float | None = None):

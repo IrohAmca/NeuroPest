@@ -5,9 +5,11 @@ import importlib.util
 import json
 import threading
 
-from PySide6.QtCore import Qt, QTimer
+from PySide6.QtCore import QSize, Qt, QTimer
+from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import (
     QApplication,
+    QButtonGroup,
     QCheckBox,
     QComboBox,
     QFrame,
@@ -20,13 +22,17 @@ from PySide6.QtWidgets import (
     QSizePolicy,
     QSlider,
     QStackedWidget,
+    QToolButton,
     QVBoxLayout,
     QWidget,
 )
 
-from .paths import CACHE, EYE, FIELD, TIERS
+from .paths import CACHE, EYE, FIELD, SKIN_THUMBNAILS, TIERS
+from .render import AVAILABLE_SKINS, SKIN_METADATA
 from .runner import GPU_AUTO_MIN_NEURONS, EngineConfig, list_gpus, pick_gpu
+
 from .theme import ERROR, FAINT, MUTED, STATE_STYLE, fly_icon
+
 from .visionparams import VisionParams
 
 # circuit sizes offered in the UI (neurons). FlyWire sizes are tiers measured by tools/fidelity.py.
@@ -645,6 +651,71 @@ class Control(QWidget):
         s.valueChanged.connect(lambda v: setattr(self.overlay, "scale", v / 10))
         slider_row(card, "Sinek Boyutu", "Masaüstündeki görünür büyüklük", s, lambda v: f"×{v / 10:.1f}")
 
+        # Sinek Görünümü (Visual Cards Selector)
+        card.body.addWidget(_label("Sinek Görünümü (Kostüm)", "Muted"))
+
+        skin_container = QWidget()
+        skin_lay = QHBoxLayout(skin_container)
+        skin_lay.setContentsMargins(0, 4, 0, 4)
+        skin_lay.setSpacing(6)
+
+        self.skin_group = QButtonGroup(self)
+        self.skin_group.setExclusive(True)
+        self.skin_buttons: dict[str, QToolButton] = {}
+
+        cur_skin = getattr(self.overlay, "skin", "classic")
+
+        for key, meta in SKIN_METADATA.items():
+            btn = QToolButton()
+            btn.setCheckable(True)
+            btn.setChecked(key == cur_skin)
+            btn.setToolButtonStyle(Qt.ToolButtonTextUnderIcon)
+            btn.setCursor(Qt.PointingHandCursor)
+            btn.setFixedSize(84, 76)
+
+            thumb_path = SKIN_THUMBNAILS / f"{key}.png"
+            if thumb_path.exists():
+                btn.setIcon(QIcon(str(thumb_path)))
+            btn.setIconSize(QSize(38, 38))
+            btn.setText(meta["title"])
+            btn.setToolTip(f"{meta['full_name']}\n{meta['desc']}")
+
+            btn.setStyleSheet("""
+                QToolButton {
+                    background: #11151c;
+                    border: 1px solid #27303f;
+                    border-radius: 8px;
+                    padding: 6px 2px 4px 2px;
+                    color: #94a3b8;
+                    font-size: 11px;
+                    font-weight: 500;
+                }
+                QToolButton:hover {
+                    background: #18202c;
+                    border: 1px solid #475569;
+                    color: #f1f5f9;
+                }
+                QToolButton:checked {
+                    background: rgba(52, 211, 153, 0.14);
+                    border: 2px solid #34d399;
+                    color: #34d399;
+                    font-weight: bold;
+                }
+            """)
+
+            self.skin_buttons[key] = btn
+            self.skin_group.addButton(btn)
+            btn.clicked.connect(lambda _, k=key: self._on_skin_selected(k))
+            skin_lay.addWidget(btn)
+
+        skin_lay.addStretch(1)
+        card.body.addWidget(skin_container)
+
+
+        active_meta = SKIN_METADATA.get(cur_skin, SKIN_METADATA["classic"])
+        self.skin_desc_label = _label(f"✓ {active_meta['full_name']}: {active_meta['desc']}", "Faint", wrap=True)
+        card.body.addWidget(self.skin_desc_label)
+
         screens = QApplication.screens()
         if len(screens) > 1:
             box = QComboBox()
@@ -655,6 +726,23 @@ class Control(QWidget):
             box.currentIndexChanged.connect(lambda i: self.overlay.set_home(None if i == 0 else screens[i - 1]))
             labeled(card, "Sanal Alan / Monitör", box)
         lay.addWidget(card)
+
+    def _on_skin_selected(self, skin_key: str):
+        if self.overlay is not None:
+            self.overlay.skin = skin_key
+            self.overlay.update()
+        if skin_key in SKIN_METADATA and hasattr(self, "skin_desc_label"):
+            meta = SKIN_METADATA[skin_key]
+            self.skin_desc_label.setText(f"✓ {meta['full_name']}: {meta['desc']}")
+        if skin_key in self.skin_buttons and not self.skin_buttons[skin_key].isChecked():
+            self.skin_buttons[skin_key].setChecked(True)
+
+    def _on_skin_changed(self, idx: int):
+        keys = list(SKIN_METADATA.keys())
+        if 0 <= idx < len(keys):
+            self._on_skin_selected(keys[idx])
+
+
 
     # ------------------------------------------------------------ circuit choice
     def _kind(self) -> str:

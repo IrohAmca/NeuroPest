@@ -12,3 +12,6 @@ EYE = CIRCUITS / "eye.npz"          # photoreceptor viewing directions (tools/bu
 MEMORY = ROOT / "data" / "memory" / "fly_memory.npz"   # what the fly has learned (mushroom.py)
 MUSHROOM = CIRCUITS / "mushroom_flywire.npz"   # real KC/MBON/DAN/PN wiring (tools/build_mushroom.py)
 FIELD = CIRCUITS / "field.npz"      # medulla columns and projection-neuron receptive fields
+SKINS_DIR = Path(__file__).resolve().parent / "assets" / "skins"
+SKIN_THUMBNAILS = SKINS_DIR / "thumbnails"
+
