@@ -1,3 +1,4 @@
+from dataclasses import replace
 import math
 import sys
 import time
@@ -21,8 +22,9 @@ from .control import Control
 from .fly import FLY_MARGIN_PX, Fly, PlayArea, _wrap
 from .metabolism import MetabolicState
 from .pheromone import PheromoneField
+from .preferences import Preferences
 from .render import RewardEffect, draw_fly, draw_reward_plus
-from .runner import Runner
+from .runner import EngineConfig, Runner, default_config
 from .theme import apply_theme
 from .tray import Tray
 
@@ -32,7 +34,7 @@ TOUCH_RADIUS_PX = 14.0     # cursor this close to the fly center (times its scal
 class Overlay(QWidget):
     """Transparent, frameless, click-through, always-on-top canvas over all screens."""
 
-    def __init__(self, runner: Runner):
+    def __init__(self, runner: Runner, prefs: Preferences | None = None):
         super().__init__()
         self.setWindowFlags(Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint
                             | Qt.Tool | Qt.WindowTransparentForInput)
@@ -48,8 +50,9 @@ class Overlay(QWidget):
                 pass
 
         self.runner = runner
-        self.scale = 1.0
-        self.skin = "classic"
+        self.prefs = prefs or Preferences.load()
+        self.scale = float(self.prefs.scale)
+        self.skin = self.prefs.skin
         self.home = None  # None = roam all screens, or QScreen = pinned to that monitor
         ps = QApplication.primaryScreen()
         pg = ps.availableGeometry() if hasattr(ps, "availableGeometry") else ps.geometry()
@@ -59,13 +62,26 @@ class Overlay(QWidget):
         self.fly = Fly(cx, cy)
         self.pheromone = PheromoneField(border_margin=30.0 * self.scale, border_strength=0.4)
         self.pheromone.spawn_random_sources(self.play_area().screens, count=7)
-        self.pheromone_enabled = True
-        self.cursor_phero_mode = "attract"  # "attract", "repel", or "none"
+        self.pheromone_enabled = bool(self.prefs.pheromone_enabled)
+        self.cursor_phero_mode = self.prefs.cursor_phero_mode
         self.feed_effects: list[RewardEffect] = []
         self.feed_glow: float = 0.0
         self._last_cursor_reward: float = 0.0
-        self.touch_groom_enabled = False  # cursor touch grooming toggle (default: False/off)
-        self.metabolism = MetabolicState()
+        self.touch_groom_enabled = bool(self.prefs.touch_groom_enabled)
+        self.metabolism = MetabolicState(enabled=bool(self.prefs.hunger_enabled))
+        self.metabolism.cfg.rate_mult = float(self.prefs.metabolic_rate)
+
+        # Restore pinned monitor if specified in preferences
+        screens = QApplication.screens()
+        if self.prefs.monitor_index > 0 and screens:
+            matched = None
+            if self.prefs.monitor_name:
+                matched = next((s for s in screens if s.name() == self.prefs.monitor_name), None)
+            if matched is None and 1 <= self.prefs.monitor_index <= len(screens):
+                matched = screens[self.prefs.monitor_index - 1]
+            if matched is not None:
+                self.set_home(matched)
+
         self._cached_play_area: PlayArea | None = None
         self._cursor_pt = wintypes.POINT() if sys.platform == "win32" else None
         self._prev_fly_rect: QRect | None = None
@@ -293,11 +309,42 @@ def main():
     app = QApplication(sys.argv)
     app.setQuitOnLastWindowClosed(False)
     apply_theme(app)
-    runner = Runner()
+
+    prefs = Preferences.load()
+
+    # Initial engine config respecting saved preferences
+    def_cfg = default_config()
+    backend = "cpu"
+    adapter = None
+    if prefs.hardware == "cpu":
+        backend = "cpu"
+        adapter = None
+    elif prefs.hardware == "gpu" and prefs.gpu_index is not None:
+        backend = "gpu"
+        adapter = prefs.gpu_index
+
+    cfg = replace(
+        def_cfg,
+        circuit=prefs.circuit,
+        n=prefs.neurons,
+        dt=prefs.dt,
+        symmetry=prefs.symmetry,
+        learning=prefs.learning,
+        backend=backend,
+        adapter=adapter,
+    )
+
+    runner = Runner(cfg)
+    runner.bias = prefs.bias
+    runner.skittish = prefs.skittish
+    runner.wall_pain = prefs.wall_pain
+    runner.eye_height = prefs.eye_height
+    runner.vision = prefs.vision_enabled
+
     app.aboutToQuit.connect(runner.stop)
-    overlay = Overlay(runner)
+    overlay = Overlay(runner, prefs=prefs)
     overlay.show()
-    ctrl = Control(overlay, runner)
+    ctrl = Control(overlay, runner, prefs=prefs, auto_scan_gpus=True)
     ctrl.show()
     tray = Tray(app, ctrl, runner)
     tray.show()

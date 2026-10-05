@@ -315,6 +315,12 @@ def test_control_learning_tab_and_sandbox_injection(app):
     app.processEvents()
 
     assert ctrl.mb_view3d is not None
+    # 3D view is optional: initially hidden to save system resources
+    assert not ctrl.mb_view3d.isVisible()
+
+    # Toggle view ON
+    ctrl._toggle_3d_view(True)
+    app.processEvents()
     assert ctrl.mb_view3d.isVisible()
 
     # Verify telemetry fetching from runner into 3D view
@@ -424,4 +430,56 @@ def test_adaptive_timer_throttling(app):
     view.pam = 0.75
     view._on_tick()
     assert view._timer.interval() == 33
+
+
+def test_neural_network_module_optional_and_system_load_warning(app):
+    """Verify that neural network visualization is optional, explains the circuit, and notes system load."""
+    runner = MockRunner()
+    ctrl = Control(MockOverlay(), runner)
+    ctrl.show()
+    app.processEvents()
+
+    # 1. Check Learning & Memory Tab (index 6)
+    ctrl._switch_tab(6)
+    app.processEvents()
+
+    # Explanation text exists and describes the network
+    assert hasattr(ctrl, "neural_desc_label")
+    assert "Mantar Gövdesi" in ctrl.neural_desc_label.text()
+    assert "Kenyon" in ctrl.neural_desc_label.text()
+
+    # System load warning note exists and mentions additional load / CPU/GPU
+    assert hasattr(ctrl, "lbl_system_load_warn")
+    warn_text = ctrl.lbl_system_load_warn.text()
+    assert "ek sistem yükü" in warn_text.lower()
+    assert "cpu/gpu" in warn_text.lower() or "hesaplayıp" in warn_text.lower()
+
+    # By default, visualization is optional (hidden to save system load)
+    assert not ctrl.mb_view3d_container.isVisible()
+    assert not ctrl.mb_view3d.isVisible()
+    assert "Görüntüle" in ctrl.btn_toggle_3d.text()
+
+    # Toggle view on
+    ctrl.btn_toggle_3d.click()
+    app.processEvents()
+    assert ctrl.mb_view3d_container.isVisible()
+    assert ctrl.mb_view3d.isVisible()
+    assert "Gizle" in ctrl.btn_toggle_3d.text()
+
+    # Toggle view off
+    ctrl.btn_toggle_3d.click()
+    app.processEvents()
+    assert not ctrl.mb_view3d_container.isVisible()
+    assert not ctrl.mb_view3d.isVisible()
+
+    # 2. Check Circuit & Hardware Tab (index 4)
+    ctrl._switch_tab(4)
+    app.processEvents()
+
+    assert hasattr(ctrl, "circ_3d_desc")
+    assert "sinir ağlarını" in ctrl.circ_3d_desc.text().lower()
+    assert hasattr(ctrl, "lbl_circ_system_load_warn")
+    assert "ek sistem yükü" in ctrl.lbl_circ_system_load_warn.text().lower()
+    assert hasattr(ctrl, "btn_circ_view_3d")
+
 

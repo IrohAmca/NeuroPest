@@ -135,8 +135,8 @@ def test_gpus_are_listed_only_when_asked_for_or_needed(app, monkeypatch):
         assert c._gpu_scanned
 
     r = FakeRunner()
-    c = control.Control(FakeOverlay(), r)
-    assert not calls and c.hw.itemText(2) == control.SCAN_ITEM      # opening the window scans nothing
+    c = control.Control(FakeOverlay(), r, auto_scan_gpus=False)
+    assert not calls and c.hw.itemText(2) == control.SCAN_ITEM      # manual mode: opening window scans nothing
     c.size.setValue(0)
     c._apply()
     assert not calls                                                # a small size on "Otomatik" does not need it
@@ -147,12 +147,42 @@ def test_gpus_are_listed_only_when_asked_for_or_needed(app, monkeypatch):
     assert len(calls) == 1 and c.hw.itemText(2).startswith("GPU: Fake GPU") and c.hw.count() == 3
 
     r2 = FakeRunner()                                               # a big size on "Otomatik" waits for the scan
-    c2 = control.Control(FakeOverlay(), r2)
+    c2 = control.Control(FakeOverlay(), r2, auto_scan_gpus=False)
     c2.size.setValue(c2.size.maximum())
     c2._apply()
     assert not r2.started and c2._gpu_scanning
     finish(c2)
     assert r2.started[-1].backend == "gpu" and r2.started[-1].adapter == 3 and len(calls) == 2
+
+
+def test_gpus_auto_scan_and_preference_restore(app, monkeypatch, tmp_path):
+    import time
+    from neuropest import control
+    from neuropest.preferences import Preferences
+
+    calls = []
+    gpus = [
+        dict(index=0, name="Fast GPU", backend="Vulkan", type="DiscreteGPU"),
+        dict(index=1, name="Integrated GPU", backend="Vulkan", type="IntegratedGPU"),
+    ]
+    monkeypatch.setattr(control, "list_gpus", lambda: calls.append(1) or gpus)
+    monkeypatch.setattr(control.importlib.util, "find_spec", lambda name, *a: object() if name == "wgpu" else None)
+
+    # Saved preference chooses Fast GPU
+    pref_file = tmp_path / "pref.json"
+    prefs = Preferences(hardware="gpu", gpu_name="Fast GPU", gpu_backend="Vulkan", gpu_index=0)
+    prefs.save(pref_file)
+
+    r = FakeRunner()
+    c = control.Control(FakeOverlay(), r, prefs=prefs, auto_scan_gpus=True)
+    assert len(calls) == 1                                         # automatic scan triggered on init!
+
+    # Wait for scan to complete and simulate timeout
+    c._gpus_found()
+    assert c._gpu_scanned
+    assert c.hw.currentIndex() == 2                                # Fast GPU selected at index 2
+    assert "Fast GPU" in c.hw.currentText()
+    assert r.cfg.backend == "gpu" and r.cfg.adapter == 0           # Runner started with preferred GPU!
 
 
 def test_learning_page_shows_valence_forgets_and_switches_learning(app):

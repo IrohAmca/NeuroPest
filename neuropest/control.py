@@ -29,6 +29,7 @@ from PySide6.QtWidgets import (
 
 from .mb_view3d import MushroomBody3DView
 from .paths import CACHE, EYE, FIELD, TIERS
+from .preferences import Preferences
 from .render import AVAILABLE_SKINS, SKIN_METADATA
 from .runner import GPU_AUTO_MIN_NEURONS, EngineConfig, list_gpus, pick_gpu
 
@@ -138,9 +139,11 @@ class _ContentScrollArea(QScrollArea):
 
 
 class Control(QWidget):
-    def __init__(self, overlay, runner):
+    def __init__(self, overlay, runner, prefs: Preferences | None = None, auto_scan_gpus: bool = True):
         super().__init__()
         self.runner, self.overlay = runner, overlay
+        self.prefs = prefs or getattr(overlay, "prefs", None) or Preferences.load()
+        self.auto_scan_gpus = auto_scan_gpus
         self.tiers = load_tiers()
         self.tier_machine = load_tier_machine()
         self.setObjectName("Control")
@@ -160,8 +163,8 @@ class Control(QWidget):
         self._debounce = QTimer(self, singleShot=True, interval=500, timeout=self._apply)
         self.circ.currentIndexChanged.connect(self._circuit_changed)
         self.size.valueChanged.connect(self._size_moved)
-        self.dt.currentIndexChanged.connect(lambda _: self._debounce.start())
-        self.hw.currentIndexChanged.connect(lambda _: self._debounce.start())
+        self.dt.currentIndexChanged.connect(self._on_dt_changed)
+        self.hw.currentIndexChanged.connect(self._on_hw_changed)
         self._t = QTimer(self, timeout=self._on_refresh_timer, interval=250)
         self._t.start()
         self._refresh()
@@ -403,7 +406,7 @@ class Control(QWidget):
         adv_lay.setSpacing(14)
 
         self.w_slider = QSlider(Qt.Horizontal, minimum=0, maximum=100, value=int(self.runner.bias * 100))
-        self.w_slider.valueChanged.connect(lambda v: setattr(self.runner, "bias", v / 100))
+        self.w_slider.valueChanged.connect(self._on_bias_changed)
         slider_row(adv_lay, "Hareketlilik (Baz Yürüme Sürücüsü)",
                    "DNp09/P9 yürüme komut nöronlarına verilen tonik akım: açlık ve koku yokken taban istek. Varsayılan: %65.",
                    self.w_slider, lambda v: f"%{v}")
@@ -412,14 +415,14 @@ class Control(QWidget):
         import math
         k_val = int(round(50.0 + 25.0 * math.log2(max(0.1, cur_skittish))))
         self.k_slider = QSlider(Qt.Horizontal, minimum=0, maximum=100, value=max(0, min(100, k_val)))
-        self.k_slider.valueChanged.connect(lambda v: setattr(self.runner, "skittish", 2.0 ** ((v - 50) / 25.0)))
+        self.k_slider.valueChanged.connect(self._on_skittish_changed)
         slider_row(adv_lay, "Ürkeklik (Kaçış Duyarlılığı)",
                    "Yaklaşan nesnelere karşı hassasiyet: geri çekilme ve uçuş eşiklerini çarpar. Varsayılan: ×1.00.",
                    self.k_slider, lambda v: f"×{2.0 ** ((v - 50) / 25.0):.2f}")
 
         cur_pain = getattr(self.runner, "wall_pain", 1.0)
         self.pain_slider = QSlider(Qt.Horizontal, minimum=0, maximum=200, value=int(cur_pain * 100))
-        self.pain_slider.valueChanged.connect(lambda v: setattr(self.runner, "wall_pain", v / 100.0))
+        self.pain_slider.valueChanged.connect(self._on_wall_pain_changed)
         slider_row(adv_lay, "Kenar Acısı (Nosiseptif Darbe Cezası)",
                    "Sinek ekran sınırına tosladığında Mantar Cismi'ne iletilen acı/ceza (PPL1 dopamin). Sinek kenarlardan sakınmayı öğrenir. Varsayılan: ×1.00.",
                    self.pain_slider, lambda v: f"×{v / 100.0:.2f}")
@@ -443,17 +446,42 @@ class Control(QWidget):
         self.k_slider.setValue(50)
         self.pain_slider.setValue(100)
 
+    def _on_bias_changed(self, v: int):
+        val = v / 100.0
+        setattr(self.runner, "bias", val)
+        self.prefs.bias = val
+        self.prefs.save()
+
+    def _on_skittish_changed(self, v: int):
+        val = 2.0 ** ((v - 50) / 25.0)
+        setattr(self.runner, "skittish", val)
+        self.prefs.skittish = val
+        self.prefs.save()
+
+    def _on_wall_pain_changed(self, v: int):
+        val = v / 100.0
+        setattr(self.runner, "wall_pain", val)
+        self.prefs.wall_pain = val
+        self.prefs.save()
+
     def _on_touch_groom_toggled(self, checked: bool):
         if self.overlay is not None:
             self.overlay.touch_groom_enabled = checked
+        self.prefs.touch_groom_enabled = checked
+        self.prefs.save()
 
     def _on_hunger_enable_toggled(self, checked: bool):
         if self.overlay and hasattr(self.overlay, "metabolism"):
             self.overlay.metabolism.enabled = checked
+        self.prefs.hunger_enabled = checked
+        self.prefs.save()
 
     def _on_metabolic_rate_changed(self, value: int):
+        mult = value / 100.0
         if self.overlay and hasattr(self.overlay, "metabolism"):
-            self.overlay.metabolism.cfg.rate_mult = value / 100.0
+            self.overlay.metabolism.cfg.rate_mult = mult
+        self.prefs.metabolic_rate = mult
+        self.prefs.save()
 
     def _on_starve_clicked(self):
         if self.overlay and hasattr(self.overlay, "metabolism"):
@@ -468,12 +496,12 @@ class Control(QWidget):
         self.has_eye = CACHE.exists() and EYE.exists() and FIELD.exists()
         self.vision = QCheckBox("Ekranı sineğin gözüyle gör (Gerçek Ekran Yakalama)", enabled=self.has_eye)
         self.vision.setToolTip("İmleç sayıları yerine gerçek masaüstü görüntüsü: 480 px huni görüşü, retinotopik dedektörler")
-        self.vision.toggled.connect(lambda on: setattr(self.runner, "vision", on))
+        self.vision.toggled.connect(self._on_vision_toggled)
         card.body.addWidget(self.vision)
 
         hgt = QSlider(Qt.Horizontal, minimum=40, maximum=300, value=int(self.runner.eye_height),
                       enabled=self.has_eye)
-        hgt.valueChanged.connect(lambda v: setattr(self.runner, "eye_height", float(v)))
+        hgt.valueChanged.connect(self._on_eye_height_changed)
         slider_row(card, "Göz Yüksekliği (Bakış Eğimi)",
                    "Ekran düzleminin kaç px üstünden bakıyor: büyük = daha dikey (tepeden) huni açısı.",
                    hgt, lambda v: f"{v} px")
@@ -495,6 +523,17 @@ class Control(QWidget):
             text = ""
         self.vision_info.setText(text)
         self.vision_info.setVisible(bool(text))
+
+    def _on_vision_toggled(self, on: bool):
+        setattr(self.runner, "vision", on)
+        self.prefs.vision_enabled = on
+        self.prefs.save()
+
+    def _on_eye_height_changed(self, v: int):
+        h = float(v)
+        setattr(self.runner, "eye_height", h)
+        self.prefs.eye_height = h
+        self.prefs.save()
 
     def _build_pheromone_page(self, lay: QVBoxLayout):
         card = Card("Feromon Alanı & Koku Duyusu")
@@ -538,31 +577,72 @@ class Control(QWidget):
     def _on_phero_toggled(self, checked: bool):
         if self.overlay is not None:
             self.overlay.pheromone_enabled = checked
+        self.prefs.pheromone_enabled = checked
+        self.prefs.save()
 
     def _on_cursor_phero_changed(self, idx: int):
-        if self.overlay is not None and 0 <= idx < len(self.cursor_phero_modes):
-            self.overlay.cursor_phero_mode = self.cursor_phero_modes[idx][0]
+        if 0 <= idx < len(self.cursor_phero_modes):
+            mode = self.cursor_phero_modes[idx][0]
+            if self.overlay is not None:
+                self.overlay.cursor_phero_mode = mode
+            self.prefs.cursor_phero_mode = mode
+            self.prefs.save()
 
     def _build_learning_page(self, lay: QVBoxLayout):
-        # 1. 3D FlyWire Mushroom Body & Mental Map Card
-        card_3d = Card("3D Mantar Gövdesi & Zihin Haritası (FlyWire v783)")
+        # 1. 3D Sinir Ağları & Mantar Gövdesi Modülü
+        card_3d = Card("3D Sinir Ağları & Mantar Gövdesi")
+        self.neural_desc_label = _label(
+            "FlyWire v783 tam konnektom verisine dayalı 3D Mantar Gövdesi (Mushroom Body) ve sinirsel zihin haritası. "
+            "1.700+ Kenyon hücresi soması, akson traktları (pedunkulus ve loblar), dopaminerjik nöron kümeleri "
+            "(PAM ödül & PPL1 ceza) ile gerçek zamanlı sinaptik ateşlemeleri ve öğrenilmiş bellek değerliğini 3 boyutlu olarak modeller.",
+            "Muted", wrap=True)
+        card_3d.body.addWidget(self.neural_desc_label)
 
-        # 3D View container widget
-        self.mb_view3d = MushroomBody3DView(runner=self.runner)
-        self.mb_view3d.setFixedHeight(410)
-        card_3d.body.addWidget(self.mb_view3d)
-
+        # Görselleştirme Seçenekleri
         popout_row = QHBoxLayout()
-        popout_row.addWidget(_label(
-            "Fare: Sol tıkla döndür • Sağ tıkla kaydır • Tekerlekle yakınlaştır • Çift tıkla sıfırla",
-            "Faint", wrap=True
-        ))
-        popout_row.addStretch(1)
-        self.popout_btn = QPushButton("Ayrı Pencerede Büyüt")
-        self.popout_btn.setToolTip("3D Mantar Gövdesi zihin haritasını genişletilmiş ayrı bir pencerede açar.")
+        self.btn_toggle_3d = QPushButton("3D Sinir Ağını Görüntüle")
+        self.btn_toggle_3d.setCursor(Qt.PointingHandCursor)
+        self.btn_toggle_3d.setCheckable(True)
+        self.btn_toggle_3d.setChecked(False)
+        self.btn_toggle_3d.setToolTip("3D sinir ağını bu panel içerisinde açar veya gizler.")
+        self.btn_toggle_3d.clicked.connect(lambda: self._toggle_3d_view())
+        popout_row.addWidget(self.btn_toggle_3d)
+
+        self.popout_btn = QPushButton("Ayrı Pencerede Görüntüle")
+        self.popout_btn.setCursor(Qt.PointingHandCursor)
+        self.popout_btn.setToolTip("3D Sinir Ağını genişletilmiş ayrı bir pencerede açar.")
         self.popout_btn.clicked.connect(self._open_3d_popout)
         popout_row.addWidget(self.popout_btn)
+
+        popout_row.addStretch(1)
         card_3d.body.addLayout(popout_row)
+
+        # 3D Görselleştirici Konteyneri (İsteğe bağlı: varsayılan olarak gizli)
+        self.mb_view3d_container = QWidget()
+        v3d_lay = QVBoxLayout(self.mb_view3d_container)
+        v3d_lay.setContentsMargins(0, 4, 0, 0)
+        v3d_lay.setSpacing(6)
+
+        self.mb_view3d = MushroomBody3DView(runner=self.runner)
+        self.mb_view3d.setFixedHeight(410)
+        v3d_lay.addWidget(self.mb_view3d)
+
+        v3d_hint = _label(
+            "Fare: Sol tıkla döndür • Sağ tıkla kaydır • Tekerlekle yakınlaştır • Çift tıkla sıfırla",
+            "Faint", wrap=True
+        )
+        v3d_lay.addWidget(v3d_hint)
+
+        self.mb_view3d_container.setVisible(False)
+        card_3d.body.addWidget(self.mb_view3d_container)
+
+        # Ek Sistem Yükü Uyarısı Notu
+        self.lbl_system_load_warn = _label(
+            "⚠️ Not: 3D sinir ağı görselleştirmesi, binlerce nöron ve akson projeksiyonunu "
+            "gerçek zamanlı hesaplayıp çizdiği için ek sistem yükü (CPU/GPU) oluşturabilir.",
+            "Warn", wrap=True
+        )
+        card_3d.body.addWidget(self.lbl_system_load_warn)
 
         lay.addWidget(card_3d)
 
@@ -648,15 +728,44 @@ class Control(QWidget):
         desc_card.body.addWidget(_label(bio_text, "Faint", wrap=True))
         lay.addWidget(desc_card)
 
+    def _toggle_3d_view(self, visible: bool | None = None):
+        """Toggle 3D neural network visualization on/off on demand to save resources."""
+        if visible is None:
+            visible = not self.mb_view3d_container.isVisible()
+        self.mb_view3d_container.setVisible(visible)
+        self.btn_toggle_3d.setChecked(visible)
+        if visible:
+            self.btn_toggle_3d.setText("3D Sinir Ağını Gizle (Tasarruf)")
+            self.btn_toggle_3d.setStyleSheet(
+                "background: rgba(76, 201, 240, 0.15); border: 1px solid #4cc9f0; color: #4cc9f0; font-weight: 600;"
+            )
+        else:
+            self.btn_toggle_3d.setText("3D Sinir Ağını Görüntüle")
+            self.btn_toggle_3d.setStyleSheet("")
+
     def _open_3d_popout(self):
         """Open a large dedicated 3D Mushroom Body viewer window."""
         dialog = QDialog(self)
-        dialog.setWindowTitle("NeuroPest - 3D Mantar Gövdesi & Zihin Haritası (FlyWire v783)")
+        dialog.setWindowTitle("NeuroPest - 3D Sinir Ağları & Mantar Gövdesi (FlyWire v783)")
         dialog.resize(920, 680)
         d_lay = QVBoxLayout(dialog)
-        d_lay.setContentsMargins(0, 0, 0, 0)
+        d_lay.setContentsMargins(14, 14, 14, 14)
+        d_lay.setSpacing(10)
+
+        # Dialog header info
+        d_head = QVBoxLayout()
+        d_head.setSpacing(4)
+        d_head.addWidget(_label(
+            "FlyWire v783 tam konnektom 3D sinir ağı modeli (Kenyon hücre somaları, akson traktları, "
+            "loblar ve dopaminerjik modülasyon).",
+            "Muted", wrap=True))
+        d_head.addWidget(_label(
+            "⚠️ Not: 3D sinir ağı görselleştirmesi ek sistem yükü (CPU/GPU) oluşturabilir.",
+            "Warn", wrap=True))
+        d_lay.addLayout(d_head)
+
         pop_view = MushroomBody3DView(runner=self.runner, data=self.mb_view3d.data, parent=dialog)
-        d_lay.addWidget(pop_view)
+        d_lay.addWidget(pop_view, 1)
         dialog.exec()
 
     def _inject_test_action(self, action: str):
@@ -727,7 +836,7 @@ class Control(QWidget):
         cur_sym = getattr(self.runner.cfg, "symmetry", "individual")
         self.sym_combo.setCurrentIndex(0 if cur_sym == "individual" else 1)
         self.sym_combo.setEnabled(self._kind() == "flywire")
-        self.sym_combo.currentIndexChanged.connect(lambda _: self._debounce.start())
+        self.sym_combo.currentIndexChanged.connect(self._on_sym_changed)
         labeled(adv_card, "Bağlantı Simetrisi", self.sym_combo)
         self.sym_hint = _label(
             "Bireysel: FlyWire'ın tek sinek beyni (orijinal biyolojik asimetri korunur). Bu beyin sola daha kolay döner "
@@ -750,20 +859,62 @@ class Control(QWidget):
         self._gpu_scanning = False
         self._apply_pending = False
         self.has_wgpu = importlib.util.find_spec("wgpu") is not None
+
+        # Pre-select based on saved preference
+        if self.prefs.hardware == "cpu":
+            self.hw.setCurrentIndex(1)
+        elif self.prefs.hardware == "gpu":
+            pref_name = self.prefs.gpu_name or "GPU"
+            pref_backend = f" ({self.prefs.gpu_backend})" if self.prefs.gpu_backend else ""
+            self.hw.addItem(f"GPU: {pref_name}{pref_backend}")
+            self.hw.setCurrentIndex(2)
+        else:
+            self.hw.setCurrentIndex(0)
+
         if self.has_wgpu:
-            self.hw.addItem(SCAN_ITEM)
-            self.hw.activated.connect(self._hw_activated)
-            self.gpu_note = _label("GPU'lar arama isteğiyle bulunur (~1 s, ~100 MB)", "Faint")
-            comp_card.body.addWidget(self.gpu_note)
-            self._gpu_poll = QTimer(self, timeout=self._gpus_found, interval=250)
+            if self.auto_scan_gpus:
+                self.gpu_note = _label("GPU'lar taranıyor…", "Faint")
+                comp_card.body.addWidget(self.gpu_note)
+                self._gpu_poll = QTimer(self, timeout=self._gpus_found, interval=200)
+                self._scan_gpus()
+            else:
+                self.hw.addItem(SCAN_ITEM)
+                self.hw.activated.connect(self._hw_activated)
+                self.gpu_note = _label("GPU'lar arama isteğiyle bulunur (~1 s, ~100 MB)", "Faint")
+                comp_card.body.addWidget(self.gpu_note)
+                self._gpu_poll = QTimer(self, timeout=self._gpus_found, interval=250)
         else:
             comp_card.body.addWidget(_label("GPU desteği için: uv sync --extra gpu", "Hint", wrap=True))
         lay.addWidget(comp_card)
 
+        # 3D Sinir Ağları Görselleştirme Modülü
+        circ_3d_card = Card("3D Sinir Ağları Görselleştirme")
+        self.circ_3d_desc = _label(
+            "FlyWire v783 konnektomundaki sinir ağlarını (Kenyon hücre somaları, akson demetleri, "
+            "pedunkulus, loblar ve dopamin nöronları) 3 boyutlu model üzerinde inceleyebilirsiniz.",
+            "Muted", wrap=True)
+        circ_3d_card.body.addWidget(self.circ_3d_desc)
+
+        circ_btn_row = QHBoxLayout()
+        self.btn_circ_view_3d = QPushButton("3D Sinir Ağını Görüntüle")
+        self.btn_circ_view_3d.setCursor(Qt.PointingHandCursor)
+        self.btn_circ_view_3d.setToolTip("3D Sinir Ağı & Mantar Gövdesi modelini ayrı pencerede açar.")
+        self.btn_circ_view_3d.clicked.connect(self._open_3d_popout)
+        circ_btn_row.addWidget(self.btn_circ_view_3d)
+        circ_btn_row.addStretch(1)
+        circ_3d_card.body.addLayout(circ_btn_row)
+
+        self.lbl_circ_system_load_warn = _label(
+            "⚠️ Not: 3D sinir ağı görselleştirmesi, binlerce nöron ve akson projeksiyonunu "
+            "gerçek zamanlı hesaplayıp çizdiği için ek sistem yükü (CPU/GPU) oluşturabilir.",
+            "Warn", wrap=True)
+        circ_3d_card.body.addWidget(self.lbl_circ_system_load_warn)
+        lay.addWidget(circ_3d_card)
+
     def _build_view_page(self, lay: QVBoxLayout):
         card = Card("Görünüm & Monitör")
         s = QSlider(Qt.Horizontal, minimum=5, maximum=40, value=int(self.overlay.scale * 10))
-        s.valueChanged.connect(lambda v: setattr(self.overlay, "scale", v / 10))
+        s.valueChanged.connect(self._on_scale_changed)
         slider_row(card, "Sinek Boyutu", "Masaüstündeki görünür büyüklük", s, lambda v: f"×{v / 10:.1f}")
 
         # Sinek Görünümü (Visual Cards Selector)
@@ -831,14 +982,31 @@ class Control(QWidget):
             box.addItems(items)
             current_idx = 0 if self.overlay.home is None else (screens.index(self.overlay.home) + 1 if self.overlay.home in screens else 0)
             box.setCurrentIndex(current_idx)
-            box.currentIndexChanged.connect(lambda i: self.overlay.set_home(None if i == 0 else screens[i - 1]))
+            box.currentIndexChanged.connect(lambda i: self._on_screen_changed(i, screens))
             labeled(card, "Sanal Alan / Monitör", box)
         lay.addWidget(card)
+
+    def _on_scale_changed(self, v: int):
+        sc = v / 10.0
+        if self.overlay is not None:
+            self.overlay.scale = sc
+        self.prefs.scale = sc
+        self.prefs.save()
+
+    def _on_screen_changed(self, i: int, screens: list):
+        screen = None if i == 0 else screens[i - 1]
+        if self.overlay is not None:
+            self.overlay.set_home(screen)
+        self.prefs.monitor_index = i
+        self.prefs.monitor_name = screen.name() if screen is not None else ""
+        self.prefs.save()
 
     def _on_skin_selected(self, skin_key: str):
         if self.overlay is not None:
             self.overlay.skin = skin_key
             self.overlay.update()
+        self.prefs.skin = skin_key
+        self.prefs.save()
         if skin_key in SKIN_METADATA and hasattr(self, "skin_desc_label"):
             meta = SKIN_METADATA[skin_key]
             self.skin_desc_label.setText(f"{meta['full_name']}: {meta['desc']}")
@@ -865,10 +1033,49 @@ class Control(QWidget):
     def _circuit_changed(self, _):
         self._load_sizes(FLYWIRE_DEFAULT if self._kind() == "flywire" else TOY_SIZES[0])
         self.sym_combo.setEnabled(self._kind() == "flywire")
+        self.prefs.circuit = self._kind()
+        self.prefs.save()
         self._debounce.start()
 
     def _size_moved(self, _):
         self._describe()
+        n = self._sizes()[self.size.value()]
+        self.prefs.neurons = n
+        self.prefs.save()
+        self._debounce.start()
+
+    def _on_sym_changed(self, idx: int):
+        if 0 <= idx < len(self.sym_options):
+            self.prefs.symmetry = self.sym_options[idx][0]
+            self.prefs.save()
+        self._debounce.start()
+
+    def _on_dt_changed(self, idx: int):
+        if 0 <= idx < len(DTS):
+            self.prefs.dt = DTS[idx][1]
+            self.prefs.save()
+        self._debounce.start()
+
+    def _on_hw_changed(self, i: int):
+        if not self._gpu_scanned and self.hw.itemText(i) == SCAN_ITEM:
+            return
+        if i == 0:
+            self.prefs.hardware = "auto"
+            self.prefs.gpu_name = ""
+            self.prefs.gpu_backend = ""
+            self.prefs.gpu_index = None
+        elif i == 1:
+            self.prefs.hardware = "cpu"
+            self.prefs.gpu_name = ""
+            self.prefs.gpu_backend = ""
+            self.prefs.gpu_index = None
+        elif i >= 2 and self.gpus and (i - 2) < len(self.gpus):
+            g = self.gpus[i - 2]
+            self.prefs.hardware = "gpu"
+            self.prefs.gpu_name = g["name"]
+            self.prefs.gpu_backend = g["backend"]
+            self.prefs.gpu_index = g["index"]
+        self.prefs.save()
         self._debounce.start()
 
     def _describe(self):
@@ -914,19 +1121,65 @@ class Control(QWidget):
         self._gpu_scanning, self._gpu_scanned = False, True
         self.gpus = self._gpu_result
         self.hw.blockSignals(True)
-        if self.hw.itemText(2) == SCAN_ITEM:
+        while self.hw.count() > 2:
             self.hw.removeItem(2)
         self.hw.addItems([f"GPU: {g['name']} ({g['backend']})" for g in self.gpus])
+
+        # Restore selection according to self.prefs
+        if self.prefs.hardware == "cpu":
+            target_idx = 1
+        elif self.prefs.hardware == "gpu":
+            found_i = None
+            if self.prefs.gpu_name:
+                for idx, g in enumerate(self.gpus):
+                    if g.get("name") == self.prefs.gpu_name and g.get("backend") == self.prefs.gpu_backend:
+                        found_i = idx
+                        break
+                if found_i is None:
+                    for idx, g in enumerate(self.gpus):
+                        if g.get("name") == self.prefs.gpu_name:
+                            found_i = idx
+                            break
+            if found_i is None and self.prefs.gpu_index is not None:
+                for idx, g in enumerate(self.gpus):
+                    if g.get("index") == self.prefs.gpu_index:
+                        found_i = idx
+                        break
+            if found_i is None and self.gpus:
+                found_i = 0
+
+            if found_i is not None:
+                target_idx = 2 + found_i
+                g = self.gpus[found_i]
+                self.prefs.gpu_name = g["name"]
+                self.prefs.gpu_backend = g["backend"]
+                self.prefs.gpu_index = g["index"]
+                self.prefs.save()
+            else:
+                target_idx = 1
+        else:
+            target_idx = 0
+
+        self.hw.setCurrentIndex(target_idx)
         self.hw.blockSignals(False)
+
         self.gpu_note.setText(f"{len(self.gpus)} GPU bulundu" if self.gpus else "Kullanılabilir GPU bulunamadı")
-        if self._apply_pending:
+
+        n = self._sizes()[self.size.value()]
+        if self.prefs.hardware == "gpu" and self.gpus:
+            self._apply()
+        elif target_idx == 0 and n >= GPU_AUTO_MIN_NEURONS and self.gpus:
+            self._apply()
+        elif self._apply_pending:
             self._apply_pending = False
             self._apply()
 
     def _hardware(self, n: int) -> tuple[str, int | None]:
         i = self.hw.currentIndex()
-        if i >= 2 and self._gpu_scanned:
+        if i >= 2 and self._gpu_scanned and (i - 2) < len(self.gpus):
             return "gpu", self.gpus[i - 2]["index"]
+        if i >= 2 and not self._gpu_scanned and self.prefs.hardware == "gpu" and self.prefs.gpu_index is not None:
+            return "gpu", self.prefs.gpu_index
         if i == 0 and self.gpus and n >= GPU_AUTO_MIN_NEURONS:
             return "gpu", pick_gpu(self.gpus)
         return "cpu", None
@@ -942,6 +1195,12 @@ class Control(QWidget):
         cfg = EngineConfig(self._kind(), n, DTS[self.dt.currentIndex()][1], backend=backend, adapter=adapter,
                            symmetry=sym, memory_path=self.runner.cfg.memory_path,
                            learning=self.learn_enable.isChecked(), mb_wiring=self.runner.cfg.mb_wiring)
+        self.prefs.circuit = cfg.circuit
+        self.prefs.neurons = cfg.n
+        self.prefs.dt = cfg.dt
+        self.prefs.symmetry = cfg.symmetry
+        self.prefs.learning = cfg.learning
+        self.prefs.save()
         if cfg != self.runner.cfg:
             self.runner.start(cfg)
 

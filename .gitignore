@@ -10,4 +10,6 @@ preview_control_view.png
 data/raw/
 data/circuits/
 data/memory/
+data/preferences.json
+data/*.tmp
 ui_preview/

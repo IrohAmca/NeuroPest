@@ -15,4 +15,5 @@ MUSHROOM_3D = CIRCUITS / "mushroom_3d.npz"     # 3D coordinates & anatomy for Fl
 FIELD = CIRCUITS / "field.npz"      # medulla columns and projection-neuron receptive fields
 SKINS_DIR = Path(__file__).resolve().parent / "assets" / "skins"
 SKIN_THUMBNAILS = SKINS_DIR / "thumbnails"
+PREFERENCES = ROOT / "data" / "preferences.json"
 

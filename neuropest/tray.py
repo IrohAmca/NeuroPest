@@ -21,6 +21,8 @@ class Tray(QSystemTrayIcon):
         menu.addSeparator()
         self.show_ctrl = QAction("Kontrol penceresini aç", menu, triggered=self._open_control)
         menu.addAction(self.show_ctrl)
+        self.show_3d = QAction("3D Sinir Ağını Görüntüle…", menu, triggered=self._open_3d)
+        menu.addAction(self.show_3d)
         menu.addSeparator()
         menu.addAction(QAction("Çıkış", menu, triggered=app.quit))
         self.menu = menu                    # QSystemTrayIcon does not own the menu
@@ -35,6 +37,13 @@ class Tray(QSystemTrayIcon):
         self.ctrl.showNormal()
         self.ctrl.raise_()
         self.ctrl.activateWindow()
+
+    def _open_3d(self):
+        self.ctrl.showNormal()
+        self.ctrl.raise_()
+        self.ctrl.activateWindow()
+        if hasattr(self.ctrl, "_open_3d_popout"):
+            self.ctrl._open_3d_popout()
 
     def _clicked(self, reason):
         if reason in (QSystemTrayIcon.Trigger, QSystemTrayIcon.DoubleClick):   # left click opens the window

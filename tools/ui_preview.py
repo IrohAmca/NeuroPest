@@ -68,10 +68,14 @@ def main():
                 app.processEvents()
                 ctrl.grab().save(str(out / tname))
                 if tname == "tab_learning.png" and getattr(ctrl, "mb_view3d", None):
+                    if hasattr(ctrl, "_toggle_3d_view"):
+                        ctrl._toggle_3d_view(True)
                     ctrl.mb_view3d._show_help = True
                     app.processEvents()
                     ctrl.grab().save(str(out / "tab_learning_help.png"))
                     ctrl.mb_view3d._show_help = False
+                    if hasattr(ctrl, "_toggle_3d_view"):
+                        ctrl._toggle_3d_view(False)
             ctrl._switch_tab(0)
         tray = Tray(app, ctrl, runner)
         if name == "control.png":
