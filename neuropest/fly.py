@@ -98,7 +98,7 @@ class PlayArea:
     def from_screens(cls, screens, margin: float = 2.0) -> PlayArea:
         boxes = []
         for i, s in enumerate(screens):
-            g = s.geometry()
+            g = s.availableGeometry() if hasattr(s, "availableGeometry") else s.geometry()
             dpr = float(s.devicePixelRatio())
             # In physical desktop coordinates (matching GDI capture and transparent Overlay HWND)
             phys_l = float(g.x())
@@ -189,6 +189,8 @@ class PlayArea:
             if nx > s.usable_r:
                 nx = s.usable_r
                 nh = math.pi - nh
+                if math.cos(nh) > -0.25:
+                    nh = math.pi - 0.35 if math.sin(nh) >= 0 else -math.pi + 0.35
                 hit_wall = True
 
         portal = self.has_portal(s, "left", x, y)
@@ -202,6 +204,8 @@ class PlayArea:
             if nx < s.usable_l:
                 nx = s.usable_l
                 nh = math.pi - nh
+                if math.cos(nh) < 0.25:
+                    nh = 0.35 if math.sin(nh) >= 0 else -0.35
                 hit_wall = True
 
         portal = self.has_portal(s, "bottom", nx, y)
@@ -215,6 +219,8 @@ class PlayArea:
             if ny > s.usable_b:
                 ny = s.usable_b
                 nh = -nh
+                if math.sin(nh) > -0.25:
+                    nh = -0.35 if math.cos(nh) >= 0 else -math.pi + 0.35
                 hit_wall = True
 
         portal = self.has_portal(s, "top", nx, y)
@@ -228,6 +234,8 @@ class PlayArea:
             if ny < s.usable_t:
                 ny = s.usable_t
                 nh = -nh
+                if math.sin(nh) < 0.25:
+                    nh = 0.35 if math.cos(nh) >= 0 else math.pi - 0.35
                 hit_wall = True
 
         min_x = s.raw_l if self.has_portal(s, "left", nx, ny) else s.usable_l
@@ -280,11 +288,19 @@ class Fly:
             self.turn_t -= dt
             if self.turn_t <= 0:
                 self.turn, self.turn_t = random.uniform(-1.5, 1.5), random.uniform(0.3, 1.2)
-            self.heading += (self.turn * 0.5 + steer_eff * TURN_GAIN) * dt
+            # Attenuate random wander when active steering toward stimulus is present
+            steer_drive = steer_eff * TURN_GAIN
+            wander_scale = 1.0 / (1.0 + abs(steer_eff) * 0.12)
+            self.heading += (self.turn * 0.5 * wander_scale + steer_drive) * dt
             self.heading = _wrap(self.heading)
         elif state == RETREAT:
             self.heading += steer_eff * TURN_GAIN * dt          # keeps facing the stimulus while backing away
             self.heading = _wrap(self.heading)
+        elif state == STAND:
+            # Orientation reflex: turn in place toward steering stimulus (odor or visual target)
+            if abs(steer_eff) > 0.8:
+                self.heading += (steer_eff * TURN_GAIN * 0.9) * dt
+                self.heading = _wrap(self.heading)
 
         self.hit_wall = False
         if isinstance(rect, PlayArea):

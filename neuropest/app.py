@@ -52,12 +52,12 @@ class Overlay(QWidget):
         self.skin = "classic"
         self.home = None  # None = roam all screens, or QScreen = pinned to that monitor
         ps = QApplication.primaryScreen()
-        pg = ps.geometry()
+        pg = ps.availableGeometry() if hasattr(ps, "availableGeometry") else ps.geometry()
         pdpr = float(ps.devicePixelRatio())
         cx = float(pg.x()) + float(pg.width()) * pdpr / 2.0
         cy = float(pg.y()) + float(pg.height()) * pdpr / 2.0
         self.fly = Fly(cx, cy)
-        self.pheromone = PheromoneField(border_margin=60.0 * self.scale, border_strength=0.7)
+        self.pheromone = PheromoneField(border_margin=30.0 * self.scale, border_strength=0.4)
         self.pheromone.spawn_random_sources(self.play_area().screens, count=7)
         self.pheromone_enabled = True
         self.cursor_phero_mode = "attract"  # "attract", "repel", or "none"
@@ -130,12 +130,14 @@ class Overlay(QWidget):
         self._cached_play_area = None
         self.home = screen
         if screen is not None:
-            g = screen.geometry()
+            g = screen.availableGeometry() if hasattr(screen, "availableGeometry") else screen.geometry()
             dpr = float(screen.devicePixelRatio())
             cx = float(g.x()) + float(g.width()) * dpr / 2.0
             cy = float(g.y()) + float(g.height()) * dpr / 2.0
             self.fly.x, self.fly.y = cx, cy
         self.fly.clamp(self.play_area())
+        if hasattr(self, "pheromone"):
+            self.pheromone.spawn_random_sources(self.play_area().screens, count=7)
 
     def play_area(self) -> PlayArea:
         """Playable domain: all screens (multi-monitor roaming) or the chosen monitor."""

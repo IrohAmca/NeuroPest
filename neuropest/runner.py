@@ -171,7 +171,7 @@ def _loop(cfg: EngineConfig, brain, net, inp, out, stop, cap_frame=None, cap_met
         raw_closing = inp[I_CLOSING] if closing is None else closing
         hunger = inp[I_HUNGER]
         eff_closing = 0.0 if (inp[I_PHERO_DRIVE] * hunger) > 0.05 else raw_closing
-        eff_bias = inp[I_BIAS] * hunger
+        eff_bias = inp[I_BIAS]
         wall_bump = inp[I_WALL_BUMP]
         cur = (round(inp[I_DIST], 1), round(eff_closing, 1), round(eff_bias, 3), inp[I_SKITTISH],
                round(inp[I_BEARING], 2), inp[I_TOUCH],
