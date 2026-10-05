@@ -5,7 +5,6 @@ __pycache__/
 data/*.parquet
 data/*.csv
 data/*.pickle
-sprites_preview.png
 preview_all_skins.png
 preview_control_view.png
 data/raw/

@@ -129,6 +129,11 @@ class MushroomBody:
         self.valence = self.mbon_app - self.mbon_av if self.kc.any() else 0.0
         return self.valence
 
+    @property
+    def valence_vector(self) -> np.ndarray:
+        """Net learned valence per Kenyon cell: w_app - w_av in [-1, +1]."""
+        return (self.w_app - self.w_av).astype(np.float32)
+
     def read(self, cues: np.ndarray) -> float:
         """Valence a cue pattern would give now, without learning (for tests and the UI)."""
         kc = self.encode(cues)
@@ -354,6 +359,16 @@ class FlywireMushroomBody(MushroomBody):
         self.mbon_app = float(cur[:a].sum()) / n_app if n_app > 0.0 else 1.0
         self.mbon_av = float(cur[a:].sum()) / n_av if n_av > 0.0 else 1.0
         return self.mbon_app - self.mbon_av
+
+    @property
+    def valence_vector(self) -> np.ndarray:
+        """Net learned valence per Kenyon cell: avoidance depression minus approach depression."""
+        a = self.n_app
+        w_naive_app = self.W[:, :a].sum(axis=1)
+        w_naive_av = self.W[:, a:].sum(axis=1)
+        dep_app = (self.g * self.dev[:, :a].sum(axis=1)) / np.maximum(1.0, w_naive_app)
+        dep_av = (self.g * self.dev[:, a:].sum(axis=1)) / np.maximum(1.0, w_naive_av)
+        return (dep_av - dep_app).astype(np.float32)
 
     # ------------------------------------------------------------------ step
     def step(self, cues: np.ndarray, reward: float, punishment: float, dt: float) -> float:

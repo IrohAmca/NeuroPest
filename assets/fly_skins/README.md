@@ -1,15 +1,11 @@
 # NeuroPest - Source Fly Animation & Skin Art Assets
 
-This directory contains raw concept illustrations and source sprite sheets for alternative fly skins and animation cycles.
+This directory contains raw source sprite sheets for top-down fly skins and animation cycles.
 
 ## File Manifest
 
 | File | Description | Perspective | Animation States / Purpose |
 |---|---|---|---|
-| `01_cartoon_fly_concept.jpg` | Single cartoon fly character design | Front / Three-quarter | Concept & Illustration |
-| `02_chubby_kawaii_concept.jpg` | Fluffy chubby kawaii fly concept | Front / Three-quarter | Concept & Illustration |
-| `03_cartoon_fly_spritesheet_v1.jpg` | Cartoon animation sheet (v1) | Front & Side | Flight, Walk, Groom |
-| `04_chubby_fly_spritesheet_v1.jpg` | Chibi chubby animation sheet (v1) | Front & Side | Flight, Walk, Groom |
 | `05_cartoon_fly_topdown_dorsal.jpg` | **Cartoon Fly (Top-Down)** | **Dorsal (Top-Down)** | Flight (wing stroke) & Walk (tripod gait) |
 | `06_chubby_fly_topdown_flight.jpg` | **Chubby Chibi Flight Sheet** | **Dorsal (Top-Down)** | Flight cycle (Frames 1–12) |
 | `07_chubby_fly_topdown_walk.jpg` | **Chubby Chibi Walk Sheet** | **Dorsal (Top-Down)** | Walking cycle (body bob & leg stepping) |

@@ -14,6 +14,8 @@ import threading
 import time
 from dataclasses import dataclass
 
+import numpy as np
+
 from .paths import CACHE
 from .states import GEARS, STAND, STATES
 
@@ -25,9 +27,18 @@ I_PHERO_STEER, I_PHERO_DRIVE, I_PHERO_REPEL, I_AT_TARGET = 14, 15, 16, 17
 I_FORGET = 18               # counter: every increase makes the fly forget what it learned
 I_HUNGER = 19               # metabolic hunger drive [0, 1]
 I_WALL_BUMP = 20            # mechanical wall collision event [0, 1]
+I_INJECT_REWARD = 21        # injected reward pulse (PAM test trigger)
+I_INJECT_PUNISH = 22        # injected punishment pulse (PPL1 test trigger)
+I_INJECT_CUE_FOOD = 23      # injected food cue pulse
+I_INJECT_CUE_NEAR = 24      # injected cursor near cue pulse
+INP_LEN = 28
 # output slots
 (O_READY, O_STATE, O_GF, O_WALK, O_REST, O_RT, O_ACTIVE, O_N, O_CPU, O_LAG, O_SIM_S, O_BEAT, O_MDN, O_STEER,
- O_SPIKES, O_GROOM, O_VISION, O_VALENCE, O_VMOTOR, O_GEAR) = range(20)
+ O_SPIKES, O_GROOM, O_VISION, O_VALENCE, O_VMOTOR, O_GEAR,
+ O_PAM, O_PPL1, O_MBON_APP, O_MBON_AV, O_KC_ACTIVE,
+ O_CUE_FOOD, O_CUE_ALARM, O_CUE_NEAR, O_CUE_LOOM, O_CUE_TOUCH,
+ O_MB_WEIGHTS_DIRTY) = range(31)
+OUT_LEN = 36
 
 CHUNK_MS = 4.0              # simulated time advanced per loop iteration
 CHUNK_MS_GPU = 12.0         # a GPU read-back costs ~1 ms regardless of size; measured x1.8 -> x2.8-4 on a GTX 1650
@@ -105,9 +116,9 @@ def build_network(cfg: EngineConfig):
     return build(cfg.n, cfg.seed)
 
 
-def _worker_main(cfg: EngineConfig, inp, out, stop, cap_frame=None, cap_meta=None) -> None:
+def _worker_main(cfg: EngineConfig, inp, out, stop, cap_frame=None, cap_meta=None, mb_weights=None) -> None:
     try:
-        _run(cfg, inp, out, stop, cap_frame, cap_meta)
+        _run(cfg, inp, out, stop, cap_frame, cap_meta, mb_weights)
     except BaseException:
         import traceback
 
@@ -116,7 +127,7 @@ def _worker_main(cfg: EngineConfig, inp, out, stop, cap_frame=None, cap_meta=Non
         raise
 
 
-def _run(cfg: EngineConfig, inp, out, stop, cap_frame=None, cap_meta=None) -> None:
+def _run(cfg: EngineConfig, inp, out, stop, cap_frame=None, cap_meta=None, mb_weights=None) -> None:
     from .brain import Brain
 
     net = build_network(cfg)
@@ -126,7 +137,7 @@ def _run(cfg: EngineConfig, inp, out, stop, cap_frame=None, cap_meta=None) -> No
     if memory is not None:
         brain.mb.load(memory)
     try:
-        _loop(cfg, brain, net, inp, out, stop, cap_frame, cap_meta, memory)
+        _loop(cfg, brain, net, inp, out, stop, cap_frame, cap_meta, memory, mb_weights)
     finally:
         if memory is not None:
             try:
@@ -138,7 +149,7 @@ def _run(cfg: EngineConfig, inp, out, stop, cap_frame=None, cap_meta=None) -> No
             close()                                 # free the GPU buffers
 
 
-def _loop(cfg: EngineConfig, brain, net, inp, out, stop, cap_frame=None, cap_meta=None, memory=None) -> None:
+def _loop(cfg: EngineConfig, brain, net, inp, out, stop, cap_frame=None, cap_meta=None, memory=None, mb_weights=None) -> None:
     brain.advance(cfg.dt * 4)                       # triggers/loads the compiled kernel
 
     chunk = CHUNK_MS if cfg.backend == "cpu" else CHUNK_MS_GPU
@@ -175,6 +186,19 @@ def _loop(cfg: EngineConfig, brain, net, inp, out, stop, cap_frame=None, cap_met
         if inp[I_FORGET] != forget_seen and brain.mb is not None:
             forget_seen = inp[I_FORGET]
             brain.mb.reset()
+        if inp[I_INJECT_REWARD] > 0.0:
+            brain._reward = max(brain._reward, float(inp[I_INJECT_REWARD]))
+            inp[I_INJECT_REWARD] = 0.0
+        if inp[I_INJECT_PUNISH] > 0.0:
+            brain._punish = max(brain._punish, float(inp[I_INJECT_PUNISH]))
+            inp[I_INJECT_PUNISH] = 0.0
+        if inp[I_INJECT_CUE_FOOD] > 0.0:
+            brain.phero_drive = max(brain.phero_drive, float(inp[I_INJECT_CUE_FOOD]))
+            inp[I_INJECT_CUE_FOOD] = 0.0
+        if inp[I_INJECT_CUE_NEAR] > 0.0:
+            dist, closing, b_bias, b_skit = brain._stim
+            brain._stim = (40.0, closing, b_bias, b_skit)
+            inp[I_INJECT_CUE_NEAR] = 0.0
         state = brain.advance(chunk)
         spent = time.perf_counter() - t
         w_comp += spent
@@ -189,7 +213,27 @@ def _loop(cfg: EngineConfig, brain, net, inp, out, stop, cap_frame=None, cap_met
         out[O_MDN], out[O_STEER], out[O_GROOM] = brain.rates["MDN"], brain.steer, brain.rates["GROOM"]
         out[O_VALENCE] = brain.valence
         out[O_VMOTOR], out[O_GEAR] = brain.v_motor, float(GEARS.index(brain.gear))
-        if memory is not None and brain.mb.dirty and time.perf_counter() - last_save > MEMORY_SAVE_S:
+        if brain.mb is not None:
+            out[O_PAM] = float(brain.mb.pam)
+            out[O_PPL1] = float(brain.mb.ppl1)
+            out[O_MBON_APP] = float(brain.mb.mbon_app)
+            out[O_MBON_AV] = float(brain.mb.mbon_av)
+            if hasattr(brain.mb, "active") and len(brain.mb.active) > 0:
+                out[O_KC_ACTIVE] = float(len(brain.mb.active))
+            elif hasattr(brain.mb, "kc"):
+                out[O_KC_ACTIVE] = float(np.count_nonzero(brain.mb.kc))
+            cues = getattr(brain, "_last_cues", (0.0, 0.0, 0.0, 0.0, 0.0))
+            if len(cues) >= 5:
+                out[O_CUE_FOOD], out[O_CUE_ALARM], out[O_CUE_NEAR], out[O_CUE_LOOM], out[O_CUE_TOUCH] = (
+                    float(cues[0]), float(cues[1]), float(cues[2]), float(cues[3]), float(cues[4])
+                )
+            if mb_weights is not None and brain.mb.dirty:
+                v_vec = getattr(brain.mb, "valence_vector", None)
+                if v_vec is not None:
+                    n_cp = min(len(mb_weights), len(v_vec))
+                    mb_weights[:n_cp] = v_vec[:n_cp]
+                    out[O_MB_WEIGHTS_DIRTY] += 1.0
+        if memory is not None and brain.mb is not None and brain.mb.dirty and time.perf_counter() - last_save > MEMORY_SAVE_S:
             last_save = time.perf_counter()
             try:
                 brain.mb.save(memory)
@@ -429,22 +473,23 @@ class Runner:
         self.cfg = cfg
         self._gen += 1
         gen = self._gen
-        inp, out = self._ctx.Array("d", 24, lock=False), self._ctx.Array("d", 24, lock=False)
+        inp, out = self._ctx.Array("d", INP_LEN, lock=False), self._ctx.Array("d", OUT_LEN, lock=False)
+        mb_weights = self._ctx.Array("f", 2000, lock=False)
         old = (self._proc, self._stop)
         self._proc = self._stop = None
-        self.inp, self.out = inp, out
+        self.inp, self.out, self.mb_weights = inp, out, mb_weights
         self.send(1e6, 0.0)
         self._starting = True
-        threading.Thread(target=self._swap, args=(gen, cfg, inp, out, old), daemon=True, name="neuropest-swap").start()
+        threading.Thread(target=self._swap, args=(gen, cfg, inp, out, old, mb_weights), daemon=True, name="neuropest-swap").start()
 
-    def _swap(self, gen: int, cfg: EngineConfig, inp, out, old) -> None:
+    def _swap(self, gen: int, cfg: EngineConfig, inp, out, old, mb_weights=None) -> None:
         with self._swap_lock:
             _retire(*old)
             if gen != self._gen:
                 return                          # a newer start (or stop) took over while this one waited
             stop = self._ctx.Event()
             proc = self._ctx.Process(target=_worker_main,
-                                     args=(cfg, inp, out, stop, self.capture.frame_raw, self.capture.meta_raw),
+                                     args=(cfg, inp, out, stop, self.capture.frame_raw, self.capture.meta_raw, mb_weights),
                                      daemon=True,
                                      name="neuropest-engine")
             proc.start()
@@ -531,12 +576,70 @@ class Runner:
     def state(self) -> str:
         return STATES[int(self.out[O_STATE])] if self.ready else STAND
 
+    @property
+    def pam(self) -> float:
+        """PAM cluster dopaminergic reinforcement level (0..1)."""
+        return self.out[O_PAM] if self.ready else 0.0
+
+    @property
+    def ppl1(self) -> float:
+        """PPL1 cluster dopaminergic reinforcement level (0..1)."""
+        return self.out[O_PPL1] if self.ready else 0.0
+
+    @property
+    def mbon_app(self) -> float:
+        """Approach MBON pool output rate."""
+        return self.out[O_MBON_APP] if self.ready else 1.0
+
+    @property
+    def mbon_av(self) -> float:
+        """Avoidance MBON pool output rate."""
+        return self.out[O_MBON_AV] if self.ready else 1.0
+
+    @property
+    def kc_active(self) -> int:
+        """Active Kenyon cell count during current frame."""
+        return int(self.out[O_KC_ACTIVE]) if self.ready else 0
+
+    def inject_reward(self, amount: float = 1.0) -> None:
+        """Inject unconditioned reward pulse (PAM dopamine) for training sandbox."""
+        if self.ready:
+            self.inp[I_INJECT_REWARD] = float(amount)
+
+    def inject_punish(self, amount: float = 1.0) -> None:
+        """Inject unconditioned punishment pulse (PPL1 dopamine) for training sandbox."""
+        if self.ready:
+            self.inp[I_INJECT_PUNISH] = float(amount)
+
+    def inject_cue_food(self, amount: float = 1.0) -> None:
+        """Activate food odor projection neurons / cue channel."""
+        if self.ready:
+            self.inp[I_INJECT_CUE_FOOD] = float(amount)
+
+    def inject_cue_near(self, amount: float = 1.0) -> None:
+        """Simulate near cursor proximity cue."""
+        if self.ready:
+            self.inp[I_INJECT_CUE_NEAR] = float(amount)
+
+    def get_mb_weights(self) -> np.ndarray:
+        """Return a copy of the learned net valence per Kenyon cell."""
+        if hasattr(self, "mb_weights") and self.mb_weights is not None:
+            try:
+                buf = self.mb_weights.get_obj() if hasattr(self.mb_weights, "get_obj") else self.mb_weights
+                return np.frombuffer(buf, dtype=np.float32).copy()
+            except Exception:
+                pass
+        return np.zeros(2000, dtype=np.float32)
+
     def stats(self) -> dict:
         o = self.out
         return dict(ready=self.ready, n=int(o[O_N]), rt=o[O_RT], active=o[O_ACTIVE], cpu=o[O_CPU],
                     lag_ms=o[O_LAG], gf=o[O_GF], walk=o[O_WALK], rest=o[O_REST], mdn=o[O_MDN],
                     steer=o[O_STEER], groom=o[O_GROOM], sim_s=o[O_SIM_S], spikes=o[O_SPIKES],
-                    vision=o[O_VISION], valence=o[O_VALENCE], v_motor=o[O_VMOTOR], gear=GEARS[int(o[O_GEAR])])
+                    vision=o[O_VISION], valence=o[O_VALENCE], v_motor=o[O_VMOTOR], gear=GEARS[int(o[O_GEAR])],
+                    pam=o[O_PAM], ppl1=o[O_PPL1], mbon_app=o[O_MBON_APP], mbon_av=o[O_MBON_AV],
+                    kc_active=int(o[O_KC_ACTIVE]), cue_food=o[O_CUE_FOOD], cue_near=o[O_CUE_NEAR],
+                    weights_dirty=int(o[O_MB_WEIGHTS_DIRTY]))
 
 
 def _retire(proc, stop) -> None:

@@ -6,12 +6,12 @@ import json
 import threading
 
 from PySide6.QtCore import QSize, Qt, QTimer
-from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import (
     QApplication,
     QButtonGroup,
     QCheckBox,
     QComboBox,
+    QDialog,
     QFrame,
     QGridLayout,
     QHBoxLayout,
@@ -27,11 +27,12 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from .paths import CACHE, EYE, FIELD, SKIN_THUMBNAILS, TIERS
+from .mb_view3d import MushroomBody3DView
+from .paths import CACHE, EYE, FIELD, TIERS
 from .render import AVAILABLE_SKINS, SKIN_METADATA
 from .runner import GPU_AUTO_MIN_NEURONS, EngineConfig, list_gpus, pick_gpu
 
-from .theme import ERROR, FAINT, MUTED, STATE_STYLE, fly_icon
+from .theme import ERROR, FAINT, MUTED, STATE_STYLE
 
 from .visionparams import VisionParams
 
@@ -126,6 +127,16 @@ def labeled(card: Card, name: str, widget: QWidget) -> None:
     card.body.addWidget(widget)
 
 
+class _ContentScrollArea(QScrollArea):
+    """Vertical-only scroll area that constrains its wrapped content width to the viewport."""
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        w = self.widget()
+        if w is not None:
+            w.setMaximumWidth(self.viewport().width())
+
+
 class Control(QWidget):
     def __init__(self, overlay, runner):
         super().__init__()
@@ -134,7 +145,6 @@ class Control(QWidget):
         self.tier_machine = load_tier_machine()
         self.setObjectName("Control")
         self.setWindowTitle("NeuroPest")
-        self.setWindowIcon(fly_icon())
         self.resize(760, 560)
         self.setMinimumSize(620, 440)
 
@@ -174,17 +184,11 @@ class Control(QWidget):
         lay.setSpacing(10)
 
         # App Brand Header
-        brand = QHBoxLayout()
-        icon = QLabel()
-        icon.setPixmap(fly_icon().pixmap(32, 32))
-        brand.addWidget(icon)
         titles = QVBoxLayout()
-        titles.setSpacing(1)
+        titles.setSpacing(2)
         titles.addWidget(_label("NeuroPest", "Title"))
         titles.addWidget(_label("FlyWire Pet", "Subtitle"))
-        brand.addLayout(titles)
-        brand.addStretch(1)
-        lay.addLayout(brand)
+        lay.addLayout(titles)
 
         # State Pill right under header
         self.pill = QLabel()
@@ -229,7 +233,7 @@ class Control(QWidget):
 
     # ------------------------------------------------------------------ content
     def _setup_content(self, parent_layout: QHBoxLayout):
-        scroll = QScrollArea(widgetResizable=True, frameShape=QFrame.NoFrame)
+        scroll = _ContentScrollArea(widgetResizable=True, frameShape=QFrame.NoFrame)
         scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         content_wrap = QWidget()
         scroll.setWidget(content_wrap)
@@ -358,12 +362,12 @@ class Control(QWidget):
         hunger_card.body.addLayout(status_row)
 
         btn_row = QHBoxLayout()
-        self.btn_starve = QPushButton("⚡ Sineği Acıktır")
+        self.btn_starve = QPushButton("Sineği Acıktır")
         self.btn_starve.setToolTip("Sineğin enerjisini anında tüketerek besin arama dürtüsünü (foraging) tetikler.")
         self.btn_starve.clicked.connect(self._on_starve_clicked)
         btn_row.addWidget(self.btn_starve)
 
-        self.btn_feed = QPushButton("🍯 Karnını Doyur")
+        self.btn_feed = QPushButton("Karnını Doyur")
         self.btn_feed.setToolTip("Sineği anında doyurur; koku ilgisini kapatır ve dinlenme/temizlenme durumuna geçirir.")
         self.btn_feed.clicked.connect(self._on_feed_clicked)
         btn_row.addWidget(self.btn_feed)
@@ -386,7 +390,7 @@ class Control(QWidget):
 
         # 3. Gelişmiş Davranış Ayarları (Katlanabilir Akordeon Kart)
         adv_card = Card("Gelişmiş Davranış Ayarları")
-        self.adv_btn = QPushButton("▸ Gelişmiş Parametreleri Göster")
+        self.adv_btn = QPushButton("Gelişmiş Parametreleri Göster")
         self.adv_btn.setFlat(True)
         self.adv_btn.setCursor(Qt.PointingHandCursor)
         self.adv_btn.setStyleSheet("text-align: left; font-size: 13px; font-weight: 600; padding: 4px 0;")
@@ -420,7 +424,7 @@ class Control(QWidget):
                    "Sinek ekran sınırına tosladığında Mantar Cismi'ne iletilen acı/ceza (PPL1 dopamin). Sinek kenarlardan sakınmayı öğrenir. Varsayılan: ×1.00.",
                    self.pain_slider, lambda v: f"×{v / 100.0:.2f}")
 
-        self.btn_reset_adv = QPushButton("↺ Varsayılan Parametrelere Sıfırla")
+        self.btn_reset_adv = QPushButton("Varsayılan Parametrelere Sıfırla")
         self.btn_reset_adv.setToolTip("Hareketlilik (%65), ürkeklik (×1.00) ve kenar acısı (×1.00) değerlerini varsayılana döndürür.")
         self.btn_reset_adv.clicked.connect(self._reset_adv_settings)
         adv_lay.addWidget(self.btn_reset_adv)
@@ -432,8 +436,7 @@ class Control(QWidget):
     def _toggle_adv_settings(self):
         visible = not self.adv_content.isVisible()
         self.adv_content.setVisible(visible)
-        arrow = "▾" if visible else "▸"
-        self.adv_btn.setText(f"{arrow} Gelişmiş Parametreleri {'Gizle' if visible else 'Göster'}")
+        self.adv_btn.setText(f"Gelişmiş Parametreleri {'Gizle' if visible else 'Göster'}")
 
     def _reset_adv_settings(self):
         self.w_slider.setValue(65)
@@ -541,12 +544,63 @@ class Control(QWidget):
             self.overlay.cursor_phero_mode = self.cursor_phero_modes[idx][0]
 
     def _build_learning_page(self, lay: QVBoxLayout):
-        card = Card("Öğrenme & Hafıza")
-        card.body.addWidget(_label(
-            "Sinek yaşadıklarından öğrenir. Bir kokuyla ya da imleçle birlikte beslenirse onu sever ve ona yönelir; "
-            "o sırada korkarsa ondan kaçınır. Öğrendiği, uygulama kapanınca da saklanır.\n\n"
-            "Unutma üç şekilde olur: anılar zamanla yavaşça silinir, ödül ya da korku gelmeden tekrarlanan "
-            "ipucu onu çabuk unutturur, \"Hafızayı sil\" ile de hepsi hemen silinir.", "Muted", wrap=True))
+        # 1. 3D FlyWire Mushroom Body & Mental Map Card
+        card_3d = Card("3D Mantar Gövdesi & Zihin Haritası (FlyWire v783)")
+
+        # 3D View container widget
+        self.mb_view3d = MushroomBody3DView(runner=self.runner)
+        self.mb_view3d.setFixedHeight(410)
+        card_3d.body.addWidget(self.mb_view3d)
+
+        popout_row = QHBoxLayout()
+        popout_row.addWidget(_label(
+            "Fare: Sol tıkla döndür • Sağ tıkla kaydır • Tekerlekle yakınlaştır • Çift tıkla sıfırla",
+            "Faint", wrap=True
+        ))
+        popout_row.addStretch(1)
+        self.popout_btn = QPushButton("Ayrı Pencerede Büyüt")
+        self.popout_btn.setToolTip("3D Mantar Gövdesi zihin haritasını genişletilmiş ayrı bir pencerede açar.")
+        self.popout_btn.clicked.connect(self._open_3d_popout)
+        popout_row.addWidget(self.popout_btn)
+        card_3d.body.addLayout(popout_row)
+
+        lay.addWidget(card_3d)
+
+        # 2. Deney & Öğrenme Simülatörü Konsolu (Sandbox Training)
+        card_sim = Card("Öğrenme & Deney Konsolu")
+        card_sim.body.addWidget(_label(
+            "Sineğe anlık koku/görsel ipucu ve ödül/ceza vererek 3D zihin haritasının, "
+            "dopamin nöronlarının ve sinaptik ağırlıkların gerçek zamanlı değişimini test edebilirsiniz:",
+            "Muted", wrap=True))
+
+        sim_btn_grid = QGridLayout()
+        sim_btn_grid.setHorizontalSpacing(10)
+        sim_btn_grid.setVerticalSpacing(8)
+
+        btn_reward = QPushButton("Ödül Ver (PAM)")
+        btn_reward.setToolTip("PAM dopamin nöronlarını ateşleyerek mevcut ipucuna karşı pozitif değerlik (arzu) oluşturur.")
+        btn_reward.clicked.connect(lambda: self._inject_test_action("reward"))
+
+        btn_punish = QPushButton("Ceza Ver (PPL1)")
+        btn_punish.setToolTip("PPL1 dopamin nöronlarını ateşleyerek kaçınma/korku belleği oluşturur.")
+        btn_punish.clicked.connect(lambda: self._inject_test_action("punish"))
+
+        btn_cue_food = QPushButton("Besin Kokusu")
+        btn_cue_food.setToolTip("Besin projeksiyon nöronlarını (DM1-DM4) ve koku Kenyon hücrelerini uyarır.")
+        btn_cue_food.clicked.connect(lambda: self._inject_test_action("food"))
+
+        btn_cue_near = QPushButton("İmleç İpucu")
+        btn_cue_near.setToolTip("İmleç görsel projeksiyon nöronlarını uyarır.")
+        btn_cue_near.clicked.connect(lambda: self._inject_test_action("cursor"))
+
+        sim_btn_grid.addWidget(btn_reward, 0, 0)
+        sim_btn_grid.addWidget(btn_punish, 0, 1)
+        sim_btn_grid.addWidget(btn_cue_food, 1, 0)
+        sim_btn_grid.addWidget(btn_cue_near, 1, 1)
+
+        card_sim.body.addLayout(sim_btn_grid)
+
+        # Telemetry stats grid
         grid = QGridLayout()
         grid.setHorizontalSpacing(16)
         self.s_val = Stat("Değerlik", "Şu an algıladığı şeye karşı öğrenilmiş his: + arzu, − korku")
@@ -554,17 +608,77 @@ class Control(QWidget):
         self.s_gear = Stat("Vites", "Durma, yürüme, kaçış uçuşu ya da kovalama uçuşu")
         for i, s in enumerate((self.s_val, self.s_vm, self.s_gear)):
             grid.addWidget(s, 0, i)
-        card.body.addLayout(grid)
+        card_sim.body.addLayout(grid)
+
+        ctrl_row = QHBoxLayout()
         self.learn_enable = QCheckBox("Öğrenme açık")
         self.learn_enable.setToolTip("Kapalıysa sinek hiçbir şey öğrenmez; motor yeniden başlar.")
         self.learn_enable.setChecked(getattr(self.runner.cfg, "learning", True))
         self.learn_enable.toggled.connect(lambda _: self._apply())
-        card.body.addWidget(self.learn_enable)
-        self.forget_btn = QPushButton("Hafızayı sil")
-        self.forget_btn.setToolTip("Sinek öğrendiği her şeyi hemen unutur.")
+        ctrl_row.addWidget(self.learn_enable)
+
+        ctrl_row.addStretch(1)
+
+        self.forget_btn = QPushButton("Hafızayı Sıfırla (Amnezi)")
+        self.forget_btn.setToolTip("Sinek öğrendiği her şeyi hemen unutur ve 3D zihin haritası naive haline döner.")
         self.forget_btn.clicked.connect(self._forget)
-        card.body.addWidget(self.forget_btn)
-        lay.addWidget(card)
+        ctrl_row.addWidget(self.forget_btn)
+
+        card_sim.body.addLayout(ctrl_row)
+        lay.addWidget(card_sim)
+
+        # 3. Bilimsel Anatomi & Fonksiyon Kartı
+        desc_card = Card("Mantar Gövdesi & Biyolojik Bellek")
+        bio_text = (
+            "• Görsel Renk Kodları (Zihin Haritası):\n"
+            "   - Zümrüt Yeşili: Ödüllendirilmiş iştahsal bellek (PAM dopamin aktivasyonu ile yaklaşma güdüsü)\n"
+            "   - Yakut Kırmızısı: Cezalandırılmış kaçınma belleği (PPL1 nosisepsiyon ile korku/kaçınma güdüsü)\n"
+            "   - Açık Mavi: Eğitilmemiş nötr (naive) sinirsel durum\n"
+            "   - Parlak Beyaz Işıltılar: Canlı ateşlenen aktif Kenyon hücreleri (~%5 seyrek kodlama)\n\n"
+            "• Kaliks (Calyx): Kenyon hücre somaları ve dendritik kadehlerinin bulunduğu arka çanak. "
+            "Anten lobundan gelen koku (ALPN) ve gözden gelen görsel projeksiyonlar burada sinaps yapar.\n\n"
+            "• Pedunkulus (Peduncle): Kaliksten çıkan aksonların oluşturduğu kalın sinir kablosu; "
+            "öndeki topuğa (heel) ilerleyerek dikey ve yatay loblara ayrılır.\n\n"
+            "• Loblar (Lobes): Dikey (α, α') ve yatay/medial (β, β', γ) kompartmanlar. Her bölme "
+            "farklı MBON çıkış nöronu ve dopaminerjik nöron (PAM/PPL1) tarafından innerve edilir.\n\n"
+            "• Üç Faktörlü Plastisite Kuralı: Aktif Kenyon hücresi (1) + Dopamin salgısı (2) "
+            "→ İlgili MBON sinapsında uzun süreli depresyon (LTD) (3). "
+            "Böylece tecrübe edilen ipuçları kalıcı davranış adaptasyonuna dönüşür."
+        )
+        desc_card.body.addWidget(_label(bio_text, "Faint", wrap=True))
+        lay.addWidget(desc_card)
+
+    def _open_3d_popout(self):
+        """Open a large dedicated 3D Mushroom Body viewer window."""
+        dialog = QDialog(self)
+        dialog.setWindowTitle("NeuroPest - 3D Mantar Gövdesi & Zihin Haritası (FlyWire v783)")
+        dialog.resize(920, 680)
+        d_lay = QVBoxLayout(dialog)
+        d_lay.setContentsMargins(0, 0, 0, 0)
+        pop_view = MushroomBody3DView(runner=self.runner, data=self.mb_view3d.data, parent=dialog)
+        d_lay.addWidget(pop_view)
+        dialog.exec()
+
+    def _inject_test_action(self, action: str):
+        r = self.runner
+        if r is None or not getattr(r, "ready", False):
+            return
+        if action == "reward":
+            if hasattr(r, "inject_cue_food"):
+                r.inject_cue_food(1.0)
+            if hasattr(r, "inject_reward"):
+                r.inject_reward(1.0)
+        elif action == "punish":
+            if hasattr(r, "inject_cue_near"):
+                r.inject_cue_near(1.0)
+            if hasattr(r, "inject_punish"):
+                r.inject_punish(1.0)
+        elif action == "food":
+            if hasattr(r, "inject_cue_food"):
+                r.inject_cue_food(1.0)
+        elif action == "cursor":
+            if hasattr(r, "inject_cue_near"):
+                r.inject_cue_near(1.0)
 
     def _forget(self):
         forget = getattr(self.runner, "forget", None)
@@ -669,14 +783,8 @@ class Control(QWidget):
             btn = QToolButton()
             btn.setCheckable(True)
             btn.setChecked(key == cur_skin)
-            btn.setToolButtonStyle(Qt.ToolButtonTextUnderIcon)
             btn.setCursor(Qt.PointingHandCursor)
-            btn.setFixedSize(84, 76)
-
-            thumb_path = SKIN_THUMBNAILS / f"{key}.png"
-            if thumb_path.exists():
-                btn.setIcon(QIcon(str(thumb_path)))
-            btn.setIconSize(QSize(38, 38))
+            btn.setFixedSize(92, 34)
             btn.setText(meta["title"])
             btn.setToolTip(f"{meta['full_name']}\n{meta['desc']}")
 
@@ -685,9 +793,9 @@ class Control(QWidget):
                     background: #11151c;
                     border: 1px solid #27303f;
                     border-radius: 8px;
-                    padding: 6px 2px 4px 2px;
+                    padding: 6px 10px;
                     color: #94a3b8;
-                    font-size: 11px;
+                    font-size: 12px;
                     font-weight: 500;
                 }
                 QToolButton:hover {
@@ -711,9 +819,8 @@ class Control(QWidget):
         skin_lay.addStretch(1)
         card.body.addWidget(skin_container)
 
-
         active_meta = SKIN_METADATA.get(cur_skin, SKIN_METADATA["classic"])
-        self.skin_desc_label = _label(f"✓ {active_meta['full_name']}: {active_meta['desc']}", "Faint", wrap=True)
+        self.skin_desc_label = _label(f"{active_meta['full_name']}: {active_meta['desc']}", "Faint", wrap=True)
         card.body.addWidget(self.skin_desc_label)
 
         screens = QApplication.screens()
@@ -733,14 +840,9 @@ class Control(QWidget):
             self.overlay.update()
         if skin_key in SKIN_METADATA and hasattr(self, "skin_desc_label"):
             meta = SKIN_METADATA[skin_key]
-            self.skin_desc_label.setText(f"✓ {meta['full_name']}: {meta['desc']}")
+            self.skin_desc_label.setText(f"{meta['full_name']}: {meta['desc']}")
         if skin_key in self.skin_buttons and not self.skin_buttons[skin_key].isChecked():
             self.skin_buttons[skin_key].setChecked(True)
-
-    def _on_skin_changed(self, idx: int):
-        keys = list(SKIN_METADATA.keys())
-        if 0 <= idx < len(keys):
-            self._on_skin_selected(keys[idx])
 
 
 

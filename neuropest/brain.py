@@ -124,6 +124,7 @@ class Brain:
                 except OSError as e:                    # tools/build_mushroom.py has not been run
                     warnings.warn(f"real mushroom-body wiring not available ({e}); using the random model")
         self.valence = 0.0                  # -1 fear .. +1 desire, for the cues present now
+        self._last_cues = (0.0, 0.0, 0.0, 0.0, 0.0)
         self._mb_ms = 0.0
         self._reward = 0.0                  # PAM drive: feeding, held ~0.8 s after the contact
         self._punish = 0.0                  # PPL1 drive: threat read from the spiking escape / retreat outputs
@@ -395,7 +396,8 @@ class Brain:
         # Physical wall collision delivers acute nociceptive punishment (PPL1 dopamine)
         if self.wall_bump > 0.0:
             threat = max(threat, min(1.0, self.wall_bump))
-        self._punish = min(1.0, threat)
+        punish_in = min(1.0, threat)
+        self._punish = punish_in if punish_in > 0.05 else self._punish * math.exp(-ms / 800.0)
         self._mb_ms += ms
         if self._mb_ms < self.MB_STEP_MS:
             return
@@ -407,6 +409,7 @@ class Brain:
             near = 1.0 / (1.0 + dist / 250.0) if dist < 1e5 else 0.0      # numbers standing in for the same stimulus
             loom = min(1.0, self.loom / 3.0)
         cues = (eff_phero_drive, self.phero_repel, near, loom, touch)
+        self._last_cues = cues
         self.valence = self.mb.step(cues, self._reward, self._punish, dt)
         if abs(self.valence - self._valence_driven) > 0.05:
             self._drive()
