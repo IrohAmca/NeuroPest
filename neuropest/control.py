@@ -730,7 +730,8 @@ class Control(QWidget):
         self.sym_combo.currentIndexChanged.connect(lambda _: self._debounce.start())
         labeled(adv_card, "Bağlantı Simetrisi", self.sym_combo)
         self.sym_hint = _label(
-            "Bireysel: FlyWire'ın tek sinek beyni (orijinal biyolojik asimetri korunur).\n"
+            "Bireysel: FlyWire'ın tek sinek beyni (orijinal biyolojik asimetri korunur). Bu beyin sola daha kolay döner "
+            "(sol dönüş kazancı sağın yaklaşık 2,8 katı); koku ve dönüş filtresi bunu çoğu zaman örter.\n"
             "Simetrik: Sağ ve sol yarımküre bağlantı ağırlıkları ortalamaya eşitlenir (sağ-sol dönüş döngüsünü dengeler).",
             "Faint", wrap=True)
         adv_card.body.addWidget(self.sym_hint)
