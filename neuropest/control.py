@@ -41,8 +41,8 @@ from .visionparams import VisionParams
 FLYWIRE_SIZES = [2_000, 5_000, 10_000, 15_000, 20_000, 50_000, 138_639]
 FLYWIRE_DEFAULT = 15_000
 TOY_SIZES = [146, 500, 2_000, 5_000, 10_000, 25_000, 50_000, 100_000, 139_000]
-SCAN_ITEM = "GPU'ları ara…"
-DTS = [("Hassas (0.1 ms)", 0.1), ("Dengeli (0.5 ms)", 0.5), ("Hızlı (1 ms)", 1.0)]
+SCAN_ITEM = "Scan for GPUs…"
+DTS = [("Precise (0.1 ms)", 0.1), ("Balanced (0.5 ms)", 0.5), ("Fast (1 ms)", 1.0)]
 
 
 def load_tiers() -> dict[int, dict]:
@@ -55,9 +55,9 @@ def load_tiers() -> dict[int, dict]:
 def load_tier_machine() -> str:
     """Machine tools/fidelity.py measured the tier speeds on (its `machine` field), for the tooltip."""
     try:
-        return str(json.loads(TIERS.read_text()).get("machine") or "bilinmeyen makine")
+        return str(json.loads(TIERS.read_text()).get("machine") or "unknown machine")
     except (OSError, ValueError):
-        return "bilinmeyen makine"
+        return "unknown machine"
 
 
 def _label(text: str = "", name: str | None = None, wrap: bool = False) -> QLabel:
@@ -199,18 +199,18 @@ class Control(QWidget):
         lay.addWidget(self.pill)
 
         lay.addSpacing(14)
-        lay.addWidget(_label("KATEGORİLER", "Section"))
+        lay.addWidget(_label("CATEGORIES", "Section"))
 
         # Navigation buttons
         self.nav_buttons: list[QPushButton] = []
         nav_items = [
-            ("Canlı İzleme", 0),
-            ("Davranış", 1),
-            ("Görsel Girdi", 2),
-            ("Feromon && Koku", 3),
-            ("Devre && Donanım", 4),
-            ("Görünüm", 5),
-            ("Öğrenme && Hafıza", 6),
+            ("Live Telemetry", 0),
+            ("Behaviour", 1),
+            ("Visual Input", 2),
+            ("Pheromones && Odor", 3),
+            ("Circuit && Hardware", 4),
+            ("Appearance", 5),
+            ("Learning && Memory", 6),
         ]
         for title, idx in nav_items:
             btn = QPushButton(title)
@@ -247,7 +247,7 @@ class Control(QWidget):
 
         self.stack = QStackedWidget()
 
-        # Page 0: Canlı İzleme
+        # Page 0: Live Telemetry
         p0 = QWidget()
         p0_lay = QVBoxLayout(p0)
         p0_lay.setContentsMargins(0, 0, 0, 0)
@@ -256,7 +256,7 @@ class Control(QWidget):
         p0_lay.addStretch(1)
         self.stack.addWidget(p0)
 
-        # Page 1: Davranış
+        # Page 1: Behaviour
         p1 = QWidget()
         p1_lay = QVBoxLayout(p1)
         p1_lay.setContentsMargins(0, 0, 0, 0)
@@ -265,7 +265,7 @@ class Control(QWidget):
         p1_lay.addStretch(1)
         self.stack.addWidget(p1)
 
-        # Page 2: Görsel Girdi
+        # Page 2: Visual Input
         p2 = QWidget()
         p2_lay = QVBoxLayout(p2)
         p2_lay.setContentsMargins(0, 0, 0, 0)
@@ -274,7 +274,7 @@ class Control(QWidget):
         p2_lay.addStretch(1)
         self.stack.addWidget(p2)
 
-        # Page 3: Feromon & Koku
+        # Page 3: Pheromones & Odor
         p3 = QWidget()
         p3_lay = QVBoxLayout(p3)
         p3_lay.setContentsMargins(0, 0, 0, 0)
@@ -283,7 +283,7 @@ class Control(QWidget):
         p3_lay.addStretch(1)
         self.stack.addWidget(p3)
 
-        # Page 4: Devre & Donanım
+        # Page 4: Circuit & Hardware
         p4 = QWidget()
         p4_lay = QVBoxLayout(p4)
         p4_lay.setContentsMargins(0, 0, 0, 0)
@@ -292,7 +292,7 @@ class Control(QWidget):
         p4_lay.addStretch(1)
         self.stack.addWidget(p4)
 
-        # Page 5: Görünüm
+        # Page 5: Appearance
         p5 = QWidget()
         p5_lay = QVBoxLayout(p5)
         p5_lay.setContentsMargins(0, 0, 0, 0)
@@ -301,7 +301,7 @@ class Control(QWidget):
         p5_lay.addStretch(1)
         self.stack.addWidget(p5)
 
-        # Page 6: Öğrenme & Hafıza
+        # Page 6: Learning & Memory
         p6 = QWidget()
         p6_lay = QVBoxLayout(p6)
         p6_lay.setContentsMargins(0, 0, 0, 0)
@@ -315,16 +315,16 @@ class Control(QWidget):
 
     # ------------------------------------------------------------------ pages
     def _build_live_page(self, lay: QVBoxLayout):
-        card = Card("Canlı Ölçümler")
+        card = Card("Live Metrics")
         grid = QGridLayout()
         grid.setHorizontalSpacing(16)
         grid.setVerticalSpacing(14)
-        self.s_gf = Stat("Giant Fiber", "Kaçış (uçuş) komut nöronunun ateşleme hızı")
-        self.s_mdn = Stat("MDN", "Geri yürüme komut nöronlarının ateşleme hızı")
-        self.s_steer = Stat("Yön", "Sağ eksi sol DNa02 hızı (pozitif: sağa döner)")
-        self.s_rt = Stat("Gerçek zaman", "Simülasyonun gerçek zamana oranı; 1'in altı yavaş çekim demek")
-        self.s_cpu = Stat("İşlemci", "Motor sürecinin tek çekirdek kullanımı")
-        self.s_spk = Stat("Spike / sn")
+        self.s_gf = Stat("Giant Fiber", "Firing rate of escape/takeoff command neuron")
+        self.s_mdn = Stat("MDN", "Firing rate of backward walking command neurons")
+        self.s_steer = Stat("Steering", "Right minus left DNa02 rate (positive: turns right)")
+        self.s_rt = Stat("Real-time", "Ratio of simulation speed to real time; below 1× means slow motion")
+        self.s_cpu = Stat("CPU Usage", "Single-core CPU utilization of the engine process")
+        self.s_spk = Stat("Spikes / s")
         for i, s in enumerate([self.s_gf, self.s_mdn, self.s_steer, self.s_rt, self.s_cpu, self.s_spk]):
             grid.addWidget(s, i // 3, i % 3)
         card.body.addLayout(grid)
@@ -338,12 +338,12 @@ class Control(QWidget):
         lay.addWidget(card)
 
     def _build_behaviour_page(self, lay: QVBoxLayout):
-        # 1. Açlık & Metabolizma (Temel Biyolojik Dürtü)
-        hunger_card = Card("Açlık & Metabolizma")
-        self.hunger_enable_box = QCheckBox("Açlık ve Metabolizma Simülasyonu")
+        # 1. Hunger & Metabolism (Primary Biological Drive)
+        hunger_card = Card("Hunger & Metabolism")
+        self.hunger_enable_box = QCheckBox("Hunger and Metabolism Simulation")
         self.hunger_enable_box.setToolTip(
-            "Açıkken sinek metabolik enerji harcar ve acıktıkça besin arar. "
-            "Kapalıyken sürekli aç (v0.6) modunda çalışır."
+            "When enabled, the fly expends metabolic energy and seeks food as hunger rises. "
+            "When disabled, operates in constant hunger mode."
         )
         is_hunger_on = getattr(getattr(self.overlay, "metabolism", None), "enabled", True)
         self.hunger_enable_box.setChecked(is_hunger_on)
@@ -353,37 +353,37 @@ class Control(QWidget):
         cur_mult = getattr(getattr(getattr(self.overlay, "metabolism", None), "cfg", None), "rate_mult", 1.0)
         h_slider = QSlider(Qt.Horizontal, minimum=20, maximum=300, value=int(cur_mult * 100))
         h_slider.valueChanged.connect(self._on_metabolic_rate_changed)
-        slider_row(hunger_card, "Metabolizma Hızı",
-                   "Açlığın ne kadar hızlı geliştiğini belirler (Yavaş: ~5 dk, Dengeli: ~90 sn, Hızlı: ~30 sn).",
+        slider_row(hunger_card, "Metabolic Rate",
+                   "Controls how quickly hunger develops (Slow: ~5 min, Balanced: ~90 s, Fast: ~30 s).",
                    h_slider, lambda v: f"×{v/100:.1f}")
 
         status_row = QHBoxLayout()
-        status_row.addWidget(_label("Mevcut Durum:"))
+        status_row.addWidget(_label("Current Status:"))
         status_row.addStretch(1)
         self.hunger_label = _label("–", "Value")
         status_row.addWidget(self.hunger_label)
         hunger_card.body.addLayout(status_row)
 
         btn_row = QHBoxLayout()
-        self.btn_starve = QPushButton("Sineği Acıktır")
-        self.btn_starve.setToolTip("Sineğin enerjisini anında tüketerek besin arama dürtüsünü (foraging) tetikler.")
+        self.btn_starve = QPushButton("Starve Fly")
+        self.btn_starve.setToolTip("Instantly depletes the fly's energy, triggering food-seeking behaviour (foraging).")
         self.btn_starve.clicked.connect(self._on_starve_clicked)
         btn_row.addWidget(self.btn_starve)
 
-        self.btn_feed = QPushButton("Karnını Doyur")
-        self.btn_feed.setToolTip("Sineği anında doyurur; koku ilgisini kapatır ve dinlenme/temizlenme durumuna geçirir.")
+        self.btn_feed = QPushButton("Feed Fly")
+        self.btn_feed.setToolTip("Instantly satiates the fly; suppresses food tracking and transitions to resting/grooming.")
         self.btn_feed.clicked.connect(self._on_feed_clicked)
         btn_row.addWidget(self.btn_feed)
 
         hunger_card.body.addLayout(btn_row)
         lay.addWidget(hunger_card)
 
-        # 2. Temas & Tımar
-        touch_card = Card("Temas & Tımar")
-        self.touch_groom_box = QCheckBox("İmleç Dokunduğunda Kaşınma / Tımar (Grooming)")
+        # 2. Touch & Grooming
+        touch_card = Card("Touch & Grooming")
+        self.touch_groom_box = QCheckBox("Groom on Cursor Touch (Grooming)")
         self.touch_groom_box.setToolTip(
-            "İmleç sineğin üzerine geldiğinde mekanik dokunma nöronlarını (aDN1/aDN2) uyararak "
-            "sineğin durup başını kaşımasını sağlar. Kapalıyken (varsayılan) imleç teması kaşınmayı zorlamaz."
+            "When the cursor touches the fly, stimulates mechanosensory neurons (aDN1/aDN2) causing "
+            "the fly to pause and groom its head. When disabled (default), cursor contact does not force grooming."
         )
         is_touch_on = getattr(self.overlay, "touch_groom_enabled", False) if self.overlay is not None else False
         self.touch_groom_box.setChecked(is_touch_on)
@@ -391,9 +391,9 @@ class Control(QWidget):
         touch_card.body.addWidget(self.touch_groom_box)
         lay.addWidget(touch_card)
 
-        # 3. Gelişmiş Davranış Ayarları (Katlanabilir Akordeon Kart)
-        adv_card = Card("Gelişmiş Davranış Ayarları")
-        self.adv_btn = QPushButton("Gelişmiş Parametreleri Göster")
+        # 3. Advanced Behaviour Settings (Collapsible Accordion Card)
+        adv_card = Card("Advanced Behaviour Settings")
+        self.adv_btn = QPushButton("Show Advanced Settings")
         self.adv_btn.setFlat(True)
         self.adv_btn.setCursor(Qt.PointingHandCursor)
         self.adv_btn.setStyleSheet("text-align: left; font-size: 13px; font-weight: 600; padding: 4px 0;")
@@ -407,28 +407,28 @@ class Control(QWidget):
 
         self.w_slider = QSlider(Qt.Horizontal, minimum=0, maximum=100, value=int(self.runner.bias * 100))
         self.w_slider.valueChanged.connect(self._on_bias_changed)
-        slider_row(adv_lay, "Hareketlilik (Baz Yürüme Sürücüsü)",
-                   "DNp09/P9 yürüme komut nöronlarına verilen tonik akım: açlık ve koku yokken taban istek. Varsayılan: %65.",
-                   self.w_slider, lambda v: f"%{v}")
+        slider_row(adv_lay, "Locomotion Drive (Base Walking Drive)",
+                   "Tonic current injected into DNp09/P9 walking command neurons: baseline urge without hunger or threat. Default: 65%.",
+                   self.w_slider, lambda v: f"{v}%")
 
         cur_skittish = getattr(self.runner, "skittish", 1.0)
         import math
         k_val = int(round(50.0 + 25.0 * math.log2(max(0.1, cur_skittish))))
         self.k_slider = QSlider(Qt.Horizontal, minimum=0, maximum=100, value=max(0, min(100, k_val)))
         self.k_slider.valueChanged.connect(self._on_skittish_changed)
-        slider_row(adv_lay, "Ürkeklik (Kaçış Duyarlılığı)",
-                   "Yaklaşan nesnelere karşı hassasiyet: geri çekilme ve uçuş eşiklerini çarpar. Varsayılan: ×1.00.",
+        slider_row(adv_lay, "Skittishness (Escape Sensitivity)",
+                   "Sensitivity to approaching objects: multiplies retreat and escape thresholds. Default: ×1.00.",
                    self.k_slider, lambda v: f"×{2.0 ** ((v - 50) / 25.0):.2f}")
 
         cur_pain = getattr(self.runner, "wall_pain", 1.0)
         self.pain_slider = QSlider(Qt.Horizontal, minimum=0, maximum=200, value=int(cur_pain * 100))
         self.pain_slider.valueChanged.connect(self._on_wall_pain_changed)
-        slider_row(adv_lay, "Kenar Acısı (Nosiseptif Darbe Cezası)",
-                   "Sinek ekran sınırına tosladığında Mantar Cismi'ne iletilen acı/ceza (PPL1 dopamin). Sinek kenarlardan sakınmayı öğrenir. Varsayılan: ×1.00.",
+        slider_row(adv_lay, "Edge Aversion (Nociceptive Wall Pain)",
+                   "Pain/punishment signal sent to Mushroom Body (PPL1 dopamine) upon colliding with screen borders. Trains fly to avoid edges. Default: ×1.00.",
                    self.pain_slider, lambda v: f"×{v / 100.0:.2f}")
 
-        self.btn_reset_adv = QPushButton("Varsayılan Parametrelere Sıfırla")
-        self.btn_reset_adv.setToolTip("Hareketlilik (%65), ürkeklik (×1.00) ve kenar acısı (×1.00) değerlerini varsayılana döndürür.")
+        self.btn_reset_adv = QPushButton("Reset to Default Parameters")
+        self.btn_reset_adv.setToolTip("Resets locomotion drive (65%), skittishness (×1.00), and edge aversion (×1.00) to defaults.")
         self.btn_reset_adv.clicked.connect(self._reset_adv_settings)
         adv_lay.addWidget(self.btn_reset_adv)
 
@@ -439,7 +439,7 @@ class Control(QWidget):
     def _toggle_adv_settings(self):
         visible = not self.adv_content.isVisible()
         self.adv_content.setVisible(visible)
-        self.adv_btn.setText(f"Gelişmiş Parametreleri {'Gizle' if visible else 'Göster'}")
+        self.adv_btn.setText(f"{'Hide' if visible else 'Show'} Advanced Settings")
 
     def _reset_adv_settings(self):
         self.w_slider.setValue(65)
@@ -492,18 +492,18 @@ class Control(QWidget):
             self.overlay.metabolism.satiate()
 
     def _build_vision_page(self, lay: QVBoxLayout):
-        card = Card("Görsel Girdi & Ekran Yakalama")
+        card = Card("Visual Input & Screen Perception")
         self.has_eye = CACHE.exists() and EYE.exists() and FIELD.exists()
-        self.vision = QCheckBox("Ekranı sineğin gözüyle gör (Gerçek Ekran Yakalama)", enabled=self.has_eye)
-        self.vision.setToolTip("İmleç sayıları yerine gerçek masaüstü görüntüsü: 480 px huni görüşü, retinotopik dedektörler")
+        self.vision = QCheckBox("Screen Capture Vision (Compound Eye Perception)", enabled=self.has_eye)
+        self.vision.setToolTip("Feeds real desktop screen pixels into the fly's retinotopic visual detectors (480 px visual cone) instead of synthetic cursor coordinates.")
         self.vision.toggled.connect(self._on_vision_toggled)
         card.body.addWidget(self.vision)
 
         hgt = QSlider(Qt.Horizontal, minimum=40, maximum=300, value=int(self.runner.eye_height),
                       enabled=self.has_eye)
         hgt.valueChanged.connect(self._on_eye_height_changed)
-        slider_row(card, "Göz Yüksekliği (Bakış Eğimi)",
-                   "Ekran düzleminin kaç px üstünden bakıyor: büyük = daha dikey (tepeden) huni açısı.",
+        slider_row(card, "Eye Height (Viewing Elevation)",
+                   "Simulated altitude above screen plane: higher = steeper downward cone angle.",
                    hgt, lambda v: f"{v} px")
 
         self.vision_info = _label("", "Faint", wrap=True)
@@ -513,12 +513,12 @@ class Control(QWidget):
 
     def _describe_vision(self, state: float):
         if not self.has_eye:
-            text = "Göz verisi yok: uv run python tools/build_eye.py (ham veri gerekir, README'ye bak)."
+            text = "No eye data available: run 'uv run python tools/build_eye.py' (requires raw data, see README)."
         elif state > 0:
-            text = ("Gerçek ekran yakalama aktif: Sinek masaüstünü 480 px huni görüşüyle görüyor; "
-                    "kaçış (uçuş), geri yürüme, donma ve yönelme kararları ekrandaki gerçek piksellerden geliyor.")
+            text = ("Real screen capture active: Fly perceives the desktop through a 480 px visual cone; "
+                    "escape (flight), backward walking, freezing, and steering decisions are driven by actual screen pixels.")
         elif state < 0 and self.vision.isChecked():
-            text = "Bu devrede görsel girdi yok (alıcı alanı olan LPLC2/LC4 gerekir): imleç sayılarıyla çalışılıyor."
+            text = "No visual input supported in this circuit tier (requires LPLC2/LC4 with receptive fields): using synthetic cursor coordinates."
         else:
             text = ""
         self.vision_info.setText(text)
@@ -536,10 +536,10 @@ class Control(QWidget):
         self.prefs.save()
 
     def _build_pheromone_page(self, lay: QVBoxLayout):
-        card = Card("Feromon Alanı & Koku Duyusu")
+        card = Card("Pheromone Field & Olfaction")
 
-        self.phero_enable = QCheckBox("Feromon ve Koku Duyusunu Etkinleştir")
-        self.phero_enable.setToolTip("Sineğin iki anteniyle (tropotaksis) feromon gradyanını koklayıp yönelmesini sağlar.")
+        self.phero_enable = QCheckBox("Enable Pheromones and Olfaction")
+        self.phero_enable.setToolTip("Enables the fly to detect pheromone gradients with dual antennae (tropotaxis) and navigate toward/away from odors.")
         is_on = getattr(self.overlay, "pheromone_enabled", True) if self.overlay is not None else True
         self.phero_enable.setChecked(is_on)
         self.phero_enable.toggled.connect(self._on_phero_toggled)
@@ -547,29 +547,29 @@ class Control(QWidget):
 
         self.cursor_phero_combo = QComboBox()
         self.cursor_phero_modes = [
-            ("attract", "Olumlu / Çekici (Besin / Nektar kokusu — sinek yaklaşır)"),
-            ("repel", "Olumsuz / İtici (Tehdit kokusu — sinek uzaklaşır)"),
-            ("none", "Kapalı (İmleç feromon yaymaz)"),
+            ("attract", "Attractive (Food / Sugar scent — fly approaches)"),
+            ("repel", "Repellent (Threat / Alarm scent — fly flees)"),
+            ("none", "Disabled (Cursor emits no pheromone)"),
         ]
         self.cursor_phero_combo.addItems([label for _, label in self.cursor_phero_modes])
         cur_mode = getattr(self.overlay, "cursor_phero_mode", "attract") if self.overlay is not None else "attract"
         cur_idx = next((i for i, (m, _) in enumerate(self.cursor_phero_modes) if m == cur_mode), 0)
         self.cursor_phero_combo.setCurrentIndex(cur_idx)
         self.cursor_phero_combo.currentIndexChanged.connect(self._on_cursor_phero_changed)
-        labeled(card, "İmleç Feromon Modu", self.cursor_phero_combo)
+        labeled(card, "Cursor Pheromone Mode", self.cursor_phero_combo)
         lay.addWidget(card)
 
-        desc_card = Card("Feromon & Tropotaksis Nedir?")
+        desc_card = Card("What is Pheromone & Tropotaxis?")
         info_text = (
-            "• Çift Antenle Koku Yönelimi (Tropotaksis): Sinek, sağ ve sol antenlerindeki koku "
-            "reseptörleri arasındaki yoğunluk farkını karşılaştırarak kokunun yoğun olduğu tarafa "
-            "doğru yönelir veya itici kokudan kaçar (DNa02 dönüş nöronları üzerinden).\n\n"
-            "• Görünmez Besin Kaynakları: Ekranda rastgele noktalarda görünmez nektar/besin kaynakları bulunur. "
-            "Sinek kokuyu takip ederek besine ulaşır, hedefe vardığında besini tüketir ve duraklar.\n\n"
-            "• Kenar İticiliği: Ekranın en dış sınırlarında (18 px) sineğin ekran arkasına/dışına kaçmasını "
-            "önleyen ince ve görünmez bir itici alan bulunur.\n\n"
-            "• İmleç Etkisi: İmleci olumlu seçerseniz sinek imlecin peşinden koşar ve üstüne konar; "
-            "olumsuz seçerseniz imleçten kaçar."
+            "• Dual-Antenna Olfactory Steering (Tropotaxis): The fly compares odor concentration between "
+            "its left and right antennae, steering toward attractive scents or away from repellent scents "
+            "via DNa02 steering neurons.\n\n"
+            "• Invisible Food Sources: Invisible nectar/food sources spawn randomly across the screen. "
+            "The fly follows the scent trail to food, consumes it upon arrival, and pauses to feed.\n\n"
+            "• Boundary Repulsion: A subtle invisible repellent field at the outer 18 px screen margin "
+            "prevents the fly from leaving or getting lost outside the display bounds.\n\n"
+            "• Cursor Attraction/Repulsion: Set to attractive to make the fly chase and land on your cursor; "
+            "set to repellent to make it run away from the cursor."
         )
         desc_card.body.addWidget(_label(info_text, "Faint", wrap=True))
         lay.addWidget(desc_card)
@@ -589,35 +589,35 @@ class Control(QWidget):
             self.prefs.save()
 
     def _build_learning_page(self, lay: QVBoxLayout):
-        # 1. 3D Sinir Ağları & Mantar Gövdesi Modülü
-        card_3d = Card("3D Sinir Ağları & Mantar Gövdesi")
+        # 1. 3D Neural Circuit & Mushroom Body Module
+        card_3d = Card("3D Neural Circuit & Mushroom Body")
         self.neural_desc_label = _label(
-            "FlyWire v783 tam konnektom verisine dayalı 3D Mantar Gövdesi (Mushroom Body) ve sinirsel zihin haritası. "
-            "1.700+ Kenyon hücresi soması, akson traktları (pedunkulus ve loblar), dopaminerjik nöron kümeleri "
-            "(PAM ödül & PPL1 ceza) ile gerçek zamanlı sinaptik ateşlemeleri ve öğrenilmiş bellek değerliğini 3 boyutlu olarak modeller.",
+            "FlyWire v783 full connectome 3D Mushroom Body neural circuit and mental map. "
+            "Models 1,700+ Kenyon cell somas, axon tracts (pedunculus and lobes), dopaminergic clusters "
+            "(PAM reward & PPL1 punishment) with real-time synaptic firing and learned valence in 3D space.",
             "Muted", wrap=True)
         card_3d.body.addWidget(self.neural_desc_label)
 
-        # Görselleştirme Seçenekleri
+        # Visualization options
         popout_row = QHBoxLayout()
-        self.btn_toggle_3d = QPushButton("3D Sinir Ağını Görüntüle")
+        self.btn_toggle_3d = QPushButton("View 3D Neural Circuit")
         self.btn_toggle_3d.setCursor(Qt.PointingHandCursor)
         self.btn_toggle_3d.setCheckable(True)
         self.btn_toggle_3d.setChecked(False)
-        self.btn_toggle_3d.setToolTip("3D sinir ağını bu panel içerisinde açar veya gizler.")
+        self.btn_toggle_3d.setToolTip("Toggle 3D neural circuit visualization inside this panel.")
         self.btn_toggle_3d.clicked.connect(lambda: self._toggle_3d_view())
         popout_row.addWidget(self.btn_toggle_3d)
 
-        self.popout_btn = QPushButton("Ayrı Pencerede Görüntüle")
+        self.popout_btn = QPushButton("Open in Dedicated Window")
         self.popout_btn.setCursor(Qt.PointingHandCursor)
-        self.popout_btn.setToolTip("3D Sinir Ağını genişletilmiş ayrı bir pencerede açar.")
+        self.popout_btn.setToolTip("Opens 3D Neural Circuit in an expanded standalone window.")
         self.popout_btn.clicked.connect(self._open_3d_popout)
         popout_row.addWidget(self.popout_btn)
 
         popout_row.addStretch(1)
         card_3d.body.addLayout(popout_row)
 
-        # 3D Görselleştirici Konteyneri (İsteğe bağlı: varsayılan olarak gizli)
+        # 3D Visualizer Container (optional: hidden by default to save resources)
         self.mb_view3d_container = QWidget()
         v3d_lay = QVBoxLayout(self.mb_view3d_container)
         v3d_lay.setContentsMargins(0, 4, 0, 0)
@@ -628,7 +628,7 @@ class Control(QWidget):
         v3d_lay.addWidget(self.mb_view3d)
 
         v3d_hint = _label(
-            "Fare: Sol tıkla döndür • Sağ tıkla kaydır • Tekerlekle yakınlaştır • Çift tıkla sıfırla",
+            "Mouse: Left-click to orbit • Right-click to pan • Scroll to zoom • Double-click to reset",
             "Faint", wrap=True
         )
         v3d_lay.addWidget(v3d_hint)
@@ -636,41 +636,41 @@ class Control(QWidget):
         self.mb_view3d_container.setVisible(False)
         card_3d.body.addWidget(self.mb_view3d_container)
 
-        # Ek Sistem Yükü Uyarısı Notu
+        # System Load Warning Note
         self.lbl_system_load_warn = _label(
-            "⚠️ Not: 3D sinir ağı görselleştirmesi, binlerce nöron ve akson projeksiyonunu "
-            "gerçek zamanlı hesaplayıp çizdiği için ek sistem yükü (CPU/GPU) oluşturabilir.",
+            "⚠️ Note: 3D neural visualization calculates and renders thousands of neurons and axon projections "
+            "in real time, which adds extra system load (CPU/GPU).",
             "Warn", wrap=True
         )
         card_3d.body.addWidget(self.lbl_system_load_warn)
 
         lay.addWidget(card_3d)
 
-        # 2. Deney & Öğrenme Simülatörü Konsolu (Sandbox Training)
-        card_sim = Card("Öğrenme & Deney Konsolu")
+        # 2. Experiment & Learning Sandbox Console
+        card_sim = Card("Learning & Experiment Sandbox")
         card_sim.body.addWidget(_label(
-            "Sineğe anlık koku/görsel ipucu ve ödül/ceza vererek 3D zihin haritasının, "
-            "dopamin nöronlarının ve sinaptik ağırlıkların gerçek zamanlı değişimini test edebilirsiniz:",
+            "Inject real-time olfactory/visual cues and reward/punishment to test dynamic changes in the "
+            "3D mental map, dopamine neurons, and synaptic weights:",
             "Muted", wrap=True))
 
         sim_btn_grid = QGridLayout()
         sim_btn_grid.setHorizontalSpacing(10)
         sim_btn_grid.setVerticalSpacing(8)
 
-        btn_reward = QPushButton("Ödül Ver (PAM)")
-        btn_reward.setToolTip("PAM dopamin nöronlarını ateşleyerek mevcut ipucuna karşı pozitif değerlik (arzu) oluşturur.")
+        btn_reward = QPushButton("Inject Reward (PAM)")
+        btn_reward.setToolTip("Fires PAM dopamine neurons to establish positive valence (desire) toward the active cue.")
         btn_reward.clicked.connect(lambda: self._inject_test_action("reward"))
 
-        btn_punish = QPushButton("Ceza Ver (PPL1)")
-        btn_punish.setToolTip("PPL1 dopamin nöronlarını ateşleyerek kaçınma/korku belleği oluşturur.")
+        btn_punish = QPushButton("Inject Punishment (PPL1)")
+        btn_punish.setToolTip("Fires PPL1 dopamine neurons to establish negative valence (avoidance/fear).")
         btn_punish.clicked.connect(lambda: self._inject_test_action("punish"))
 
-        btn_cue_food = QPushButton("Besin Kokusu")
-        btn_cue_food.setToolTip("Besin projeksiyon nöronlarını (DM1-DM4) ve koku Kenyon hücrelerini uyarır.")
+        btn_cue_food = QPushButton("Food Odor Cue")
+        btn_cue_food.setToolTip("Stimulates food projection neurons (DM1-DM4) and olfactory Kenyon cells.")
         btn_cue_food.clicked.connect(lambda: self._inject_test_action("food"))
 
-        btn_cue_near = QPushButton("İmleç İpucu")
-        btn_cue_near.setToolTip("İmleç görsel projeksiyon nöronlarını uyarır.")
+        btn_cue_near = QPushButton("Cursor Visual Cue")
+        btn_cue_near.setToolTip("Stimulates visual projection neurons driven by the mouse cursor.")
         btn_cue_near.clicked.connect(lambda: self._inject_test_action("cursor"))
 
         sim_btn_grid.addWidget(btn_reward, 0, 0)
@@ -683,47 +683,47 @@ class Control(QWidget):
         # Telemetry stats grid
         grid = QGridLayout()
         grid.setHorizontalSpacing(16)
-        self.s_val = Stat("Değerlik", "Şu an algıladığı şeye karşı öğrenilmiş his: + arzu, − korku")
-        self.s_vm = Stat("V_motor", "Tehdit + arzu + ulaşamama gerilimi")
-        self.s_gear = Stat("Vites", "Durma, yürüme, kaçış uçuşu ya da kovalama uçuşu")
+        self.s_val = Stat("Valence", "Learned affective response to current cue: + desire, − fear")
+        self.s_vm = Stat("V_motor", "Combined drive: threat + desire + frustration")
+        self.s_gear = Stat("Locomotion Mode", "Stand, walk, escape flight, or pursuit flight")
         for i, s in enumerate((self.s_val, self.s_vm, self.s_gear)):
             grid.addWidget(s, 0, i)
         card_sim.body.addLayout(grid)
 
         ctrl_row = QHBoxLayout()
-        self.learn_enable = QCheckBox("Öğrenme açık")
-        self.learn_enable.setToolTip("Kapalıysa sinek hiçbir şey öğrenmez; motor yeniden başlar.")
+        self.learn_enable = QCheckBox("Enable Learning")
+        self.learn_enable.setToolTip("When disabled, the fly ceases updating synaptic weights; engine reloads.")
         self.learn_enable.setChecked(getattr(self.runner.cfg, "learning", True))
         self.learn_enable.toggled.connect(lambda _: self._apply())
         ctrl_row.addWidget(self.learn_enable)
 
         ctrl_row.addStretch(1)
 
-        self.forget_btn = QPushButton("Hafızayı Sıfırla (Amnezi)")
-        self.forget_btn.setToolTip("Sinek öğrendiği her şeyi hemen unutur ve 3D zihin haritası naive haline döner.")
+        self.forget_btn = QPushButton("Reset Memory (Amnesia)")
+        self.forget_btn.setToolTip("Clears all learned weights immediately, restoring the 3D mental map to its naive state.")
         self.forget_btn.clicked.connect(self._forget)
         ctrl_row.addWidget(self.forget_btn)
 
         card_sim.body.addLayout(ctrl_row)
         lay.addWidget(card_sim)
 
-        # 3. Bilimsel Anatomi & Fonksiyon Kartı
-        desc_card = Card("Mantar Gövdesi & Biyolojik Bellek")
+        # 3. Scientific Anatomy & Function Card
+        desc_card = Card("Mushroom Body & Biological Memory")
         bio_text = (
-            "• Görsel Renk Kodları (Zihin Haritası):\n"
-            "   - Zümrüt Yeşili: Ödüllendirilmiş iştahsal bellek (PAM dopamin aktivasyonu ile yaklaşma güdüsü)\n"
-            "   - Yakut Kırmızısı: Cezalandırılmış kaçınma belleği (PPL1 nosisepsiyon ile korku/kaçınma güdüsü)\n"
-            "   - Açık Mavi: Eğitilmemiş nötr (naive) sinirsel durum\n"
-            "   - Parlak Beyaz Işıltılar: Canlı ateşlenen aktif Kenyon hücreleri (~%5 seyrek kodlama)\n\n"
-            "• Kaliks (Calyx): Kenyon hücre somaları ve dendritik kadehlerinin bulunduğu arka çanak. "
-            "Anten lobundan gelen koku (ALPN) ve gözden gelen görsel projeksiyonlar burada sinaps yapar.\n\n"
-            "• Pedunkulus (Peduncle): Kaliksten çıkan aksonların oluşturduğu kalın sinir kablosu; "
-            "öndeki topuğa (heel) ilerleyerek dikey ve yatay loblara ayrılır.\n\n"
-            "• Loblar (Lobes): Dikey (α, α') ve yatay/medial (β, β', γ) kompartmanlar. Her bölme "
-            "farklı MBON çıkış nöronu ve dopaminerjik nöron (PAM/PPL1) tarafından innerve edilir.\n\n"
-            "• Üç Faktörlü Plastisite Kuralı: Aktif Kenyon hücresi (1) + Dopamin salgısı (2) "
-            "→ İlgili MBON sinapsında uzun süreli depresyon (LTD) (3). "
-            "Böylece tecrübe edilen ipuçları kalıcı davranış adaptasyonuna dönüşür."
+            "• Color Codes (Mental Map):\n"
+            "   - Emerald Green: Rewarded appetitive memory (approach drive via PAM dopamine)\n"
+            "   - Ruby Red: Punished aversive memory (avoidance/fear drive via PPL1 nociception)\n"
+            "   - Cyan Blue: Naive, untrained neural state\n"
+            "   - Bright White Sparks: Live spiking Kenyon cells (~5% sparse coding)\n\n"
+            "• Calyx: Posterior cup containing Kenyon cell somas and dendritic claws. "
+            "Olfactory projection neurons (ALPN) and visual projections synapse here.\n\n"
+            "• Pedunculus: Dense axon cable extending anteriorly from the calyx to the heel, "
+            "bifurcating into vertical and horizontal lobes.\n\n"
+            "• Lobes: Vertical (α, α') and horizontal/medial (β, β', γ) compartments. Each division "
+            "is innervated by specific MBON output neurons and dopaminergic modulators (PAM/PPL1).\n\n"
+            "• Three-Factor Plasticity Rule: Active Kenyon Cell (1) + Dopamine Release (2) "
+            "→ Long-Term Depression (LTD) at corresponding MBON synapse (3). "
+            "This converts momentary experiences into persistent behavioural adaptations."
         )
         desc_card.body.addWidget(_label(bio_text, "Faint", wrap=True))
         lay.addWidget(desc_card)
@@ -735,18 +735,18 @@ class Control(QWidget):
         self.mb_view3d_container.setVisible(visible)
         self.btn_toggle_3d.setChecked(visible)
         if visible:
-            self.btn_toggle_3d.setText("3D Sinir Ağını Gizle (Tasarruf)")
+            self.btn_toggle_3d.setText("Hide 3D Neural Circuit (Save Power)")
             self.btn_toggle_3d.setStyleSheet(
                 "background: rgba(76, 201, 240, 0.15); border: 1px solid #4cc9f0; color: #4cc9f0; font-weight: 600;"
             )
         else:
-            self.btn_toggle_3d.setText("3D Sinir Ağını Görüntüle")
+            self.btn_toggle_3d.setText("View 3D Neural Circuit")
             self.btn_toggle_3d.setStyleSheet("")
 
     def _open_3d_popout(self):
         """Open a large dedicated 3D Mushroom Body viewer window."""
         dialog = QDialog(self)
-        dialog.setWindowTitle("NeuroPest - 3D Sinir Ağları & Mantar Gövdesi (FlyWire v783)")
+        dialog.setWindowTitle("NeuroPest - 3D Neural Circuit & Mushroom Body (FlyWire v783)")
         dialog.resize(920, 680)
         d_lay = QVBoxLayout(dialog)
         d_lay.setContentsMargins(14, 14, 14, 14)
@@ -756,11 +756,11 @@ class Control(QWidget):
         d_head = QVBoxLayout()
         d_head.setSpacing(4)
         d_head.addWidget(_label(
-            "FlyWire v783 tam konnektom 3D sinir ağı modeli (Kenyon hücre somaları, akson traktları, "
-            "loblar ve dopaminerjik modülasyon).",
+            "FlyWire v783 full connectome 3D neural model (Kenyon cell somas, axon tracts, "
+            "lobes, and dopaminergic modulation).",
             "Muted", wrap=True))
         d_head.addWidget(_label(
-            "⚠️ Not: 3D sinir ağı görselleştirmesi ek sistem yükü (CPU/GPU) oluşturabilir.",
+            "⚠️ Note: 3D neural visualization may add extra system load (CPU/GPU).",
             "Warn", wrap=True))
         d_lay.addLayout(d_head)
 
@@ -795,20 +795,20 @@ class Control(QWidget):
             forget()
 
     def _build_circuit_page(self, lay: QVBoxLayout):
-        card = Card("Sinir Devresi")
-        self.circuits = ([("flywire", "FlyWire v783 (gerçek bağlantı)")] if CACHE.exists() else []) \
-            + [("toy", "Oyuncak devre (sentetik yük)")]
+        card = Card("Neural Circuit")
+        self.circuits = ([("flywire", "FlyWire v783 (real connectome)")] if CACHE.exists() else []) \
+            + [("toy", "Toy circuit (synthetic benchmark)")]
         self.circ = QComboBox()
         self.circ.addItems([name for _, name in self.circuits])
         self.circ.setCurrentIndex([c for c, _ in self.circuits].index(self.runner.cfg.circuit))
-        labeled(card, "Devre Tipi", self.circ)
+        labeled(card, "Circuit Type", self.circ)
 
         if not CACHE.exists():
-            card.body.addWidget(_label("Gerçek devre için: uv run python tools/build_flywire.py "
-                                       "(README'ye bak)", "Hint", wrap=True))
+            card.body.addWidget(_label("For real connectome: uv run python tools/build_flywire.py "
+                                       "(see README)", "Hint", wrap=True))
 
         head = QHBoxLayout()
-        head.addWidget(_label("Devre Boyutu (Nöron Sayısı)"))
+        head.addWidget(_label("Circuit Size (Neuron Count)"))
         head.addStretch(1)
         self.size_label = _label("", "Value")
         head.addWidget(self.size_label)
@@ -822,14 +822,14 @@ class Control(QWidget):
         self.dt = QComboBox()
         self.dt.addItems([n for n, _ in DTS])
         self.dt.setCurrentIndex([d for _, d in DTS].index(self.runner.cfg.dt))
-        labeled(card, "Zaman adımı dt (küçük: daha doğru, daha ağır)", self.dt)
+        labeled(card, "Time step dt (smaller: higher accuracy, heavier compute)", self.dt)
         lay.addWidget(card)
 
-        # Gelişmiş Seçenekler
-        adv_card = Card("Gelişmiş Seçenekler")
+        # Advanced Circuit Options
+        adv_card = Card("Advanced Circuit Options")
         self.sym_options = [
-            ("individual", "Bireysel (FlyWire orijinal)"),
-            ("symmetric", "Simetrik (Sağ-sol dengeli)"),
+            ("individual", "Individual (FlyWire original)"),
+            ("symmetric", "Symmetric (Left-right balanced)"),
         ]
         self.sym_combo = QComboBox()
         self.sym_combo.addItems([label for _, label in self.sym_options])
@@ -837,21 +837,21 @@ class Control(QWidget):
         self.sym_combo.setCurrentIndex(0 if cur_sym == "individual" else 1)
         self.sym_combo.setEnabled(self._kind() == "flywire")
         self.sym_combo.currentIndexChanged.connect(self._on_sym_changed)
-        labeled(adv_card, "Bağlantı Simetrisi", self.sym_combo)
+        labeled(adv_card, "Hemispheric Symmetry", self.sym_combo)
         self.sym_hint = _label(
-            "Bireysel: FlyWire'ın tek sinek beyni (orijinal biyolojik asimetri korunur). Bu beyin sola daha kolay döner "
-            "(sol dönüş kazancı sağın yaklaşık 2,8 katı); koku ve dönüş filtresi bunu çoğu zaman örter.\n"
-            "Simetrik: Sağ ve sol yarımküre bağlantı ağırlıkları ortalamaya eşitlenir (sağ-sol dönüş döngüsünü dengeler).",
+            "Individual: FlyWire's single fly brain connectome (biological asymmetry preserved). This brain turns left more readily "
+            "(left turn gain is ~2.8× right); odor and steering filters usually compensate.\n"
+            "Symmetric: Left and right hemisphere connection weights are averaged together (balances left-right turning dynamics).",
             "Faint", wrap=True)
         adv_card.body.addWidget(self.sym_hint)
         lay.addWidget(adv_card)
 
         # Compute sub-card
-        comp_card = Card("Hesaplama Donanımı")
+        comp_card = Card("Compute Hardware")
         self.hw = QComboBox()
-        self.hw.addItems(["Otomatik", "CPU"])
-        self.hw.setToolTip(f"Otomatik: {GPU_AUTO_MIN_NEURONS:,} nöron ve üstünde GPU, altında CPU")
-        labeled(comp_card, "İşlemci / GPU Tercihi", self.hw)
+        self.hw.addItems(["Auto", "CPU"])
+        self.hw.setToolTip(f"Auto: Uses GPU for {GPU_AUTO_MIN_NEURONS:,} neurons and above, CPU below")
+        labeled(comp_card, "Compute Processor / GPU", self.hw)
 
         self.gpus: list[dict] = []
         self._gpu_result: list | None = None
@@ -873,52 +873,52 @@ class Control(QWidget):
 
         if self.has_wgpu:
             if self.auto_scan_gpus:
-                self.gpu_note = _label("GPU'lar taranıyor…", "Faint")
+                self.gpu_note = _label("Scanning for GPUs…", "Faint")
                 comp_card.body.addWidget(self.gpu_note)
                 self._gpu_poll = QTimer(self, timeout=self._gpus_found, interval=200)
                 self._scan_gpus()
             else:
                 self.hw.addItem(SCAN_ITEM)
                 self.hw.activated.connect(self._hw_activated)
-                self.gpu_note = _label("GPU'lar arama isteğiyle bulunur (~1 s, ~100 MB)", "Faint")
+                self.gpu_note = _label("GPUs discovered on demand (~1 s, ~100 MB)", "Faint")
                 comp_card.body.addWidget(self.gpu_note)
                 self._gpu_poll = QTimer(self, timeout=self._gpus_found, interval=250)
         else:
-            comp_card.body.addWidget(_label("GPU desteği için: uv sync --extra gpu", "Hint", wrap=True))
+            comp_card.body.addWidget(_label("For GPU acceleration: uv sync --extra gpu", "Hint", wrap=True))
         lay.addWidget(comp_card)
 
-        # 3D Sinir Ağları Görselleştirme Modülü
-        circ_3d_card = Card("3D Sinir Ağları Görselleştirme")
+        # 3D Neural Circuit Visualization Module
+        circ_3d_card = Card("3D Neural Circuit Visualization")
         self.circ_3d_desc = _label(
-            "FlyWire v783 konnektomundaki sinir ağlarını (Kenyon hücre somaları, akson demetleri, "
-            "pedunkulus, loblar ve dopamin nöronları) 3 boyutlu model üzerinde inceleyebilirsiniz.",
+            "Inspect neural networks from the FlyWire v783 connectome (Kenyon cell somas, axon tracts, "
+            "pedunculus, lobes, and dopamine neurons) in an interactive 3D model.",
             "Muted", wrap=True)
         circ_3d_card.body.addWidget(self.circ_3d_desc)
 
         circ_btn_row = QHBoxLayout()
-        self.btn_circ_view_3d = QPushButton("3D Sinir Ağını Görüntüle")
+        self.btn_circ_view_3d = QPushButton("View 3D Neural Circuit")
         self.btn_circ_view_3d.setCursor(Qt.PointingHandCursor)
-        self.btn_circ_view_3d.setToolTip("3D Sinir Ağı & Mantar Gövdesi modelini ayrı pencerede açar.")
+        self.btn_circ_view_3d.setToolTip("Opens the 3D Neural Circuit & Mushroom Body model in a dedicated window.")
         self.btn_circ_view_3d.clicked.connect(self._open_3d_popout)
         circ_btn_row.addWidget(self.btn_circ_view_3d)
         circ_btn_row.addStretch(1)
         circ_3d_card.body.addLayout(circ_btn_row)
 
         self.lbl_circ_system_load_warn = _label(
-            "⚠️ Not: 3D sinir ağı görselleştirmesi, binlerce nöron ve akson projeksiyonunu "
-            "gerçek zamanlı hesaplayıp çizdiği için ek sistem yükü (CPU/GPU) oluşturabilir.",
+            "⚠️ Note: 3D neural visualization calculates and renders thousands of neurons and axon tracts "
+            "in real time, which adds extra system load (CPU/GPU).",
             "Warn", wrap=True)
         circ_3d_card.body.addWidget(self.lbl_circ_system_load_warn)
         lay.addWidget(circ_3d_card)
 
     def _build_view_page(self, lay: QVBoxLayout):
-        card = Card("Görünüm & Monitör")
+        card = Card("Appearance & Display")
         s = QSlider(Qt.Horizontal, minimum=5, maximum=40, value=int(self.overlay.scale * 10))
         s.valueChanged.connect(self._on_scale_changed)
-        slider_row(card, "Sinek Boyutu", "Masaüstündeki görünür büyüklük", s, lambda v: f"×{v / 10:.1f}")
+        slider_row(card, "Fly Size", "Visible size on desktop", s, lambda v: f"×{v / 10:.1f}")
 
-        # Sinek Görünümü (Visual Cards Selector)
-        card.body.addWidget(_label("Sinek Görünümü (Kostüm)", "Muted"))
+        # Fly Skin Selector
+        card.body.addWidget(_label("Fly Skin (Costume)", "Muted"))
 
         skin_container = QWidget()
         skin_lay = QHBoxLayout(skin_container)
@@ -978,12 +978,12 @@ class Control(QWidget):
         screens = QApplication.screens()
         if len(screens) > 1:
             box = QComboBox()
-            items = ["Tüm Ekranlar (Bağımsız Gezinme)"] + [f"{i + 1}: {s.name()}" for i, s in enumerate(screens)]
+            items = ["All Screens (Span Virtual Desktop)"] + [f"{i + 1}: {s.name()}" for i, s in enumerate(screens)]
             box.addItems(items)
             current_idx = 0 if self.overlay.home is None else (screens.index(self.overlay.home) + 1 if self.overlay.home in screens else 0)
             box.setCurrentIndex(current_idx)
             box.currentIndexChanged.connect(lambda i: self._on_screen_changed(i, screens))
-            labeled(card, "Sanal Alan / Monitör", box)
+            labeled(card, "Virtual Screen / Monitor", box)
         lay.addWidget(card)
 
     def _on_scale_changed(self, v: int):
@@ -1080,25 +1080,25 @@ class Control(QWidget):
 
     def _describe(self):
         n = self._sizes()[self.size.value()]
-        self.size_label.setText(f"{n:,} nöron")
+        self.size_label.setText(f"{n:,} neurons")
         if self._kind() == "flywire":
             t = self.tiers.get(n)
             if t:
                 self.tier_info.setText(
-                    f"Tam beyne göre sapma: kalkış %{t['gf_err']:.0f} · geri yürüme %{t['mdn_err']:.0f} · "
-                    f"yön %{t['steer_err']:.0f}\nDescending korelasyonu {t['dn_corr']:.3f} · ölçülen hız "
-                    f"×{t['realtime']:.1f} (en kötü ×{t['rt_min']:.1f})")
-                pinned = (f"Sayıdaki ilk {t['pinned']:,} nöron her katmanda sabit olan girdi ve çıktı nöronlarıdır; "
-                          f"sıralamayla seçilen {t['free']:,}. " if t.get("pinned") else "")
-                self.tier_info.setToolTip("FlyWire'daki ateşleme sırasına göre seçilen iç içe katman. " + pinned +
-                                          "Sapma yalnız yaklaşan nesne, geri çekilme ve yön girdileri "
-                                          "için ölçüldü (tools/fidelity.py). Hız, ölçümün yapıldığı "
-                                          f"makineye özeldir ({self.tier_machine}).")
+                    f"Deviation from full brain: takeoff {t['gf_err']:.0f}% · backward walking {t['mdn_err']:.0f}% · "
+                    f"steering {t['steer_err']:.0f}%\nDescending correlation {t['dn_corr']:.3f} · benchmarked speed "
+                    f"×{t['realtime']:.1f} (worst ×{t['rt_min']:.1f})")
+                pinned = (f"The first {t['pinned']:,} neurons are fixed input and output neurons across all tiers; "
+                          f"{t['free']:,} selected by firing order. " if t.get("pinned") else "")
+                self.tier_info.setToolTip("Nested tier selected according to FlyWire firing order. " + pinned +
+                                          "Deviation benchmarked for looming, retreat, and steering inputs "
+                                          "(tools/fidelity.py). Speed measured on benchmark machine "
+                                          f"({self.tier_machine}).")
             else:
-                self.tier_info.setText("Bu boyut için ölçüm yok.")
+                self.tier_info.setText("No benchmark data for this size.")
         else:
-            self.tier_info.setText("" if n == TOY_SIZES[0] else "Sentetik yük: davranışı değiştirmez, "
-                                   "yalnız hesaplama maliyetini dener.")
+            self.tier_info.setText("" if n == TOY_SIZES[0] else "Synthetic benchmark: does not alter behaviour, "
+                                   "only tests computational load.")
         self.tier_info.setVisible(bool(self.tier_info.text()))
 
     def _hw_activated(self, i: int):
@@ -1110,7 +1110,7 @@ class Control(QWidget):
         if self._gpu_scanned or self._gpu_scanning or not self.has_wgpu:
             return
         self._gpu_scanning = True
-        self.gpu_note.setText("GPU'lar aranıyor…")
+        self.gpu_note.setText("Scanning for GPUs…")
         threading.Thread(target=lambda: setattr(self, "_gpu_result", list_gpus()), daemon=True).start()
         self._gpu_poll.start()
 
@@ -1163,7 +1163,7 @@ class Control(QWidget):
         self.hw.setCurrentIndex(target_idx)
         self.hw.blockSignals(False)
 
-        self.gpu_note.setText(f"{len(self.gpus)} GPU bulundu" if self.gpus else "Kullanılabilir GPU bulunamadı")
+        self.gpu_note.setText(f"{len(self.gpus)} GPU(s) found" if self.gpus else "No compatible GPU found")
 
         n = self._sizes()[self.size.value()]
         if self.prefs.hardware == "gpu" and self.gpus:
@@ -1227,17 +1227,17 @@ class Control(QWidget):
     def _refresh(self):
         r = self.runner
         if r.failed or not r.alive:
-            self._set_pill("Hata", ERROR)
+            self._set_pill("Error", ERROR)
             self._clear_stats()
             self.telemetry.setText("")
-            self._show_warn("Motor hata verdi ya da durdu (ayrıntı konsolda). Daha küçük bir boyut seçmeyi dene.",
+            self._show_warn("Engine encountered an error or stopped (see console for details). Try selecting a smaller circuit size.",
                             error=True)
             return
         st = r.stats()
         if not st["ready"]:
-            self._set_pill("Başlıyor", MUTED)
+            self._set_pill("Starting", MUTED)
             self._clear_stats()
-            self.telemetry.setText("Motor başlıyor (ilk açılışta derleme birkaç saniye sürer)…")
+            self.telemetry.setText("Engine initializing (initial compilation takes a few seconds)…")
             self._show_warn("")
             return
         color, name = STATE_STYLE.get(r.state, (FAINT, r.state))
@@ -1249,26 +1249,26 @@ class Control(QWidget):
         self.s_cpu.set(f"%{100 * st['cpu']:.0f}")
         self.s_spk.set(f"{st['spikes']:,.0f}")
         v = st.get("valence", 0.0)
-        self.s_val.set(f"{v:+.2f} " + ("arzu" if v > 0.05 else "korku" if v < -0.05 else "nötr"))
+        self.s_val.set(f"{v:+.2f} " + ("desire" if v > 0.05 else "fear" if v < -0.05 else "neutral"))
         self.s_vm.set(f"{st.get('v_motor', 0.0):.2f}")
-        self.s_gear.set({"stand": "durma", "walk": "yürüme", "fly_short": "kaçış uçuşu",
-                         "fly_long": "kovalama uçuşu"}.get(st.get("gear", "stand"), "–"))
-        self.active.setText(f"Aktif nöron: {st['active']:,.0f} / {st['n']:,}" if st["active"] >= 0
-                            else f"Nöron: {st['n']:,} (GPU hepsini her adımda günceller)")
+        self.s_gear.set({"stand": "stand", "walk": "walk", "fly_short": "escape flight",
+                         "fly_long": "foraging flight"}.get(st.get("gear", "stand"), "–"))
+        self.active.setText(f"Active neurons: {st['active']:,.0f} / {st['n']:,}" if st["active"] >= 0
+                            else f"Neurons: {st['n']:,} (GPU updates all every step)")
         where = "CPU"
         if r.cfg.backend == "gpu":
             g = next((g for g in self.gpus if g["index"] == r.cfg.adapter), None)
             where = f"GPU {g['name']} ({g['backend']})" if g else "GPU"
-        self.telemetry.setText(f"Çalışan: {where} · zaman adımı {r.cfg.dt:g} ms")
+        self.telemetry.setText(f"Backend: {where} · time step {r.cfg.dt:g} ms")
         self._describe_vision(st.get("vision", 0.0))
         if hasattr(self, "hunger_label") and self.overlay and hasattr(self.overlay, "metabolism"):
             m = self.overlay.metabolism
             if not m.enabled:
-                self.hunger_label.setText("Devre Dışı (Sürekli Aç)")
+                self.hunger_label.setText("Disabled (Constant Hunger)")
             else:
                 pct = m.hunger_pct
-                status_desc = "Çok Aç" if pct >= 75 else "İştahlı" if pct >= 40 else "Tok"
-                self.hunger_label.setText(f"Açlık: %{pct} ({status_desc})")
+                status_desc = "Starving" if pct >= 75 else "Hungry" if pct >= 40 else "Satiated"
+                self.hunger_label.setText(f"Hunger: {pct}% ({status_desc})")
         slow = st["rt"] < 1.0 or st["lag_ms"] > 100
-        self._show_warn("Bu ayar bu bilgisayar için ağır: sinek yavaş çekimde. "
-                        "Boyutu küçült ya da zaman adımını büyüt." if slow else "")
+        self._show_warn("Simulation is heavy for this machine: running in slow motion. "
+                        "Reduce size or increase time step." if slow else "")

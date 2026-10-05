@@ -85,29 +85,29 @@ def draw_reward_plus(p: QPainter, x: float, y: float, progress: float, scale: fl
 
 SKIN_METADATA: dict[str, dict[str, str]] = {
     "classic": {
-        "title": "Klasik",
-        "full_name": "Klasik (Vektör)",
-        "desc": "Bilimsel iskelet; proboscis, kafa, toraks ve 6 bacaklı tripod gait geometrisi.",
+        "title": "Classic",
+        "full_name": "Classic (Vector)",
+        "desc": "Scientific skeleton; proboscis, head, thorax, and 6-legged tripod gait geometry.",
     },
     "chubby": {
-        "title": "Tombul",
-        "full_name": "Tombul Sinek (Chibi)",
-        "desc": "Pofuduk gövde, sevimli kanatlar ve 16 adımlık dorsal yürüyüş & uçuş animasyonu.",
+        "title": "Chubby",
+        "full_name": "Chubby Fly (Chibi)",
+        "desc": "Fluffy body, cute wings, and 16-frame dorsal walking & flight animation.",
     },
     "cyborg": {
-        "title": "Siber",
-        "full_name": "Siber Sinek (Cyborg)",
-        "desc": "Mecha robotik gövde, parlak mavi enerji kanatları ve sibernetik eklemler.",
+        "title": "Cyborg",
+        "full_name": "Cyborg Fly (Mecha)",
+        "desc": "Mecha robotic body, glowing blue energy wings, and cybernetic joints.",
     },
     "candy": {
-        "title": "Pastel",
-        "full_name": "Pastel Sinek (Peri / Candy)",
-        "desc": "Renkli peri/şeker kanatları, yumuşak pastel tonlar ve hafif adımlar.",
+        "title": "Candy",
+        "full_name": "Candy Fly (Fairy)",
+        "desc": "Colorful fairy/candy wings, soft pastel tones, and delicate footsteps.",
     },
     "cartoon": {
-        "title": "Çizgi Film",
-        "full_name": "Çizgi Film (Retro)",
-        "desc": "Karakteristik iri gözler, sırt deseni ve klasik çizgi film tarzı.",
+        "title": "Cartoon",
+        "full_name": "Cartoon Fly (Retro)",
+        "desc": "Characteristic big eyes, patterned back, and classic cartoon style.",
     },
 }
 

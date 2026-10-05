@@ -408,7 +408,7 @@ def test_help_overlay_toggle_and_rendering(app):
 
     # 4. Hover detection for help button
     view._check_hover(help_rect.center())
-    assert "Rehber" in view._hover_text
+    assert "Guide" in view._hover_text
 
 
 def test_adaptive_timer_throttling(app):
@@ -445,26 +445,26 @@ def test_neural_network_module_optional_and_system_load_warning(app):
 
     # Explanation text exists and describes the network
     assert hasattr(ctrl, "neural_desc_label")
-    assert "Mantar Gövdesi" in ctrl.neural_desc_label.text()
+    assert "Mushroom Body" in ctrl.neural_desc_label.text()
     assert "Kenyon" in ctrl.neural_desc_label.text()
 
     # System load warning note exists and mentions additional load / CPU/GPU
     assert hasattr(ctrl, "lbl_system_load_warn")
     warn_text = ctrl.lbl_system_load_warn.text()
-    assert "ek sistem yükü" in warn_text.lower()
-    assert "cpu/gpu" in warn_text.lower() or "hesaplayıp" in warn_text.lower()
+    assert "system load" in warn_text.lower()
+    assert "cpu/gpu" in warn_text.lower()
 
     # By default, visualization is optional (hidden to save system load)
     assert not ctrl.mb_view3d_container.isVisible()
     assert not ctrl.mb_view3d.isVisible()
-    assert "Görüntüle" in ctrl.btn_toggle_3d.text()
+    assert "View" in ctrl.btn_toggle_3d.text()
 
     # Toggle view on
     ctrl.btn_toggle_3d.click()
     app.processEvents()
     assert ctrl.mb_view3d_container.isVisible()
     assert ctrl.mb_view3d.isVisible()
-    assert "Gizle" in ctrl.btn_toggle_3d.text()
+    assert "Hide" in ctrl.btn_toggle_3d.text()
 
     # Toggle view off
     ctrl.btn_toggle_3d.click()
@@ -477,9 +477,9 @@ def test_neural_network_module_optional_and_system_load_warning(app):
     app.processEvents()
 
     assert hasattr(ctrl, "circ_3d_desc")
-    assert "sinir ağlarını" in ctrl.circ_3d_desc.text().lower()
+    assert "neural" in ctrl.circ_3d_desc.text().lower()
     assert hasattr(ctrl, "lbl_circ_system_load_warn")
-    assert "ek sistem yükü" in ctrl.lbl_circ_system_load_warn.text().lower()
+    assert "system load" in ctrl.lbl_circ_system_load_warn.text().lower()
     assert hasattr(ctrl, "btn_circ_view_3d")
 
 

@@ -1,4 +1,4 @@
-"""FlyWire v783 3D Mushroom Body (Mantar Gövdesi) Interactive Visualization.
+"""FlyWire v783 3D Mushroom Body Interactive Visualization.
 
 Provides a 3D neural circuit and mental map visualizer showing:
   * Bilateral Mushroom Body (Kenyon cells, Calyx, Pedunculus, Lobes)
@@ -654,11 +654,11 @@ class MushroomBody3DView(QWidget):
         # 1. Top-Left: Header
         p.setFont(font_title)
         p.setPen(QColor(236, 236, 241, 230))
-        p.drawText(16, 26, "3D MANTAR GÖVDESİ & ZİHİN HARİTASI")
+        p.drawText(16, 26, "3D MUSHROOM BODY & MENTAL MAP")
 
         p.setFont(font_small)
         p.setPen(QColor(139, 139, 150, 200))
-        p.drawText(16, 42, f"FlyWire v783 • {self.data.n_kc:,} Kenyon Hücresi | {self.data.n_mbon} MBON | {self.data.n_dan} DAN")
+        p.drawText(16, 42, f"FlyWire v783 • {self.data.n_kc:,} Kenyon Cells | {self.data.n_mbon} MBONs | {self.data.n_dan} DANs")
 
         # 2. Top-Right: Toolbar buttons
         self._draw_toolbar(p, w)
@@ -682,33 +682,33 @@ class MushroomBody3DView(QWidget):
 
         if w < 640:
             buttons = [
-                ("iso", "İzo"),
-                ("dorsal", "Üst"),
-                ("ant", "Ön"),
-                ("rot", "Döndür" if not self.auto_rotate else "Dur"),
-                ("reset", "Sıfırla"),
-                ("help", "?" if not self._show_help else "? Açık"),
+                ("iso", "Iso"),
+                ("dorsal", "Top"),
+                ("ant", "Front"),
+                ("rot", "Rotate" if not self.auto_rotate else "Stop"),
+                ("reset", "Reset"),
+                ("help", "?" if not self._show_help else "? Open"),
             ]
             mode_buttons = [
-                (MODE_VALENCE, "Zihin"),
-                (MODE_PLASTICITY, "Plastisite"),
-                (MODE_ANATOMY, "Anatomi"),
-                (MODE_ACTIVITY, "Aktivite"),
+                (MODE_VALENCE, "Valence"),
+                (MODE_PLASTICITY, "Plasticity"),
+                (MODE_ANATOMY, "Anatomy"),
+                (MODE_ACTIVITY, "Activity"),
             ]
         else:
             buttons = [
-                ("iso", "3D İzometrik"),
-                ("dorsal", "Üst (Dorsal)"),
-                ("ant", "Ön (Anterior)"),
-                ("rot", "Otomatik Dönüş" if not self.auto_rotate else "Dönüşü Durdur"),
-                ("reset", "Sıfırla"),
-                ("help", "?" if not self._show_help else "? Açık"),
+                ("iso", "3D Isometric"),
+                ("dorsal", "Top (Dorsal)"),
+                ("ant", "Front (Anterior)"),
+                ("rot", "Auto Rotate" if not self.auto_rotate else "Stop Rotation"),
+                ("reset", "Reset Camera"),
+                ("help", "?" if not self._show_help else "? Open"),
             ]
             mode_buttons = [
-                (MODE_VALENCE, "Zihin Haritası"),
-                (MODE_PLASTICITY, "Plastisite |Δw|"),
-                (MODE_ANATOMY, "Anatomi"),
-                (MODE_ACTIVITY, "Canlı Aktivite"),
+                (MODE_VALENCE, "Mental Map (Valence)"),
+                (MODE_PLASTICITY, "Plasticity |Δw|"),
+                (MODE_ANATOMY, "Anatomy"),
+                (MODE_ACTIVITY, "Live Activity"),
             ]
 
         bx = w - 16
@@ -776,7 +776,7 @@ class MushroomBody3DView(QWidget):
 
         p.setFont(font_small)
         p.setPen(QColor(139, 139, 150, 220))
-        p.drawText(vx, vy, "ÖĞRENİLMİŞ DEĞERLİK (ZİHİN)")
+        p.drawText(vx, vy, "LEARNED VALENCE (MENTAL MAP)")
 
         # Meter background
         my = vy + 6
@@ -805,11 +805,11 @@ class MushroomBody3DView(QWidget):
         p.setPen(v_color)
         p.drawText(vx + v_width + 10, my + 9, f"{val:+.2f}")
 
-        # 2. Dopamine Bars: PAM (Ödül) & PPL1 (Ceza)
+        # 2. Dopamine Bars: PAM (Reward) & PPL1 (Punish)
         d_x = vx + v_width + 75
         p.setFont(font_small)
         p.setPen(QColor(139, 139, 150, 220))
-        p.drawText(d_x, vy, "DOPAMİN (PAM ÖDÜL / PPL1 CEZA)")
+        p.drawText(d_x, vy, "DOPAMINE (PAM REWARD / PPL1 PUNISH)")
 
         d_bar_w = 80
         # PAM Gold Bar
@@ -835,19 +835,19 @@ class MushroomBody3DView(QWidget):
         if k_x < bar_rect.right() - 140:
             p.setFont(font_small)
             p.setPen(QColor(139, 139, 150, 220))
-            p.drawText(k_x, vy, "AKTİF KC (SEYREK KOD)")
+            p.drawText(k_x, vy, "ACTIVE KC (SPARSE CODE)")
 
             p.setFont(font_mono)
             p.setPen(QColor(236, 236, 241))
             sparsity = (self.kc_active_count / max(1, self.data.n_kc)) * 100
-            p.drawText(k_x, my + 9, f"{self.kc_active_count:,} / {self.data.n_kc:,} (%{sparsity:.1f})")
+            p.drawText(k_x, my + 9, f"{self.kc_active_count:,} / {self.data.n_kc:,} ({sparsity:.1f}%)")
 
         # 4. MBON Balance
         m_x = k_x + 160
         if m_x < bar_rect.right() - 110:
             p.setFont(font_small)
             p.setPen(QColor(139, 139, 150, 220))
-            p.drawText(m_x, vy, "MBON DENGESİ")
+            p.drawText(m_x, vy, "MBON BALANCE")
 
             p.setFont(font_mono)
             p.setPen(QColor(56, 189, 248))
@@ -875,11 +875,11 @@ class MushroomBody3DView(QWidget):
         # Header Title & Subtitle
         p.setFont(QFont("Segoe UI", 10, QFont.Bold))
         p.setPen(QColor(240, 240, 248))
-        p.drawText(card_x + 16, card_y + 24, "MANTAR GÖVDESİ & ZİHİN HARİTASI REHBERİ")
+        p.drawText(card_x + 16, card_y + 24, "MUSHROOM BODY & MENTAL MAP GUIDE")
 
         p.setFont(QFont("Segoe UI", 8))
         p.setPen(QColor(140, 145, 160))
-        p.drawText(card_x + 16, card_y + 40, "FlyWire v783 tam konnektom 3D nöral devre ve pekiştirmeli öğrenme rehberi")
+        p.drawText(card_x + 16, card_y + 40, "FlyWire v783 full connectome 3D neural circuit & reinforcement learning guide")
 
         # Close button in top-right of card
         close_w, close_h = 56, 20
@@ -891,7 +891,7 @@ class MushroomBody3DView(QWidget):
         p.drawRoundedRect(close_rect, 4, 4)
         p.setFont(QFont("Segoe UI", 8, QFont.DemiBold))
         p.setPen(QColor(220, 220, 230))
-        p.drawText(close_rect, Qt.AlignCenter, "Kapat")
+        p.drawText(close_rect, Qt.AlignCenter, "Close")
 
         # 2x2 Information Panels
         panel_w = (card_w - 36) // 2
@@ -904,42 +904,42 @@ class MushroomBody3DView(QWidget):
         panels = [
             (
                 QRect(panel1_x, top_y, panel_w, panel_h),
-                "1. ZİHİN HARİTASI & RENKLER",
+                "1. MENTAL MAP & COLOR CODES",
                 [
-                    (QColor(16, 185, 129), "Yeşil / Altın (Ödül)", "PAM pekiştirmesi -> Yaklaşma arzusu (Appetitive MBON)."),
-                    (QColor(239, 68, 68), "Kırmızı / Yakut (Ceza)", "PPL1 baskılaması -> Kaçınma korkusu (Aversive MBON)."),
-                    (QColor(56, 189, 248), "Buz Mavisi (Naive)", "Deneyimlenmemiş nötr koku sinapsları."),
-                    (QColor(255, 255, 255), "Beyaz Parlama (Aktivite)", "Anlık ateşlenen Kenyon hücreleri ve akson iletimi."),
+                    (QColor(16, 185, 129), "Green / Gold (Reward)", "PAM reinforcement -> Approach desire (Appetitive MBON)."),
+                    (QColor(239, 68, 68), "Red / Ruby (Punishment)", "PPL1 depression -> Avoidance fear (Aversive MBON)."),
+                    (QColor(56, 189, 248), "Cyan Blue (Naive)", "Untrained, neutral odor synapses."),
+                    (QColor(255, 255, 255), "White Sparks (Activity)", "Live spiking Kenyon cells and axonal propagation."),
                 ],
             ),
             (
                 QRect(panel2_x, top_y, panel_w, panel_h),
-                "2. BİYOLOJİK BÖLGELER (ANATOMİ)",
+                "2. BIOLOGICAL REGIONS (ANATOMY)",
                 [
-                    (QColor(76, 201, 240), "Kaliks (Calyx)", "Arka çanak; 5000+ KC soması koku girdisi toplar."),
-                    (QColor(168, 85, 247), "Pedunkulus", "Kenyon aksonlarının loblara uzanan ana demeti."),
-                    (QColor(245, 158, 11), "Alfa / Beta Lobları", "Uzun süreli bellek ve yaklaşma/kaçınma ayrımı."),
-                    (QColor(6, 182, 212), "Gama Lobu", "Kısa süreli koku belleği ve hızlı plastisite alanı."),
+                    (QColor(76, 201, 240), "Calyx", "Posterior cup; 5,000+ KC somas receive olfactory input."),
+                    (QColor(168, 85, 247), "Pedunculus", "Main bundle of Kenyon cell axons extending to lobes."),
+                    (QColor(245, 158, 11), "Alpha / Beta Lobes", "Long-term memory and approach/avoidance balance."),
+                    (QColor(6, 182, 212), "Gamma Lobe", "Short-term odor memory and rapid plasticity site."),
                 ],
             ),
             (
                 QRect(panel1_x, bot_y, panel_w, panel_h),
-                "3. DOPAMİN & CANLI TELEMETRİ",
+                "3. DOPAMINE & LIVE TELEMETRY",
                 [
-                    (QColor(245, 158, 11), "PAM Dopamin Kümesi", "Şeker ödülünde altın dalgalar yayarak ödüllendirir."),
-                    (QColor(239, 68, 68), "PPL1 Dopamin Kümesi", "Acı/şok anında kırmızı dalgalar ile aversif öğretir."),
-                    (QColor(236, 236, 241), "Değerlik [-1.0 ... +1.0]", "-1.0 tam kaçınma, +1.0 tam yaklaşma ibresi."),
-                    (QColor(56, 189, 248), "MBON & Aktif KC", "Net çıkış oranı ve kokuyu tanıyan anlık hücre sayısı."),
+                    (QColor(245, 158, 11), "PAM Dopamine Cluster", "Emits golden waves during sugar reward to reinforce approach."),
+                    (QColor(239, 68, 68), "PPL1 Dopamine Cluster", "Emits red waves during nociception/impact to teach avoidance."),
+                    (QColor(236, 236, 241), "Valence [-1.0 ... +1.0]", "-1.0 full avoidance fear, +1.0 full approach desire."),
+                    (QColor(56, 189, 248), "MBON & Active KC", "Net output balance and instantaneous cell count recognizing cue."),
                 ],
             ),
             (
                 QRect(panel2_x, bot_y, panel_w, panel_h),
-                "4. FARE & KAMERA KONTROLLERİ",
+                "4. MOUSE & CAMERA CONTROLS",
                 [
-                    (QColor(140, 145, 160), "Sol Tık + Sürükle", "3D serbest döndürme (Orbit)."),
-                    (QColor(140, 145, 160), "Sağ Tık / Shift", "Kamerayı iki boyutta kaydırma (Pan)."),
-                    (QColor(140, 145, 160), "Fare Tekerleği", "Kamerayı yakınlaştır / uzaklaştır (Zoom)."),
-                    (QColor(140, 145, 160), "Çift Tık / Sıfırla", "Varsayılan izometrik açıya geri dönüş."),
+                    (QColor(140, 145, 160), "Left Click + Drag", "3D free rotation (Orbit)."),
+                    (QColor(140, 145, 160), "Right Click / Shift", "2D camera translation (Pan)."),
+                    (QColor(140, 145, 160), "Mouse Wheel", "Camera zoom in / out."),
+                    (QColor(140, 145, 160), "Double Click / Reset", "Return to default isometric view."),
                 ],
             ),
         ]
@@ -1059,17 +1059,17 @@ class MushroomBody3DView(QWidget):
         for bid, rect in self._btn_rects.items():
             if rect.contains(pos):
                 btn_tooltips = {
-                    "help": "Zihin Haritası ve Biyolojik Rehber [Aç/Kapat]",
-                    "close_help": "Rehberi Kapat",
-                    "iso": "3D İzometrik Görünüm Açısı",
-                    "dorsal": "Üst (Dorsal) Görünüm Açısı",
-                    "ant": "Ön (Anterior) Görünüm Açısı",
-                    "rot": "Otomatik 3D Döndürmeyi Başlat/Durdur",
-                    "reset": "Kamera Açısını ve Konumunu Sıfırla",
-                    "mode_valence": "Zihin Haritası Modu: Değerlik (Ödül / Ceza)",
-                    "mode_plasticity": "Sinaptik Plastisite Modu: |Δw| Değişimi",
-                    "mode_anatomy": "Anatomi Modu: Biyolojik Lob Kompartmanları",
-                    "mode_activity": "Canlı Aktivite Modu: Nöral Ateşleme & Kıvılcımlar",
+                    "help": "Mental Map & Biological Guide [Toggle]",
+                    "close_help": "Close Guide",
+                    "iso": "3D Isometric View Angle",
+                    "dorsal": "Top (Dorsal) View Angle",
+                    "ant": "Front (Anterior) View Angle",
+                    "rot": "Toggle Auto 3D Rotation",
+                    "reset": "Reset Camera Angle & Position",
+                    "mode_valence": "Mental Map Mode: Valence (Reward / Punishment)",
+                    "mode_plasticity": "Synaptic Plasticity Mode: |Δw| Weight Shifts",
+                    "mode_anatomy": "Anatomy Mode: Biological Lobe Compartments",
+                    "mode_activity": "Live Activity Mode: Neural Spikes & Sparks",
                 }
                 found = btn_tooltips.get(bid, "")
                 if found:
@@ -1082,14 +1082,14 @@ class MushroomBody3DView(QWidget):
                 dist = math.hypot(pos.x() - sx[0], pos.y() - sy[0])
                 if dist < 28:
                     titles = {
-                        "calyx_left": "Sol Kaliks (Kenyon Hücresi Soması ve Koku Girişi)",
-                        "calyx_right": "Sağ Kaliks (Kenyon Hücresi Soması ve Koku Girişi)",
-                        "gamma_left": "Sol Gamma Lobu (Yatay Lob: Koku Belleği)",
-                        "gamma_right": "Sağ Gamma Lobu (Yatay Lob: Koku Belleği)",
-                        "alpha_left": "Sol Alfa/Beta Lobu (Dikey Lob: Kaçınma / Yaklaşma)",
-                        "alpha_right": "Sağ Alfa/Beta Lobu (Dikey Lob: Kaçınma / Yaklaşma)",
-                        "pam_reward": "PAM Dopamin Kümesi (Ödül / Şeker / Nektar)",
-                        "ppl1_punish": "PPL1 Dopamin Kümesi (Ceza / Nosisepsiyon / Duvar Şoku)",
+                        "calyx_left": "Left Calyx (Kenyon Cell Somas & Olfactory Input)",
+                        "calyx_right": "Right Calyx (Kenyon Cell Somas & Olfactory Input)",
+                        "gamma_left": "Left Gamma Lobe (Horizontal Lobe: Odor Memory)",
+                        "gamma_right": "Right Gamma Lobe (Horizontal Lobe: Odor Memory)",
+                        "alpha_left": "Left Alpha/Beta Lobe (Vertical Lobe: Avoidance / Approach)",
+                        "alpha_right": "Right Alpha/Beta Lobe (Vertical Lobe: Avoidance / Approach)",
+                        "pam_reward": "PAM Dopamine Cluster (Reward / Sugar / Food)",
+                        "ppl1_punish": "PPL1 Dopamine Cluster (Punishment / Nociception / Wall Shock)",
                     }
                     found = titles.get(name, name)
                     break

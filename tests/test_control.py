@@ -57,14 +57,14 @@ def test_readouts_and_state(app):
     r = FakeRunner()
     c = Control(FakeOverlay(), r)
     c._refresh()
-    assert "Yürüyor" in c.pill.text()
+    assert "Walking" in c.pill.text()
     assert c.s_rt.value.text() == "×5.0" and c.warn.isHidden()
     r.rt, r.state = 0.5, "fly"
     c._refresh()
-    assert "Uçarak" in c.pill.text() and not c.warn.isHidden()
+    assert "Escaping" in c.pill.text() and not c.warn.isHidden()
     r.failed = True
     c._refresh()
-    assert "Hata" in c.pill.text() and c.warn.objectName() == "Error"
+    assert "Error" in c.pill.text() and c.warn.objectName() == "Error"
 
 
 def test_size_change_restarts_engine(app):
@@ -111,8 +111,8 @@ def test_tray_tooltip_and_open_control(app):
     c = Control(o, r)
     t = Tray(app, c, r)
     t._refresh()
-    assert "Yürüyor" in t.toolTip()
-    assert t.status.text() == "Sinek: Yürüyor"
+    assert "Walking" in t.toolTip()
+    assert t.status.text() == "Fly: Walking"
     t._open_control()
     assert c.isVisible()
 
@@ -193,7 +193,7 @@ def test_learning_page_shows_valence_forgets_and_switches_learning(app):
     r.stats = lambda: dict(base(), valence=-0.6, v_motor=1.25, gear="fly_long")
     c = Control(FakeOverlay(), r)
     c._refresh()
-    assert "korku" in c.s_val.value.text() and c.s_vm.value.text() == "1.25" and "kovalama" in c.s_gear.value.text()
+    assert "fear" in c.s_val.value.text() and c.s_vm.value.text() == "1.25" and "foraging flight" in c.s_gear.value.text()
     c.forget_btn.click()
     assert r.forgot == 1
     c.learn_enable.setChecked(False)

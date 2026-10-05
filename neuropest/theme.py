@@ -24,14 +24,14 @@ ACCENT = "#4cc9f0"
 WARN = "#f5a524"
 ERROR = "#ff5d5d"
 
-# colour and Turkish label per behaviour state, used by the state pill and the tray icon
+# colour and English label per behaviour state, used by the state pill and the tray icon
 STATE_STYLE = {
-    STAND: ("#a1a1aa", "Duruyor"),
-    WALK: ("#3ddc97", "Yürüyor"),
-    RETREAT: (WARN, "Geri çekiliyor"),
-    FLY: (ERROR, "Uçarak kaçıyor"),
-    GROOM: ("#7dd3fc", "Temizleniyor"),
-    FREEZE: ("#c4b5fd", "Donuyor"),
+    STAND: ("#a1a1aa", "Standing"),
+    WALK: ("#3ddc97", "Walking"),
+    RETREAT: (WARN, "Retreating"),
+    FLY: (ERROR, "Escaping"),
+    GROOM: ("#7dd3fc", "Grooming"),
+    FREEZE: ("#c4b5fd", "Freezing"),
 }
 
 QSS = f"""
