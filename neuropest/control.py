@@ -804,8 +804,24 @@ class Control(QWidget):
         labeled(card, "Circuit Type", self.circ)
 
         if not CACHE.exists():
-            card.body.addWidget(_label("For real connectome: uv run python tools/build_flywire.py "
-                                       "(see README)", "Hint", wrap=True))
+            download_btn = QPushButton("Download FlyWire Connectome (~135 MB)")
+            download_btn.setObjectName("Primary")
+            download_btn.setToolTip("Download FlyWire v783 and initialize real biological brain circuits.")
+
+            def _trigger_download():
+                from .data_manager import prompt_startup_data
+                if prompt_startup_data(self):
+                    self.circuits = [("flywire", "FlyWire v783 (real connectome)"), ("toy", "Toy circuit (synthetic benchmark)")]
+                    self.circ.blockSignals(True)
+                    self.circ.clear()
+                    self.circ.addItems([name for _, name in self.circuits])
+                    self.circ.setCurrentIndex(0)
+                    self.circ.blockSignals(False)
+                    self._circuit_changed(0)
+                    download_btn.setVisible(False)
+
+            download_btn.clicked.connect(_trigger_download)
+            card.body.addWidget(download_btn)
 
         head = QHBoxLayout()
         head.addWidget(_label("Circuit Size (Neuron Count)"))

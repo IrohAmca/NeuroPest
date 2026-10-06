@@ -273,7 +273,6 @@ class Fly:
     def update(self, dt: float, state: str, cursor: tuple[float, float], rect: Rect | PlayArea, steer: float = 0.0):
         """steer: right-minus-left DNa02 rate (Hz) from the brain; turns a walking or retreating fly."""
         speed = {STAND: 0.0, WALK: 70.0, FLY: 420.0, RETREAT: -45.0, GROOM: 0.0, FREEZE: 0.0}[state]     # retreat = backward walking
-        margin = 12.0 if state == FLY else 4.0
 
         # Transient filter on DNa02 steer (Rayshubskiy et al. 2025 biphasic filter: persistent input adapts)
         a_steer = 1.0 - math.exp(-dt / 0.4)

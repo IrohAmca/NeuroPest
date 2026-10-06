@@ -105,7 +105,6 @@ def build_mushroom_3d(raw_dir: Path = RAW_DIR,
     kcs["soma_z"] = kcs["soma_z"].fillna(kcs["pos_z"])
 
     kc_soma_norm = norm3d(kcs[["soma_x", "soma_y", "soma_z"]].to_numpy())
-    kc_pos_norm = norm3d(kcs[["pos_x", "pos_y", "pos_z"]].to_numpy())
     mbon_pos_norm = norm3d(mbons[["pos_x", "pos_y", "pos_z"]].to_numpy())
     dan_pos_norm = norm3d(dans[["pos_x", "pos_y", "pos_z"]].to_numpy())
 

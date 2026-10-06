@@ -28,7 +28,6 @@ def main():
     print("cell_class (sensory):")
     print(ann[ann.super_class.isin(["sensory", "sensory_ascending"])].cell_class.value_counts().to_string())
     pr = ann[(ann.cell_class == "visual") & ann.cell_type.isin(["R1-6", "R7", "R8"])]
-    xyz = pr[["pos_x", "pos_y", "pos_z"]].to_numpy(float)
     print("\nphotoreceptors:", len(pr))
     for scale_name, scale in [("voxels x,y=4nm z=40nm", np.array([4.0, 4.0, 40.0])), ("all axes equal (nm)", np.ones(3))]:
         print(f"\n== units: {scale_name}")

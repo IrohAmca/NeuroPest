@@ -1,8 +1,13 @@
 # NeuroPest
 
+[![CI](https://github.com/IrohAmca/NeuroPest/actions/workflows/ci.yml/badge.svg)](https://github.com/IrohAmca/NeuroPest/actions/workflows/ci.yml)
+[![License: PolyForm Noncommercial](https://img.shields.io/badge/License-PolyForm_Noncommercial_1.0.0-blue.svg)](LICENSE)
+[![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/downloads/)
+[![Connectome: FlyWire v783](https://img.shields.io/badge/Connectome-FlyWire_v783-10b981.svg)](https://flywire.ai/)
+
 A desktop fly pet that roams your screen and reacts dynamically to your mouse cursor. Its behavior is directly driven by a Leaky Integrate-and-Fire (LIF) simulation of the fruit fly (*Drosophila melanogaster*) connectome extracted from **FlyWire (v783)**.
 
-**Current State (v0.6+):** The mouse cursor is converted into three primary sensory streams, transformed into motor behaviors by the biological connectome:
+**Current State (v0.2.0):** The mouse cursor is converted into three primary sensory streams, transformed into motor behaviors by the biological connectome:
 - **Looming / approach velocity** $\rightarrow$ backward walking (MDN) when approached gently; explosive escape takeoff (Giant Fiber / DNp01) when approached rapidly.
 - **Cursor bearing / proximity** $\rightarrow$ left/right steering turns (DNa02).
 - **Motility & foraging drive** $\rightarrow$ tonic current into walking command neurons (DNp09 / P9).
@@ -21,7 +26,10 @@ uv sync
 uv run neuropest
 ```
 
-If the pre-built FlyWire connectome is not found on first launch, a toy circuit (146 neurons) runs as a fallback. See the [Real Data (FlyWire v783)](#real-data-flywire-v783) section below to build the full or reduced connectome tiers.
+> **Automated Connectome Setup:** On first launch, if the pre-built biological connectome is not detected, NeuroPest automatically offers to download and initialize the FlyWire v783 connectome (~135 MB) via a one-click setup dialog. You can also run immediately in lightweight Toy Circuit mode (146 neurons), or pre-fetch data from the terminal via:
+> ```bash
+> uv run neuropest-download
+> ```
 
 ### Key Behaviors & Controls
 
@@ -101,8 +109,8 @@ uv run python tools/fidelity.py          # ~5min: data/circuits/tiers.json (fide
 - **FlyWire Dataset Terms:** **CC BY-NC 4.0** (Attribution required, Non-Commercial use only; confirmed at [flywire.ai/guidelines](https://flywire.ai/guidelines)).
 - **Upstream Code:** Shiu et al. (2024) LIF reference model is MIT licensed.
 - This project is distributed strictly for non-commercial research and educational use. Commercial use requires permission from FlyWire.
-- **Citing NeuroPest:** See [CITATION.cff](file:///d:/Projects/NeuroPest/CITATION.cff) for GitHub and software citation metadata.
-- **Comprehensive Bibliography:** See [REFERENCES.md](file:///d:/Projects/NeuroPest/REFERENCES.md) for full citations, biological mechanism mapping, and BibTeX entries covering all neural subsystems (Connectome, Descending Motor Control, Mushroom Body, Metabolism, and Vision).
+- **Citing NeuroPest:** See [CITATION.cff](CITATION.cff) for GitHub and software citation metadata.
+- **Comprehensive Bibliography:** See [REFERENCES.md](REFERENCES.md) for full citations, biological mechanism mapping, and BibTeX entries covering all neural subsystems (Connectome, Descending Motor Control, Mushroom Body, Metabolism, and Vision).
 - **Foundational Studies:**
   - Dorkenwald et al. 2024 (*Nature* 634:124–138, FlyWire connectome). [doi:10.1038/s41586-024-07558-y](https://doi.org/10.1038/s41586-024-07558-y)
   - Schlegel et al. 2024 (*Nature* 634:139–152, cell types and annotations). [doi:10.1038/s41586-024-07686-5](https://doi.org/10.1038/s41586-024-07686-5)

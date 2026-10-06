@@ -306,9 +306,20 @@ def main():
         except Exception:
             pass
 
+    if "--download-data" in sys.argv or "--download" in sys.argv:
+        from .data_manager import main as download_main
+        download_main()
+        sys.exit(0)
+
     app = QApplication(sys.argv)
     app.setQuitOnLastWindowClosed(False)
     apply_theme(app)
+
+    # Prompt user to download FlyWire connectome if missing on startup
+    from .paths import CACHE
+    if not CACHE.exists() and "--toy" not in sys.argv:
+        from .data_manager import prompt_startup_data
+        prompt_startup_data()
 
     prefs = Preferences.load()
 

@@ -47,21 +47,21 @@ for c, (_, _, _, state_title) in enumerate(states):
 for r, skin_key in enumerate(skins):
     y = header_h + r * cell_h
     skin_title = AVAILABLE_SKINS[skin_key]
-    
+
     # Skin name label
     p.setPen(QColor(160, 180, 205))
     p.drawText(15, y, label_w - 20, cell_h, Qt.AlignVCenter | Qt.AlignLeft, skin_title)
-    
+
     # Draw fly for each state
     for c, (state, phase, fg, _) in enumerate(states):
         cx = label_w + c * cell_w + cell_w / 2
         cy = y + cell_h / 2
-        
+
         # Draw a faint target circle behind
         p.setPen(QColor(40, 45, 55))
         p.setBrush(QColor(30, 34, 42))
         p.drawEllipse(cx - 35, cy - 35, 70, 70)
-        
+
         # Heading facing slightly to the right (0.0 rad = East / right)
         heading = 0.0 if c != 2 else -0.3
         draw_fly(p, cx, cy, heading, state, phase, scale=1.5, feed_glow=fg, skin=skin_key)

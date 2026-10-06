@@ -12,7 +12,7 @@ from PySide6.QtWidgets import QApplication
 
 
 def main():
-    app = QApplication(sys.argv)
+    _app = QApplication(sys.argv)
     screen = QApplication.primaryScreen()
     geo = screen.geometry()
     print(f"screen {geo.width()}x{geo.height()} (device pixel ratio {screen.devicePixelRatio()})")

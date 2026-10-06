@@ -1,10 +1,35 @@
 [project]
 name = "neuropest"
-version = "0.1.0"
+version = "0.2.0"
 description = "Desktop fly pet driven by a FlyWire-based reduced neural circuit"
 readme = "README.md"
 license = { file = "LICENSE" }
 requires-python = ">=3.11"
+authors = [
+    { name = "IrohAmca", email = "aliaygun365@gmail.com" }
+]
+keywords = [
+    "drosophila",
+    "connectome",
+    "flywire",
+    "neuroscience",
+    "spiking-neural-networks",
+    "lif-simulation",
+    "desktop-pet",
+    "reinforcement-learning"
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Environment :: X11 Applications :: Qt",
+    "Intended Audience :: Science/Research",
+    "Intended Audience :: Education",
+    "Topic :: Scientific/Engineering :: Artificial Life",
+    "Topic :: Scientific/Engineering :: Bio-Informatics",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Operating System :: Microsoft :: Windows",
+]
 dependencies = [
     "PySide6>=6.7",
     "numpy>=1.26",
@@ -12,8 +37,14 @@ dependencies = [
     "numba>=0.68.0",
 ]
 
+[project.urls]
+Homepage = "https://github.com/IrohAmca/NeuroPest"
+Repository = "https://github.com/IrohAmca/NeuroPest"
+Issues = "https://github.com/IrohAmca/NeuroPest/issues"
+
 [project.scripts]
 neuropest = "neuropest.app:main"
+neuropest-download = "neuropest.data_manager:main"
 
 [project.optional-dependencies]
 gpu = [
@@ -30,6 +61,7 @@ packages = ["neuropest"]
 [dependency-groups]
 dev = [
     "pytest>=9.1.1",
+    "ruff>=0.8.0",
 ]
 # only tools/build_flywire.py (and the tests that build a tiny dataset) read parquet; the running app never does.
 # Installed by default (see default-groups); `uv sync --no-group build` leaves them out.
@@ -40,3 +72,16 @@ build = [
 
 [tool.uv]
 default-groups = ["dev", "build"]
+
+[tool.ruff]
+line-length = 120
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "W"]
+ignore = [
+    "E501",  # line length handled flexibly in scientific code
+    "E402",  # module level import not at top of file (used for delayed Qt/Numba imports)
+    "E741",  # ambiguous variable name in mathematical matrices
+    "F401",  # imported but unused
+]

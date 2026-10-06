@@ -156,7 +156,7 @@ def main():
                                                          "Tm3", "Tm4", "Tm9", "L1", "L2", "L3")]
     j = {n: names.index(n) for n in vpn}
     score = sorted(((late["loom"][j[n]] - late["uniform"][j[n]], n) for n in vpn), reverse=True)[:a.top]
-    print(f"\nvisual projection types most driven by the looming disk (late rate minus the uniform scene):")
+    print("\nvisual projection types most driven by the looming disk (late rate minus the uniform scene):")
     for s, n in score:
         print(f"  {n:10s} loom {late['loom'][j[n]]:6.1f}  uniform {late['uniform'][j[n]]:6.1f}  slide {late['slide'][j[n]]:6.1f}  "
               f"recede {late['recede'][j[n]]:6.1f}  flash {late['flash'][j[n]]:6.1f}  peak(loom) {peak['loom'][j[n]]:6.1f}")

@@ -22,7 +22,7 @@ def picture(r: Retina, path):
     from PySide6.QtGui import QColor, QImage, QPainter
     from PySide6.QtWidgets import QApplication
 
-    app = QApplication.instance() or QApplication(sys.argv)
+    _app = QApplication.instance() or QApplication(sys.argv)
     W, H = 760, 380
     img = QImage(W, H, QImage.Format_RGB32)
     img.fill(QColor(20, 20, 24))

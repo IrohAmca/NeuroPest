@@ -53,9 +53,7 @@ def main():
     for side in ("left", "right"):
         m = (pr & (ann.side == side)).to_numpy()
         p = P[m]
-        t = ann[m].cell_type.to_numpy()
         n, w = local_normals(p)
-        out = p - centre if True else None
         sign = np.sign((n * (p - p.mean(0))).sum(1))             # orient normals away from the eye's own centroid? no:
         # orient away from the brain centre (the point halfway between the two eye centroids shifted to the OL)
         sign = np.sign((n * (p - centre)).sum(1))

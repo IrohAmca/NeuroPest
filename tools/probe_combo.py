@@ -22,7 +22,8 @@ def main():
     g = net.groups
     every = np.arange(net.n)
     print(f"{net.n:,} neurons.  cells: GF Hz / MDN Hz")
-    print(f"{'LOOM \\ RETREAT_IN':>18} " + " ".join(f"{r:>11}" for r in RETREAT))
+    hdr = "LOOM \\ RETREAT_IN"
+    print(f"{hdr:>18} " + " ".join(f"{r:>11}" for r in RETREAT))
     for lo in LOOM:
         row = []
         for re in RETREAT:

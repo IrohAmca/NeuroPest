@@ -148,7 +148,7 @@ def generate_tripod_walk_frames(base_arr, pinned, leg_tips, stride=8.0, lift=2.5
 
 def generate_thumbnails(skins_root):
     from PySide6.QtWidgets import QApplication
-    app = QApplication.instance() or QApplication(sys.argv)
+    _app = QApplication.instance() or QApplication(sys.argv)
     from neuropest.render import AVAILABLE_SKINS, draw_fly
     thumb_dir = os.path.join(skins_root, "thumbnails")
     os.makedirs(thumb_dir, exist_ok=True)
