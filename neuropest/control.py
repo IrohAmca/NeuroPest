@@ -26,9 +26,10 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
+from PySide6.QtGui import QIcon
 
 from .mb_view3d import MushroomBody3DView
-from .paths import CACHE, EYE, FIELD, TIERS
+from .paths import CACHE, EYE, FIELD, SKIN_THUMBNAILS, TIERS
 from .preferences import Preferences
 from .render import AVAILABLE_SKINS, SKIN_METADATA
 from .runner import GPU_AUTO_MIN_NEURONS, EngineConfig, list_gpus, pick_gpu
@@ -496,10 +497,14 @@ class Control(QWidget):
         self.has_eye = CACHE.exists() and EYE.exists() and FIELD.exists()
         self.vision = QCheckBox("Screen Capture Vision (Compound Eye Perception)", enabled=self.has_eye)
         self.vision.setToolTip("Feeds real desktop screen pixels into the fly's retinotopic visual detectors (480 px visual cone) instead of synthetic cursor coordinates.")
+        init_on = bool(self.has_eye and (getattr(self.runner, "vision", False) or getattr(self.prefs, "vision_enabled", False)))
+        self.vision.setChecked(init_on)
+        self.runner.vision = init_on
         self.vision.toggled.connect(self._on_vision_toggled)
         card.body.addWidget(self.vision)
 
-        hgt = QSlider(Qt.Horizontal, minimum=40, maximum=300, value=int(self.runner.eye_height),
+        hgt = QSlider(Qt.Horizontal, minimum=40, maximum=300,
+                      value=int(getattr(self.prefs, "eye_height", self.runner.eye_height)),
                       enabled=self.has_eye)
         hgt.valueChanged.connect(self._on_eye_height_changed)
         slider_row(card, "Eye Height (Viewing Elevation)",
@@ -509,7 +514,7 @@ class Control(QWidget):
         self.vision_info = _label("", "Faint", wrap=True)
         card.body.addWidget(self.vision_info)
         lay.addWidget(card)
-        self._describe_vision(0.0)
+        self._describe_vision(1.0 if init_on else 0.0)
 
     def _describe_vision(self, state: float):
         if not self.has_eye:
@@ -951,8 +956,14 @@ class Control(QWidget):
             btn = QToolButton()
             btn.setCheckable(True)
             btn.setChecked(key == cur_skin)
+            btn.setToolButtonStyle(Qt.ToolButtonTextUnderIcon)
             btn.setCursor(Qt.PointingHandCursor)
-            btn.setFixedSize(92, 34)
+            btn.setFixedSize(86, 76)
+
+            thumb_path = SKIN_THUMBNAILS / f"{key}.png"
+            if thumb_path.exists():
+                btn.setIcon(QIcon(str(thumb_path)))
+            btn.setIconSize(QSize(40, 40))
             btn.setText(meta["title"])
             btn.setToolTip(f"{meta['full_name']}\n{meta['desc']}")
 
@@ -961,9 +972,9 @@ class Control(QWidget):
                     background: #11151c;
                     border: 1px solid #27303f;
                     border-radius: 8px;
-                    padding: 6px 10px;
+                    padding: 6px 2px 4px 2px;
                     color: #94a3b8;
-                    font-size: 12px;
+                    font-size: 11px;
                     font-weight: 500;
                 }
                 QToolButton:hover {

@@ -84,7 +84,7 @@ def test_control_skin_selection(qapp):
     for key, btn in ctrl.skin_buttons.items():
         assert btn.text() in AVAILABLE_SKINS[key]
         assert btn.isCheckable()
-        assert btn.icon().isNull()
+        assert not btn.icon().isNull()
         btn.click()
         assert overlay.skin == key
         assert btn.isChecked()
