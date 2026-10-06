@@ -494,7 +494,7 @@ class Control(QWidget):
 
     def _build_vision_page(self, lay: QVBoxLayout):
         card = Card("Visual Input & Screen Perception")
-        self.has_eye = CACHE.exists() and EYE.exists() and FIELD.exists()
+        self.has_eye = EYE.exists() and FIELD.exists()
         self.vision = QCheckBox("Screen Capture Vision (Compound Eye Perception)", enabled=self.has_eye)
         self.vision.setToolTip("Feeds real desktop screen pixels into the fly's retinotopic visual detectors (480 px visual cone) instead of synthetic cursor coordinates.")
         init_on = bool(self.has_eye and (getattr(self.runner, "vision", False) or getattr(self.prefs, "vision_enabled", False)))

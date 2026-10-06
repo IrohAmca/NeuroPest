@@ -30,7 +30,14 @@ ehthumbs.db
 
 # NeuroPest Local & Generated Data
 data/raw/
-data/circuits/
+data/circuits/flywire_v783.npz
+data/circuits/flywire_v783_sym.npz
+data/circuits/tiers/
+data/circuits/*.parquet
+data/circuits/*.csv
+data/circuits/*.tmp
+data/circuits/eye_map.png
+data/circuits/vision_experiment.npz
 data/memory/
 data/preferences.json
 data/*.parquet

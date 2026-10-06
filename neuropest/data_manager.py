@@ -155,10 +155,12 @@ def build_all_circuits(progress_cb: Callable[[float, str], None] | None = None) 
     ann_file = RAW_DIR / "Supplemental_file1_neuron_annotations.tsv"
     if ann_file.exists():
         try:
+            import numpy as np
+
             retina = build_retina(net, ann_file)
             retina.save(EYE)
-            field = build_visual_field(net, ann_file, retina)
-            field.save(FIELD)
+            fld = build_visual_field(net, ann_file)
+            np.savez(FIELD, **fld)
         except Exception as exc:
             _log.warning("Could not build eye models: %s", exc)
 
