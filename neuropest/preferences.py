@@ -10,6 +10,7 @@ import json
 import logging
 import os
 from pathlib import Path
+import time
 from typing import Any
 
 from .paths import PREFERENCES
@@ -105,17 +106,51 @@ class Preferences:
             self.cursor_phero_mode = "attract"
 
     def save(self, path: Path | None = None) -> None:
-        """Atomically persist preferences to disk as formatted JSON."""
+        """Atomically persist preferences to disk as formatted JSON.
+
+        On Windows, atomic file replacement (os.replace / MoveFileEx) can
+        transiently fail with WinError 5 (Access Denied) or WinError 32
+        (Sharing Violation) if another process (such as a search indexer,
+        file watcher, or antivirus scanner) temporarily holds an open read
+        handle on the target file. We retry with short backoff and fall back
+        to direct in-place write if atomic replace is blocked.
+        """
         if path is None and self._path is None and "PYTEST_CURRENT_TEST" in os.environ and "NEUROPEST_PREFERENCES" not in os.environ:
             return
         target = path or self._path or (Path(os.environ["NEUROPEST_PREFERENCES"]) if "NEUROPEST_PREFERENCES" in os.environ else PREFERENCES)
         self._path = target
+        tmp_path: Path | None = None
         try:
             self._sanitize()
             target.parent.mkdir(parents=True, exist_ok=True)
-            tmp_path = target.with_suffix(".tmp")
             data = {k: getattr(self, k) for k in self.__dataclass_fields__ if k != "_path"}
-            tmp_path.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
-            tmp_path.replace(target)
+            payload = json.dumps(data, indent=2, ensure_ascii=False)
+
+            # Unique temp file name prevents collisions across rapid calls or processes
+            tmp_path = target.with_name(f"{target.stem}_{os.getpid()}_{time.monotonic_ns()}.tmp")
+            tmp_path.write_text(payload, encoding="utf-8")
+
+            # Try atomic replace with short retries for transient locks
+            replaced = False
+            for attempt in range(4):
+                try:
+                    tmp_path.replace(target)
+                    replaced = True
+                    break
+                except (PermissionError, OSError):
+                    if attempt < 3:
+                        time.sleep(0.02 * (attempt + 1))
+
+            if not replaced:
+                # Fallback: direct in-place write succeeds on Windows even when
+                # MoveFileEx fails due to readers lacking FILE_SHARE_DELETE
+                target.write_text(payload, encoding="utf-8")
         except Exception as exc:
             _log.warning("Could not save preferences to %s: %s", target, exc)
+        finally:
+            if tmp_path is not None:
+                try:
+                    if tmp_path.exists():
+                        tmp_path.unlink()
+                except OSError:
+                    pass

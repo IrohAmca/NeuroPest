@@ -214,3 +214,19 @@ def test_control_ui_changes_persist_to_file(app, tmp_path):
     assert prefs.wall_pain == 1.5
     reloaded = Preferences.load(pref_file)
     assert reloaded.wall_pain == 1.5
+
+
+def test_preferences_save_when_file_locked(tmp_path):
+    pref_file = tmp_path / "locked_prefs.json"
+    p = Preferences(skin="classic")
+    p.save(pref_file)
+    assert pref_file.exists()
+
+    # Hold the file open for reading (simulating Windows file watcher / antivirus / editor)
+    with open(pref_file, "r", encoding="utf-8") as _holder:
+        p.skin = "cyborg"
+        p.save(pref_file)
+
+    reloaded = Preferences.load(pref_file)
+    assert reloaded.skin == "cyborg"
+
