@@ -17,7 +17,7 @@ jobs:
   build-windows:
     name: Build Windows Standalone (.exe)
     runs-on: windows-latest
-    timeout-minutes: 15
+    timeout-minutes: 20
 
     steps:
       - name: Checkout repository
@@ -34,29 +34,33 @@ jobs:
       - name: Generate Application Icon (.ico)
         run: uv run python tools/build_icon.py
 
+      - name: Pre-build Connectome Circuits (Best-effort)
+        continue-on-error: true
+        run: uv run neuropest-download
+
       - name: Build Standalone Executable via PyInstaller
         run: uv run --with pyinstaller pyinstaller neuropest.spec --noconfirm
 
       - name: Archive Windows Release
         shell: pwsh
         run: |
-          $tag = if ($env:GITHUB_REF_TYPE -eq 'tag') { $env:GITHUB_REF_NAME } else { 'latest' }
+          $tag = if ($env:GITHUB_REF_TYPE -eq 'tag') { $env:GITHUB_REF_NAME } else { 'v0.5.0' }
           $zipName = "NeuroPest-${tag}-windows-x64.zip"
           Compress-Archive -Path "dist/NeuroPest/*" -DestinationPath $zipName
           echo "ZIP_NAME=$zipName" >> $env:GITHUB_ENV
+          echo "TARGET_TAG=$tag" >> $env:GITHUB_ENV
 
       - name: Upload Release Asset
         uses: softprops/action-gh-release@v2
-        if: startsWith(github.ref, 'refs/tags/v')
         with:
+          tag_name: ${{ env.TARGET_TAG }}
           files: ${{ env.ZIP_NAME }}
           draft: false
           prerelease: false
           generate_release_notes: true
 
-      - name: Upload Build Artifact (for manual workflow_dispatch)
+      - name: Upload Build Artifact (Backup)
         uses: actions/upload-artifact@v4
-        if: "!startsWith(github.ref, 'refs/tags/v')"
         with:
           name: ${{ env.ZIP_NAME }}
           path: ${{ env.ZIP_NAME }}

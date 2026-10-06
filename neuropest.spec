@@ -7,21 +7,25 @@ ROOT = Path.cwd()
 
 datas = [
     (str(ROOT / "neuropest" / "assets"), "neuropest/assets"),
-    (str(ROOT / "data" / "circuits" / "eye.npz"), "data/circuits"),
-    (str(ROOT / "data" / "circuits" / "field.npz"), "data/circuits"),
-    (str(ROOT / "data" / "circuits" / "tiers.json"), "data/circuits"),
-    (str(ROOT / "data" / "circuits" / "tiers"), "data/circuits/tiers"),
 ]
 
-if (ROOT / "data" / "circuits" / "mushroom_flywire.npz").exists():
-    datas.append((str(ROOT / "data" / "circuits" / "mushroom_flywire.npz"), "data/circuits"))
-
-if (ROOT / "data" / "circuits" / "mushroom_3d.npz").exists():
-    datas.append((str(ROOT / "data" / "circuits" / "mushroom_3d.npz"), "data/circuits"))
-
-# Include the full flywire cache if present
-if (ROOT / "data" / "circuits" / "flywire_v783.npz").exists():
-    datas.append((str(ROOT / "data" / "circuits" / "flywire_v783.npz"), "data/circuits"))
+# Conditionally include circuit and model files if present on disk
+circuits_dir = ROOT / "data" / "circuits"
+if circuits_dir.exists():
+    for fname in [
+        "eye.npz",
+        "field.npz",
+        "tiers.json",
+        "mushroom_flywire.npz",
+        "mushroom_3d.npz",
+        "flywire_v783.npz",
+    ]:
+        p = circuits_dir / fname
+        if p.exists():
+            datas.append((str(p), "data/circuits"))
+    tiers_dir = circuits_dir / "tiers"
+    if tiers_dir.exists():
+        datas.append((str(tiers_dir), "data/circuits/tiers"))
 
 hidden_imports = [
     "neuropest",
