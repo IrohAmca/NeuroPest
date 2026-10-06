@@ -7,10 +7,11 @@ from PySide6.QtCore import QPointF, Qt
 from PySide6.QtGui import QColor, QIcon, QPainter, QPalette, QPen, QPixmap
 from PySide6.QtWidgets import QApplication
 
-from .paths import ROOT
+from pathlib import Path
+
 from .states import FLY, FREEZE, GROOM, RETREAT, STAND, WALK
 
-ASSETS = (ROOT / "neuropest" / "assets").as_posix()
+ASSETS = (Path(__file__).resolve().parent / "assets").as_posix()
 
 BG = "#0b0b0d"          # window
 SURFACE = "#141417"     # cards

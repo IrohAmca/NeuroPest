@@ -7,7 +7,7 @@
 
 A desktop fly pet that roams your screen and reacts dynamically to your mouse cursor. Its behavior is directly driven by a Leaky Integrate-and-Fire (LIF) simulation of the fruit fly (*Drosophila melanogaster*) connectome extracted from **FlyWire (v783)**.
 
-**Current State (v0.2.0):** The mouse cursor is converted into three primary sensory streams, transformed into motor behaviors by the biological connectome:
+**Current State (v0.5.0):** The mouse cursor is converted into three primary sensory streams, transformed into motor behaviors by the biological connectome:
 - **Looming / approach velocity** $\rightarrow$ backward walking (MDN) when approached gently; explosive escape takeoff (Giant Fiber / DNp01) when approached rapidly.
 - **Cursor bearing / proximity** $\rightarrow$ left/right steering turns (DNa02).
 - **Motility & foraging drive** $\rightarrow$ tonic current into walking command neurons (DNp09 / P9).
@@ -21,6 +21,10 @@ A desktop fly pet that roams your screen and reacts dynamically to your mouse cu
 
 ## Quickstart
 
+### Option 1: Standalone Windows App (No Python Needed)
+Download the latest pre-packaged `NeuroPest-v0.5.0-windows-x64.zip` from [Releases](https://github.com/IrohAmca/NeuroPest/releases), extract, and double-click `NeuroPest.exe`.
+
+### Option 2: Run from Source with uv
 ```bash
 uv sync
 uv run neuropest
