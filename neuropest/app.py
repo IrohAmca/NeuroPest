@@ -29,6 +29,18 @@ from .theme import apply_theme
 from .tray import Tray
 
 TOUCH_RADIUS_PX = 14.0     # cursor this close to the fly center (times its scale) touches it
+OVERLAY_INSET_PX = 1       # keep the overlay strictly inside the desktop, see overlay_rect()
+
+
+def overlay_rect(x: int, y: int, w: int, h: int, inset: int = OVERLAY_INSET_PX) -> QRect:
+    """Overlay window rectangle for a desktop of the given bounds.
+
+    A borderless window that covers a monitor edge to edge is treated by the Windows shell as a
+    fullscreen app: it drops the taskbar's always-on-top state, so maximized windows slide under the
+    taskbar. Insetting by a pixel keeps the overlay from ever matching a monitor rectangle. The fly
+    stays at least FLY_MARGIN_PX away from every edge, so nothing visible is cut off.
+    """
+    return QRect(x + inset, y + inset, max(1, w - 2 * inset), max(1, h - 2 * inset))
 
 
 class Overlay(QWidget):
@@ -101,9 +113,10 @@ class Overlay(QWidget):
             vy = u.GetSystemMetrics(77)   # SM_YVIRTUALSCREEN
             vw = u.GetSystemMetrics(78)   # SM_CXVIRTUALSCREEN
             vh = u.GetSystemMetrics(79)   # SM_CYVIRTUALSCREEN
-            self.setGeometry(vx, vy, vw, vh)
+            self.setGeometry(overlay_rect(vx, vy, vw, vh))
         else:
-            self.setGeometry(QApplication.primaryScreen().virtualGeometry())
+            g = QApplication.primaryScreen().virtualGeometry()
+            self.setGeometry(overlay_rect(g.x(), g.y(), g.width(), g.height()))
 
     def _watch_screens(self):
         for s in QApplication.screens():
@@ -359,7 +372,8 @@ def main():
     overlay = Overlay(runner, prefs=prefs)
     overlay.show()
     ctrl = Control(overlay, runner, prefs=prefs, auto_scan_gpus=True)
-    ctrl.show()
+    if "--tray" not in sys.argv:   # autostart passes --tray: start in the tray, no control window
+        ctrl.show()
     tray = Tray(app, ctrl, runner)
     tray.show()
     sys.exit(app.exec())
