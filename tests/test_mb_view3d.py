@@ -472,14 +472,11 @@ def test_neural_network_module_optional_and_system_load_warning(app):
     assert not ctrl.mb_view3d_container.isVisible()
     assert not ctrl.mb_view3d.isVisible()
 
-    # 2. Check Circuit & Hardware Tab (index 4)
+    # 2. Check Circuit & Hardware Tab (index 4): 3D visualizer is kept out of hardware tab
     ctrl._switch_tab(4)
     app.processEvents()
 
-    assert hasattr(ctrl, "circ_3d_desc")
-    assert "neural" in ctrl.circ_3d_desc.text().lower()
-    assert hasattr(ctrl, "lbl_circ_system_load_warn")
-    assert "system load" in ctrl.lbl_circ_system_load_warn.text().lower()
-    assert hasattr(ctrl, "btn_circ_view_3d")
+    assert not hasattr(ctrl, "circ_3d_desc")
+    assert not hasattr(ctrl, "btn_circ_view_3d")
 
 

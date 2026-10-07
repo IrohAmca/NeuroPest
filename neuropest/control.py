@@ -908,30 +908,6 @@ class Control(QWidget):
             comp_card.body.addWidget(_label("GPU acceleration is not supported on this platform.", "Faint", wrap=True))
         lay.addWidget(comp_card)
 
-        # 3D Neural Circuit Visualization Module
-        circ_3d_card = Card("3D Neural Circuit Visualization")
-        self.circ_3d_desc = _label(
-            "Inspect neural networks from the FlyWire v783 connectome (Kenyon cell somas, axon tracts, "
-            "pedunculus, lobes, and dopamine neurons) in an interactive 3D model.",
-            "Muted", wrap=True)
-        circ_3d_card.body.addWidget(self.circ_3d_desc)
-
-        circ_btn_row = QHBoxLayout()
-        self.btn_circ_view_3d = QPushButton("View 3D Neural Circuit")
-        self.btn_circ_view_3d.setCursor(Qt.PointingHandCursor)
-        self.btn_circ_view_3d.setToolTip("Opens the 3D Neural Circuit & Mushroom Body model in a dedicated window.")
-        self.btn_circ_view_3d.clicked.connect(self._open_3d_popout)
-        circ_btn_row.addWidget(self.btn_circ_view_3d)
-        circ_btn_row.addStretch(1)
-        circ_3d_card.body.addLayout(circ_btn_row)
-
-        self.lbl_circ_system_load_warn = _label(
-            "⚠️ Note: 3D neural visualization calculates and renders thousands of neurons and axon tracts "
-            "in real time, which adds extra system load (CPU/GPU).",
-            "Warn", wrap=True)
-        circ_3d_card.body.addWidget(self.lbl_circ_system_load_warn)
-        lay.addWidget(circ_3d_card)
-
     def _build_view_page(self, lay: QVBoxLayout):
         card = Card("Appearance & Display")
         s = QSlider(Qt.Horizontal, minimum=5, maximum=40, value=int(self.overlay.scale * 10))
