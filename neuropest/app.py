@@ -372,8 +372,7 @@ def main():
     overlay = Overlay(runner, prefs=prefs)
     overlay.show()
     ctrl = Control(overlay, runner, prefs=prefs, auto_scan_gpus=True)
-    if "--tray" not in sys.argv:   # autostart passes --tray: start in the tray, no control window
-        ctrl.show()
+    ctrl.show()
     tray = Tray(app, ctrl, runner)
     tray.show()
     sys.exit(app.exec())
