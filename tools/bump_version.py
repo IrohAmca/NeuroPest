@@ -58,7 +58,7 @@ def compute_next_version(current: str, bump_type: str) -> str:
 
 def update_file(path: Path, pattern: str, replacement: str) -> None:
     content = path.read_text(encoding="utf-8")
-    new_content, count = re.subn(pattern, replacement, content)
+    new_content, count = re.subn(pattern, replacement, content, flags=re.MULTILINE)
     if count == 0:
         print(f"Warning: pattern '{pattern}' not found in {path.name}", file=sys.stderr)
     path.write_text(new_content, encoding="utf-8")
