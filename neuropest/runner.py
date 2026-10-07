@@ -55,7 +55,7 @@ class EngineConfig:
     n: int = 146            # neurons in the circuit
     dt: float = 0.5         # integration step, ms
     seed: int = 1
-    backend: str = "cpu"    # "cpu" (event-driven numba) or "gpu" (WebGPU, needs `uv sync --extra gpu`)
+    backend: str = "cpu"    # "cpu" (event-driven numba) or "gpu" (WebGPU)
     adapter: int | None = None   # GPU adapter index (see list_gpus); None = first discrete GPU
     symmetry: str = "individual"  # "individual" (default; FlyWire connectome) or "symmetric" (hemisphere-balanced)
     learning: bool = True   # mushroom-body valence learning (mushroom.py); a naive fly behaves as without it

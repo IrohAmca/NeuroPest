@@ -236,12 +236,9 @@ The core simulation engine implements leaky integrate-and-fire dynamics with exa
 - `ReferenceEngine`: Dense NumPy implementation used as an oracle for unit test verification.
 - `WGPUEngine` (`neuropest/engine/lif_wgpu.py`): Cross-platform GPU acceleration via WebGPU (`wgpu`). Supports Vulkan, Metal, and DirectX on NVIDIA, AMD, Intel, and Apple Silicon without requiring CUDA.
 
-### Optional GPU Acceleration
+### GPU Acceleration
 
-```bash
-uv sync --extra gpu
-uv run neuropest
-```
+GPU acceleration is built-in out of the box via WebGPU (`wgpu`). No CUDA installation or extra flags required.
 
 Select Compute in the control panel: **Auto / CPU / GPU**. "Auto" automatically delegates circuits of 50,000+ neurons to the GPU while running smaller tiers on the lightweight CPU engine.
 

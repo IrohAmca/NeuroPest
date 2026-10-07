@@ -315,6 +315,9 @@ def main():
     app.setQuitOnLastWindowClosed(False)
     apply_theme(app)
 
+    from .theme import fly_icon
+    app.setWindowIcon(fly_icon())
+
     # Prompt user to download FlyWire connectome if missing on startup
     from .paths import CACHE
     if not CACHE.exists() and "--toy" not in sys.argv:

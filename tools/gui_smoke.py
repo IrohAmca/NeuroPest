@@ -1,6 +1,6 @@
 """Offscreen GUI check: overlay + control + worker process; switch tier, circuit and CPU/GPU.
 
-Run: uv run --extra gpu python tools/gui_smoke.py
+Run: uv run python tools/gui_smoke.py
 """
 import os
 import sys

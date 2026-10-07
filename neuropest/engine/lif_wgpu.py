@@ -6,7 +6,7 @@ ring buffer with integer atomics (WGSL has no float atomics, so synaptic input i
 point, 1/4096 mV). That is safe because a spike only has to arrive t_dly >= 2 steps later: the scatter
 writes a ring slot the update does not touch in this step, and the spike lists rotate through three
 buffers so nothing reads and writes the same one. Runs on NVIDIA, AMD, Intel and Apple GPUs through
-Vulkan / D3D12 / Metal, needs no CUDA install (`uv sync --extra gpu`).
+Vulkan / D3D12 / Metal, needs no CUDA install.
 
 The kernel is memory-bound (full brain: ~90 us/step on a GTX 1650 before trimming traffic), so state is
 split into separate arrays and only touched when it changes: a resting neuron with no input costs three

@@ -1,6 +1,6 @@
 """CPU engine vs GPU engine (WebGPU) on retina-like and looming loads of the full FlyWire brain.
 
-Run: uv run --extra gpu python tools/bench_gpu.py [adapter_index ...]     (no args: list adapters and exit)
+Run: uv run python tools/bench_gpu.py [adapter_index ...]     (no args: list adapters and exit)
 """
 from __future__ import annotations
 

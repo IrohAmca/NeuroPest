@@ -905,7 +905,7 @@ class Control(QWidget):
                 comp_card.body.addWidget(self.gpu_note)
                 self._gpu_poll = QTimer(self, timeout=self._gpus_found, interval=250)
         else:
-            comp_card.body.addWidget(_label("For GPU acceleration: uv sync --extra gpu", "Hint", wrap=True))
+            comp_card.body.addWidget(_label("GPU acceleration is not supported on this platform.", "Faint", wrap=True))
         lay.addWidget(comp_card)
 
         # 3D Neural Circuit Visualization Module

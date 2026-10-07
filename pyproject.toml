@@ -35,6 +35,7 @@ dependencies = [
     "numpy>=1.26",
     "scipy>=1.11",
     "numba>=0.68.0",
+    "wgpu>=0.32.0",
 ]
 
 [project.urls]

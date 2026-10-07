@@ -179,6 +179,7 @@ dependencies = [
     { name = "pyside6" },
     { name = "scipy", version = "1.17.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12'" },
     { name = "scipy", version = "1.18.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
+    { name = "wgpu" },
 ]
 
 [package.optional-dependencies]
@@ -202,6 +203,7 @@ requires-dist = [
     { name = "numpy", specifier = ">=1.26" },
     { name = "pyside6", specifier = ">=6.7" },
     { name = "scipy", specifier = ">=1.11" },
+    { name = "wgpu", specifier = ">=0.32.0" },
     { name = "wgpu", marker = "extra == 'gpu'", specifier = ">=0.32.0" },
 ]
 provides-extras = ["gpu"]

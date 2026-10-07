@@ -5,7 +5,7 @@ Lamina cells (L1/L2/L3, or photoreceptors) fire at a rate set by the luminance t
 (darker = more, as the histamine synapses invert the photoreceptor signal) after a slow adaptation, the full
 brain runs on the GPU, and the response of every visual projection neuron type is recorded.
 
-Run: uv run --extra gpu python tools/vision_experiment.py [--adapter 0] [--h 60] [--r 40] [--kinds L1,L2,L3]
+Run: uv run python tools/vision_experiment.py [--adapter 0] [--h 60] [--r 40] [--kinds L1,L2,L3]
 """
 from __future__ import annotations
 

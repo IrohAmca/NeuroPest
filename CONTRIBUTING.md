@@ -16,10 +16,6 @@ cd NeuroPest
 uv sync
 ```
 
-To include optional WebGPU acceleration support:
-```bash
-uv sync --extra gpu
-```
 
 ### 2. Connectome Data Setup
 
