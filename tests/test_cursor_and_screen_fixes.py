@@ -90,3 +90,17 @@ def test_grazing_wall_bounce_inward_deflection():
     assert area.last_hit_wall is True
     # Inward deflection ensures sin(nh_b) <= -0.25 (heading points upward back into the room)
     assert math.sin(nh_b) <= -0.25, f"Expected inward reflection on bottom wall, got sin(nh)={math.sin(nh_b)}"
+
+
+def test_overlay_never_covers_a_monitor_edge_to_edge():
+    # A borderless window equal to a monitor rect makes the Windows shell treat it as a fullscreen app
+    # and drop the taskbar's topmost state, so other windows overlap the taskbar.
+    from neuropest.app import overlay_rect
+
+    r = overlay_rect(-1920, 0, 4480, 1440)   # two monitors: 1920x1080 left of a 2560x1440 primary
+    assert (r.left(), r.top(), r.right() + 1, r.bottom() + 1) == (-1919, 1, 2559, 1439)
+
+    r = overlay_rect(0, 0, 1920, 1080)
+    assert r.width() == 1918 and r.height() == 1078
+
+    assert overlay_rect(0, 0, 1, 1).width() >= 1   # degenerate desktop must not produce an empty rect
