@@ -58,6 +58,10 @@ Ensure all tests pass and no linter warnings exist before submitting a Pull Requ
 3. Verify that the automated test suite passes (`uv run pytest`).
 4. Push your branch to GitHub and open a Pull Request against `main`.
 
+## Versioning & Releases
+
+NeuroPest follows Semantic Versioning. For release criteria, version bump instructions, and synchronized metadata files, see [`VERSIONING.md`](VERSIONING.md).
+
 ---
 
 ## License Notice

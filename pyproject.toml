@@ -1,6 +1,6 @@
 [project]
 name = "neuropest"
-version = "0.5.0"
+version = "0.5.1"
 description = "Desktop fly pet driven by a FlyWire-based reduced neural circuit"
 readme = "README.md"
 license = { file = "LICENSE" }

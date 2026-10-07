@@ -44,7 +44,7 @@ jobs:
       - name: Archive Windows Release
         shell: pwsh
         run: |
-          $tag = if ($env:GITHUB_REF_TYPE -eq 'tag') { $env:GITHUB_REF_NAME } else { 'v0.5.0' }
+          $tag = if ($env:GITHUB_REF_TYPE -eq 'tag') { $env:GITHUB_REF_NAME } else { 'v0.5.1' }
           $zipName = "NeuroPest-${tag}-windows-x64.zip"
           Compress-Archive -Path "dist/NeuroPest/*" -DestinationPath $zipName
           echo "ZIP_NAME=$zipName" >> $env:GITHUB_ENV

@@ -1,8 +1,8 @@
 cff-version: 1.2.0
 message: "If you use NeuroPest or its biological connectome models in your research, please cite the software and the underlying foundational studies as below."
 title: "NeuroPest: Biologically Grounded Drosophila Connectome Desktop Simulation"
-version: 0.5.0
-date-released: "2026-10-06"
+version: 0.5.1
+date-released: "2026-10-07"
 repository-code: "https://github.com/IrohAmca/NeuroPest"
 url: "https://github.com/IrohAmca/NeuroPest"
 license: "PolyForm-Noncommercial-1.0.0"
