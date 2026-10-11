@@ -198,3 +198,50 @@ def test_learning_page_shows_valence_forgets_and_switches_learning(app):
     assert r.forgot == 1
     c.learn_enable.setChecked(False)
     assert r.started and r.started[-1].learning is False
+
+
+def test_eye_preview_asks_the_worker_only_while_it_is_on_screen_and_vision_is_on(app):
+    import numpy as np
+    from neuropest import eyeview
+
+    class PreviewRunner(FakeRunner):
+        preview = False
+
+        def __init__(self):
+            super().__init__()
+            self.snap = None
+
+        def preview_snapshot(self):
+            return self.snap
+
+    r = PreviewRunner()
+    c = Control(FakeOverlay(), r)
+    assert c.preview_check.isChecked() is False and c.preview.isHidden()
+    c.preview_check.setChecked(True)
+    assert not c.preview.isHidden()
+    c._update_preview()
+    assert r.preview is False                           # the window is not shown: no snapshots wanted
+    c.show()
+    c._switch_tab(2)
+    c.vision.setChecked(False)
+    c._update_preview()
+    assert r.preview is False and "Screen Capture Vision" in c.preview.message
+    c.vision.setChecked(True)
+    c._update_preview()
+    assert r.preview is True and "first frame" in c.preview.message
+    # a frame arrives: every tab renders it
+    layout = eyeview.EyeLayout.load()
+    m = len(layout)
+    r.snap = eyeview.Snapshot(1, np.full(m, 0.5, np.float32), np.zeros(m, np.float32), np.zeros(m, np.float32),
+                              np.array([0, 5], np.int32), np.array([0.0, 80.0], np.float32), (1, 0, 0, 1))
+    for tab in range(3):
+        c._on_preview_tab(tab)
+        assert c.preview._img is not None and c.preview.mode == tab and c.preview.snap.seq == 1
+        c.preview.grab()                                # paints without error
+    assert c.prefs.eye_preview_tab == 2
+    c._switch_tab(0)                                    # leaving the page stops the stream
+    c._update_preview()
+    assert r.preview is False
+    c.preview_check.setChecked(False)
+    assert c.preview.isHidden() and r.preview is False
+    c.hide()
