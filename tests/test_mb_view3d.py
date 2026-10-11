@@ -569,8 +569,8 @@ def test_sensorimotor_signal_flow_and_rates(app):
 
     # Advance tick and verify pulse propagation & heading updates
     view._pulse_phase = 0.1
-    h0 = view.heading_angle
     view._on_tick()
+    assert view._pulse_phase > 0.1
 
 def test_virtual_optogenetics_targets_and_triggers(app):
     """Test optogenetic ChR2 stimulation hubs, runner triggers, and visual ripple animation."""
