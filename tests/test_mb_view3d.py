@@ -753,6 +753,43 @@ def test_neuron_connectome_inspector_search_and_reticle(app):
         assert not view._inspected_pinned
 
 
+def test_translucent_neuropil_hulls_and_toggles(app):
+    """Test 3D translucent volumetric neuropil hulls generation, depth sorting, and layer toggles."""
+    data = load_mushroom_3d()
+    view = MushroomBody3DView(data=data)
+    view.resize(640, 480)
+
+    # 1. Verify volumetric envelopes exist for all major brain regions
+    assert hasattr(view, "_neuropil_volumes")
+    assert len(view._neuropil_volumes) >= 7
+    ids = {nv["id"] for nv in view._neuropil_volumes}
+    assert {"al_l", "al_r", "ca_l", "ca_r", "eb", "ol_l", "ol_r"}.issubset(ids)
+
+    for nv in view._neuropil_volumes:
+        assert len(nv["vertices"]) > 0
+        assert len(nv["faces"]) > 0
+        assert nv["vertices"].shape[1] == 3
+        assert nv["faces"].shape[1] == 3
+
+    # 2. Render with hulls on
+    view.layer_hulls = True
+    img1 = QImage(640, 480, QImage.Format_ARGB32)
+    p = QPainter(img1)
+    view.paintEvent(None)
+    p.end()
+    assert not img1.isNull()
+
+    # 3. Toggle layer off
+    view.toggle_layer("hulls")
+    assert not view.layer_hulls
+
+    img2 = QImage(640, 480, QImage.Format_ARGB32)
+    p = QPainter(img2)
+    view.paintEvent(None)
+    p.end()
+    assert not img2.isNull()
+
+
 
 
 

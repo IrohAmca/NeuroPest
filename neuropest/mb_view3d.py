@@ -140,6 +140,7 @@ class MushroomBody3DView(QWidget):
         self.layer_olfactory = True # Antennal Lobes & Odor Projections (ALPN)
         self.layer_motor = True     # Descending Motor Neurons (GF, MDN, DNp09, DNa02, aDN)
         self.layer_wireframe = True # Brain Envelope Wireframe
+        self.layer_hulls = True     # Translucent Neuropil Volumetric Envelopes (AL, MB, CX, Optic)
 
         # Pre-cached whole-brain circuits
         self._cx_pts = getattr(self.data, "cx_pts", np.zeros((0, 3), dtype=np.float32))
@@ -182,6 +183,82 @@ class MushroomBody3DView(QWidget):
         # Neuron & Connectome Inspector
         self._inspected_neuron: dict | None = None
         self._inspected_pinned: bool = False
+
+        # Translucent Neuropil Volumetric Envelopes
+        self._neuropil_volumes: list[dict] = []
+        self._build_neuropil_volumes()
+
+    def _build_neuropil_volumes(self):
+        """Construct 3D volumetric polygonal envelopes for key brain neuropils."""
+        self._neuropil_volumes = []
+
+        def build_ellipsoid(center, rx, ry, rz, n_lat=8, n_lon=10):
+            verts = []
+            for i in range(n_lat + 1):
+                lat = -math.pi / 2.0 + math.pi * (i / n_lat)
+                z = rz * math.sin(lat)
+                r_xy = math.cos(lat)
+                for j in range(n_lon):
+                    lon = 2.0 * math.pi * (j / n_lon)
+                    x = rx * r_xy * math.cos(lon)
+                    y = ry * r_xy * math.sin(lon)
+                    verts.append([center[0] + x, center[1] + y, center[2] + z])
+            verts = np.array(verts, dtype=np.float32)
+
+            faces = []
+            for i in range(n_lat):
+                for j in range(n_lon):
+                    j_next = (j + 1) % n_lon
+                    p0 = i * n_lon + j
+                    p1 = i * n_lon + j_next
+                    p2 = (i + 1) * n_lon + j_next
+                    p3 = (i + 1) * n_lon + j
+                    faces.append([p0, p1, p2])
+                    faces.append([p0, p2, p3])
+            faces = np.array(faces, dtype=np.int32)
+            return verts, faces
+
+        # 1. Antennal Lobes (AL-L & AL-R)
+        al_l_center = np.mean(self._alpn_soma[self._alpn_side == -1], axis=0) if np.any(self._alpn_side == -1) else np.array([-0.20, -0.15, -0.28], dtype=np.float32)
+        v, f = build_ellipsoid(al_l_center, 0.11, 0.11, 0.11)
+        self._neuropil_volumes.append({"id": "al_l", "name": "Left Antennal Lobe", "color": QColor(16, 185, 129), "vertices": v, "faces": f})
+
+        al_r_center = np.mean(self._alpn_soma[self._alpn_side == 1], axis=0) if np.any(self._alpn_side == 1) else np.array([0.20, -0.15, -0.28], dtype=np.float32)
+        v, f = build_ellipsoid(al_r_center, 0.11, 0.11, 0.11)
+        self._neuropil_volumes.append({"id": "al_r", "name": "Right Antennal Lobe", "color": QColor(16, 185, 129), "vertices": v, "faces": f})
+
+        # 2. Mushroom Body Calyces (MB-CA-L & MB-CA-R)
+        ca_l_center = np.array(self.data.lobe_centers.get("calyx_left", (-0.25, -0.10, 0.28)), dtype=np.float32)
+        v, f = build_ellipsoid(ca_l_center, 0.13, 0.12, 0.11)
+        self._neuropil_volumes.append({"id": "ca_l", "name": "Left MB Calyx", "color": QColor(245, 158, 11), "vertices": v, "faces": f})
+
+        ca_r_center = np.array(self.data.lobe_centers.get("calyx_right", (0.25, -0.10, 0.28)), dtype=np.float32)
+        v, f = build_ellipsoid(ca_r_center, 0.13, 0.12, 0.11)
+        self._neuropil_volumes.append({"id": "ca_r", "name": "Right MB Calyx", "color": QColor(245, 158, 11), "vertices": v, "faces": f})
+
+        # 3. Mushroom Body Vertical & Medial Lobes
+        gamma_l_center = np.array(self.data.lobe_centers.get("gamma_left", (-0.10, 0.12, 0.05)), dtype=np.float32)
+        v, f = build_ellipsoid(gamma_l_center, 0.11, 0.14, 0.10)
+        self._neuropil_volumes.append({"id": "mb_lobe_l", "name": "Left MB Lobes", "color": QColor(6, 182, 212), "vertices": v, "faces": f})
+
+        gamma_r_center = np.array(self.data.lobe_centers.get("gamma_right", (0.10, 0.12, 0.05)), dtype=np.float32)
+        v, f = build_ellipsoid(gamma_r_center, 0.11, 0.14, 0.10)
+        self._neuropil_volumes.append({"id": "mb_lobe_r", "name": "Right MB Lobes", "color": QColor(6, 182, 212), "vertices": v, "faces": f})
+
+        # 4. Central Complex: Ellipsoid Body (EB)
+        cx_eb = self._cx_pts[self._cx_sub == 0] if len(self._cx_sub) == len(self._cx_pts) else self._cx_pts
+        eb_center = np.mean(cx_eb, axis=0) if len(cx_eb) > 0 else np.array([0.0, 0.05, 0.15], dtype=np.float32)
+        v, f = build_ellipsoid(eb_center, 0.10, 0.05, 0.10)
+        self._neuropil_volumes.append({"id": "eb", "name": "Ellipsoid Body", "color": QColor(56, 189, 248), "vertices": v, "faces": f})
+
+        # 5. Optic Lobes (Left & Right)
+        ol_l_center = np.mean(self._vpn_soma[self._vpn_side == -1], axis=0) if np.any(self._vpn_side == -1) else np.array([-0.52, 0.05, 0.0], dtype=np.float32)
+        v, f = build_ellipsoid(ol_l_center, 0.16, 0.22, 0.17)
+        self._neuropil_volumes.append({"id": "ol_l", "name": "Left Optic Lobe", "color": QColor(168, 85, 247), "vertices": v, "faces": f})
+
+        ol_r_center = np.mean(self._vpn_soma[self._vpn_side == 1], axis=0) if np.any(self._vpn_side == 1) else np.array([0.52, 0.05, 0.0], dtype=np.float32)
+        v, f = build_ellipsoid(ol_r_center, 0.16, 0.22, 0.17)
+        self._neuropil_volumes.append({"id": "ol_r", "name": "Right Optic Lobe", "color": QColor(168, 85, 247), "vertices": v, "faces": f})
 
     def set_tool_mode(self, mode: str):
         """Set active canvas tool mode ('camera', 'opto', 'inspect')."""
@@ -953,6 +1030,10 @@ class MushroomBody3DView(QWidget):
         if self.layer_wireframe:
             self._draw_brain_wireframe(p)
 
+        # 2.5. Draw Translucent Neuropil Volumetric Envelopes (AL, MB, CX, Optic)
+        if self.layer_hulls:
+            self._draw_neuropil_volumes(p)
+
         # 3. Sensory Input Circuits (Olfactory & Visual)
         if self.layer_olfactory:
             self._draw_antennal_lobes(p)
@@ -1003,6 +1084,60 @@ class MushroomBody3DView(QWidget):
 
         lines = [QLineF(float(x1[i]), float(y1[i]), float(x2[i]), float(y2[i])) for i in range(len(x1))]
         p.drawLines(lines)
+
+    # ------------------------------------------------------------------ neuropil hulls
+    def _draw_neuropil_volumes(self, p: QPainter):
+        """Draw translucent volumetric hulls around major brain neuropils with fresnel contour shading."""
+        if not self.layer_hulls or not hasattr(self, "_neuropil_volumes"):
+            return
+
+        p.save()
+        for nv in self._neuropil_volumes:
+            verts_3d = nv["vertices"]
+            faces = nv["faces"]
+            base_col = nv["color"]
+
+            sx_arr, sy_arr, z_cam, valid = self._project_points(verts_3d)
+
+            # Depth sort faces from back to front
+            f_z = (z_cam[faces[:, 0]] + z_cam[faces[:, 1]] + z_cam[faces[:, 2]]) / 3.0
+            order = np.argsort(f_z)
+
+            for fi in order:
+                idx0, idx1, idx2 = faces[fi]
+                if not (valid[idx0] and valid[idx1] and valid[idx2]):
+                    continue
+
+                poly = QPolygonF([
+                    QPointF(sx_arr[idx0], sy_arr[idx0]),
+                    QPointF(sx_arr[idx1], sy_arr[idx1]),
+                    QPointF(sx_arr[idx2], sy_arr[idx2]),
+                ])
+
+                # 3D normal vector
+                v0, v1, v2 = verts_3d[idx0], verts_3d[idx1], verts_3d[idx2]
+                norm = np.cross(v1 - v0, v2 - v0)
+                norm_len = np.linalg.norm(norm)
+                if norm_len < 1e-6:
+                    continue
+                norm = norm / norm_len
+
+                # Camera space projection for fresnel rim shading
+                if self._cam_R is not None:
+                    norm_cam = self._cam_R @ norm
+                    cos_theta = abs(float(norm_cam[2]))
+                else:
+                    cos_theta = 0.5
+
+                rim = 1.0 - min(1.0, cos_theta)
+                alpha_fill = int(6 + rim * 16)
+                alpha_edge = int(18 + rim * 55)
+
+                p.setBrush(QBrush(QColor(base_col.red(), base_col.green(), base_col.blue(), alpha_fill)))
+                p.setPen(QPen(QColor(base_col.red(), base_col.green(), base_col.blue(), alpha_edge), 1.0))
+                p.drawPolygon(poly)
+
+        p.restore()
 
     # ------------------------------------------------------------------ tracts
     def _draw_axon_tracts(self, p: QPainter):
@@ -1802,6 +1937,7 @@ class MushroomBody3DView(QWidget):
             ("layer_visual", "Vision" if is_compact else "Vision (VPN)", self.layer_visual, QColor(249, 115, 22)),
             ("layer_olfactory", "Odor" if is_compact else "Odor (AL)", self.layer_olfactory, QColor(16, 185, 129)),
             ("layer_motor", "Motor" if is_compact else "Motor (DN)", self.layer_motor, QColor(239, 68, 68)),
+            ("layer_hulls", "Hulls" if is_compact else "Neuropils", self.layer_hulls, QColor(168, 85, 247)),
             ("layer_wireframe", "Cage" if is_compact else "Wireframe", self.layer_wireframe, QColor(148, 163, 184)),
         ]
 
@@ -2328,6 +2464,7 @@ class MushroomBody3DView(QWidget):
                     "layer_visual": "Visual Projections: Optic lobes to central brain (LC4/LPLC2 looming, LC10 steering) [Toggle]",
                     "layer_olfactory": "Antennal Lobes: Food & pheromone projection neurons (ALPN) to Calyx [Toggle]",
                     "layer_motor": "Descending Motor Neurons: Giant Fiber (escape), MDN (moonwalk), DNp09 (walk), DNa02 (steer) [Toggle]",
+                    "layer_hulls": "Translucent Neuropil Volumetric Envelopes (AL, MB, CX, Optic Lobes) [Toggle]",
                     "layer_wireframe": "Drosophila Brain Wireframe Envelope [Toggle]",
                 }
                 found = btn_tooltips.get(bid, "")
