@@ -200,3 +200,33 @@ def test_walking_up_to_a_standing_cursor_is_not_a_threat():
     # (without stamps this scene used to alarm the fly; LPLC2 now reads size too, so it no longer does on a 5k circuit,
     # and the unit test above is what pins the number itself)
     assert run(True) == {"stand"}
+
+
+def test_runner_optogenetic_injection_slots():
+    """Verify optogenetic injection methods set the corresponding shared memory slots."""
+    from neuropest.runner import I_INJECT_GF, I_INJECT_MDN, I_INJECT_WALK, I_INJECT_REWARD, I_INJECT_PUNISH, O_READY, Runner
+    r = Runner.__new__(Runner)
+    r.inp = [0.0] * 32
+    r.out = [0.0] * 36
+    r.out[O_READY] = 1.0
+
+    r.inject_gf(1.0)
+    assert r.inp[I_INJECT_GF] == 1.0
+
+    r.inject_mdn(0.7)
+    assert r.inp[I_INJECT_MDN] == 0.7
+
+    r.inject_walk(0.9)
+    assert r.inp[I_INJECT_WALK] == 0.9
+
+    r.inject_optogenetic("takeoff", 0.5)
+    assert r.inp[I_INJECT_GF] == 0.5
+
+    r.inject_optogenetic("moonwalk", 0.6)
+    assert r.inp[I_INJECT_MDN] == 0.6
+
+    r.inject_optogenetic("reward", 1.0)
+    assert r.inp[I_INJECT_REWARD] == 1.0
+
+    r.inject_optogenetic("punish", 0.4)
+    assert r.inp[I_INJECT_PUNISH] == 0.4

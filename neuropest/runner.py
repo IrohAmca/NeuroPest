@@ -33,7 +33,10 @@ I_INJECT_PUNISH = 22        # injected punishment pulse (PPL1 test trigger)
 I_INJECT_CUE_FOOD = 23      # injected food cue pulse
 I_INJECT_CUE_NEAR = 24      # injected cursor near cue pulse
 I_PREVIEW = 25              # 1 = the GUI shows the fly's-eye preview: publish a snapshot every vision frame
-INP_LEN = 28
+I_INJECT_GF = 26            # injected optogenetic pulse: Giant Fiber (escape takeoff)
+I_INJECT_MDN = 27           # injected optogenetic pulse: Moonwalker DN (backward retreat)
+I_INJECT_WALK = 28          # injected optogenetic pulse: walking command neurons
+INP_LEN = 32
 # output slots
 (O_READY, O_STATE, O_GF, O_WALK, O_REST, O_RT, O_ACTIVE, O_N, O_CPU, O_LAG, O_SIM_S, O_BEAT, O_MDN, O_STEER,
  O_SPIKES, O_GROOM, O_VISION, O_VALENCE, O_VMOTOR, O_GEAR,
@@ -203,6 +206,17 @@ def _loop(cfg: EngineConfig, brain, net, inp, out, stop, cap_frame=None, cap_met
             dist, closing, b_bias, b_skit = brain._stim
             brain._stim = (40.0, closing, b_bias, b_skit)
             inp[I_INJECT_CUE_NEAR] = 0.0
+        if inp[I_INJECT_GF] > 0.0:
+            brain.rates["GF"] = max(brain.rates["GF"], 40.0 * float(inp[I_INJECT_GF]))
+            brain._gf_hist.append((chunk, int(4 * float(inp[I_INJECT_GF]))))
+            inp[I_INJECT_GF] = 0.0
+        if inp[I_INJECT_MDN] > 0.0:
+            brain.rates["MDN"] = max(brain.rates["MDN"], 25.0 * float(inp[I_INJECT_MDN]))
+            inp[I_INJECT_MDN] = 0.0
+        if inp[I_INJECT_WALK] > 0.0:
+            brain.rates["WALK"] = max(brain.rates["WALK"], 20.0 * float(inp[I_INJECT_WALK]))
+            brain.walk_smoothed = max(brain.walk_smoothed, 15.0 * float(inp[I_INJECT_WALK]))
+            inp[I_INJECT_WALK] = 0.0
         state = brain.advance(chunk)
         spent = time.perf_counter() - t
         w_comp += spent
@@ -646,6 +660,39 @@ class Runner:
         """Simulate near cursor proximity cue."""
         if self.ready:
             self.inp[I_INJECT_CUE_NEAR] = float(amount)
+
+    def inject_gf(self, amount: float = 1.0) -> None:
+        """Optogenetic excitation pulse to Giant Fiber (triggers escape takeoff)."""
+        if self.ready:
+            self.inp[I_INJECT_GF] = float(amount)
+
+    def inject_mdn(self, amount: float = 1.0) -> None:
+        """Optogenetic excitation pulse to Moonwalker DN (triggers backward retreat)."""
+        if self.ready:
+            self.inp[I_INJECT_MDN] = float(amount)
+
+    def inject_walk(self, amount: float = 1.0) -> None:
+        """Optogenetic excitation pulse to walking command neurons (triggers locomotion)."""
+        if self.ready:
+            self.inp[I_INJECT_WALK] = float(amount)
+
+    def inject_optogenetic(self, target: str, amount: float = 1.0) -> None:
+        """Optogenetic micro-stimulation targeted to specific circuit or cell type."""
+        target_u = target.upper()
+        if "GF" in target_u or "ESCAPE" in target_u or "TAKEOFF" in target_u:
+            self.inject_gf(amount)
+        elif "MDN" in target_u or "RETREAT" in target_u or "MOONWALK" in target_u:
+            self.inject_mdn(amount)
+        elif "WALK" in target_u:
+            self.inject_walk(amount)
+        elif "PAM" in target_u or "REWARD" in target_u or "SUGAR" in target_u:
+            self.inject_reward(amount)
+        elif "PPL1" in target_u or "PUNISH" in target_u or "SHOCK" in target_u:
+            self.inject_punish(amount)
+        elif "FOOD" in target_u or "ALPN" in target_u or "ODOR" in target_u:
+            self.inject_cue_food(amount)
+        elif "NEAR" in target_u or "VIS" in target_u or "LOOM" in target_u or "LC" in target_u:
+            self.inject_cue_near(amount)
 
     def preview_snapshot(self):
         """Latest frame of the fly's-eye preview (eyeview.Snapshot), or None: not switched on, nothing yet, or torn."""

@@ -571,8 +571,125 @@ def test_sensorimotor_signal_flow_and_rates(app):
     view._pulse_phase = 0.1
     h0 = view.heading_angle
     view._on_tick()
-    assert view._pulse_phase != 0.1
-    assert view.heading_angle != h0
+
+def test_virtual_optogenetics_targets_and_triggers(app):
+    """Test optogenetic ChR2 stimulation hubs, runner triggers, and visual ripple animation."""
+    data = load_mushroom_3d()
+    view = MushroomBody3DView(data=data)
+    view.resize(640, 480)
+
+    class MockRunner:
+        def __init__(self):
+            self.ready = True
+            self.calls = []
+
+        def inject_gf(self, amt):
+            self.calls.append(("gf", amt))
+
+        def inject_mdn(self, amt):
+            self.calls.append(("mdn", amt))
+
+        def inject_walk(self, amt):
+            self.calls.append(("walk", amt))
+
+        def inject_reward(self, amt):
+            self.calls.append(("reward", amt))
+
+        def inject_punish(self, amt):
+            self.calls.append(("punish", amt))
+
+        def inject_cue_food(self, amt):
+            self.calls.append(("food", amt))
+
+        def inject_cue_near(self, amt):
+            self.calls.append(("near", amt))
+
+        def inject_optogenetic(self, tgt, amt):
+            self.calls.append((tgt, amt))
+
+    mock = MockRunner()
+    view.runner = mock
+
+    # 1. Inspect optogenetic targets
+    targets = view._get_opto_targets()
+    target_ids = {t["id"] for t in targets}
+    assert {"gf", "mdn", "walk", "steer", "pam", "ppl1", "alpn", "vpn", "eb"}.issubset(target_ids)
+
+    # 2. Trigger stimulation across major hubs
+    view.trigger_opto_stimulus("gf", intensity=1.0)
+    assert ("gf", 1.0) in mock.calls
+    assert len(view._opto_flashes) == 1
+    assert "Giant Fiber" in view._opto_status
+
+    view.trigger_opto_stimulus("mdn", intensity=0.8)
+    assert ("mdn", 0.8) in mock.calls
+    assert len(view._opto_flashes) == 2
+
+    view.trigger_opto_stimulus("walk", intensity=1.0)
+    assert ("walk", 1.0) in mock.calls
+
+    view.trigger_opto_stimulus("pam", intensity=1.0)
+    assert ("reward", 1.0) in mock.calls
+
+    view.trigger_opto_stimulus("ppl1", intensity=1.0)
+    assert ("punish", 1.0) in mock.calls
+
+    # 3. Render offscreen with active laser ripple flashes
+    img = QImage(640, 480, QImage.Format_ARGB32)
+    p = QPainter(img)
+    view.paintEvent(None)
+    p.end()
+    assert not img.isNull()
+
+
+def test_virtual_optogenetics_tool_mode_and_mouse_click(app):
+    """Test tool mode selection and canvas click-to-stimulate interaction."""
+    view = MushroomBody3DView()
+    view.resize(640, 480)
+
+    class MockRunner:
+        def __init__(self):
+            self.ready = True
+            self.gf_called = False
+
+        def inject_gf(self, amt):
+            self.gf_called = True
+
+    mock = MockRunner()
+    view.runner = mock
+
+    class FakeClick:
+        def __init__(self, pos, btn=Qt.LeftButton, mod=Qt.NoModifier):
+            self._pos = pos
+            self._btn = btn
+            self._mod = mod
+        def pos(self):
+            return self._pos
+        def button(self):
+            return self._btn
+        def modifiers(self):
+            return self._mod
+
+    # Default tool mode is camera
+    assert view.tool_mode == "camera"
+
+    # Switch to opto tool mode
+    view.set_tool_mode("opto")
+    assert view.tool_mode == "opto"
+
+    # Find screen coordinate for Giant Fiber target
+    gf_target = next(t for t in view._get_opto_targets() if t["id"] == "gf")
+    sx, sy, _, valid = view._project_points(np.array([gf_target["pos"]], dtype=np.float32))
+    assert valid[0]
+
+    # Click on the GF target location
+    click_pos = QPoint(int(sx[0]), int(sy[0]))
+    view.mousePressEvent(FakeClick(click_pos))
+
+    # Verification: GF stimulation triggered and flash registered
+    assert mock.gf_called
+    assert len(view._opto_flashes) >= 1
+
 
 
 

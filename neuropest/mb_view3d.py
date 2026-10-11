@@ -173,6 +173,236 @@ class MushroomBody3DView(QWidget):
         # Interactive UI buttons on canvas (rectangles in screen coordinates)
         self._btn_rects: dict[str, QRect] = {}
 
+        # Interactive Tools & Virtual Optogenetics
+        self.tool_mode = "camera"   # "camera", "opto", "inspect"
+        self._opto_flashes: list[dict] = []
+        self._opto_status = ""
+        self._opto_status_time = 0.0
+
+    def set_tool_mode(self, mode: str):
+        """Set active canvas tool mode ('camera', 'opto', 'inspect')."""
+        if mode in ("camera", "opto", "inspect"):
+            self.tool_mode = mode
+            if mode == "opto":
+                self.setCursor(Qt.CrossCursor)
+            elif mode == "inspect":
+                self.setCursor(Qt.PointingHandCursor)
+            else:
+                self.setCursor(Qt.ArrowCursor)
+            self.update()
+
+    def _get_opto_targets(self) -> list[dict]:
+        """Return list of stimulatable circuit targets with authentic 3D positions and evoked behaviors."""
+        targets = []
+        # 1. Giant Fiber (DNp01 escape takeoff)
+        gf_mask = self._dn_type == "GF"
+        if np.any(gf_mask):
+            pos = np.mean(self._dn_soma[gf_mask], axis=0)
+        else:
+            pos = np.array([0.0, 0.45, 0.25], dtype=np.float32)
+        targets.append({
+            "id": "gf",
+            "name": "Giant Fiber (DNp01)",
+            "action": "Takeoff Escape Reflex",
+            "pos": pos,
+            "color": QColor(0, 229, 255),
+            "inject": "gf",
+        })
+
+        # 2. Moonwalker (MDN backward moonwalk retreat)
+        mdn_mask = self._dn_type == "MDN"
+        if np.any(mdn_mask):
+            pos = np.mean(self._dn_soma[mdn_mask], axis=0)
+        else:
+            pos = np.array([-0.05, 0.35, 0.15], dtype=np.float32)
+        targets.append({
+            "id": "mdn",
+            "name": "Moonwalker DN (MDN)",
+            "action": "Backward Moonwalk Retreat",
+            "pos": pos,
+            "color": QColor(255, 23, 68),
+            "inject": "mdn",
+        })
+
+        # 3. Walking Command (DNp09 / WALK)
+        walk_mask = np.isin(self._dn_type, ["DNp09", "WALK"])
+        if np.any(walk_mask):
+            pos = np.mean(self._dn_soma[walk_mask], axis=0)
+        else:
+            pos = np.array([0.08, 0.38, 0.18], dtype=np.float32)
+        targets.append({
+            "id": "walk",
+            "name": "Walking DN (DNp09)",
+            "action": "Forward Locomotion",
+            "pos": pos,
+            "color": QColor(118, 255, 3),
+            "inject": "walk",
+        })
+
+        # 4. Steering Command (DNa02)
+        steer_mask = self._dn_type == "DNa02"
+        if np.any(steer_mask):
+            pos = np.mean(self._dn_soma[steer_mask], axis=0)
+        else:
+            pos = np.array([0.15, 0.40, 0.22], dtype=np.float32)
+        targets.append({
+            "id": "steer",
+            "name": "Steering DN (DNa02)",
+            "action": "Asymmetric Steering Torque",
+            "pos": pos,
+            "color": QColor(255, 145, 0),
+            "inject": "steer",
+        })
+
+        # 5. PAM Dopamine Cluster (Reward)
+        if "pam_reward" in self.data.lobe_centers:
+            pos = np.array(self.data.lobe_centers["pam_reward"], dtype=np.float32)
+            targets.append({
+                "id": "pam",
+                "name": "PAM Cluster (DAN)",
+                "action": "Appetitive Sugar Reward",
+                "pos": pos,
+                "color": QColor(255, 215, 0),
+                "inject": "reward",
+            })
+
+        # 6. PPL1 Dopamine Cluster (Punishment)
+        if "ppl1_punish" in self.data.lobe_centers:
+            pos = np.array(self.data.lobe_centers["ppl1_punish"], dtype=np.float32)
+            targets.append({
+                "id": "ppl1",
+                "name": "PPL1 Cluster (DAN)",
+                "action": "Nociceptive Pain Shock",
+                "pos": pos,
+                "color": QColor(255, 61, 113),
+                "inject": "punish",
+            })
+
+        # 7. Antennal Glomeruli / Food Odor PN
+        if len(self._alpn_soma) > 0:
+            pos = np.mean(self._alpn_soma, axis=0)
+        else:
+            pos = np.array([-0.25, -0.15, -0.3], dtype=np.float32)
+        targets.append({
+            "id": "alpn",
+            "name": "Antennal Glomeruli (ALPN)",
+            "action": "Appetitive Food Odor Cue",
+            "pos": pos,
+            "color": QColor(0, 230, 118),
+            "inject": "food",
+        })
+
+        # 8. Visual Looming Lobes (LC4 / LPLC2)
+        if len(self._vpn_soma) > 0:
+            pos = np.mean(self._vpn_soma, axis=0)
+        else:
+            pos = np.array([0.45, 0.1, -0.1], dtype=np.float32)
+        targets.append({
+            "id": "vpn",
+            "name": "Optic Lobes (LC4 / LPLC2)",
+            "action": "Predator Looming Alert",
+            "pos": pos,
+            "color": QColor(224, 64, 251),
+            "inject": "near",
+        })
+
+        # 9. Ellipsoid Body Ring (EB Compass)
+        cx_eb = self._cx_pts[self._cx_sub == 0] if len(self._cx_sub) == len(self._cx_pts) else self._cx_pts
+        if len(cx_eb) > 0:
+            pos = np.mean(cx_eb, axis=0)
+        else:
+            pos = np.array([0.0, 0.05, 0.15], dtype=np.float32)
+        targets.append({
+            "id": "eb",
+            "name": "Ellipsoid Body (EB)",
+            "action": "Compass Heading Kick",
+            "pos": pos,
+            "color": QColor(0, 176, 255),
+            "inject": "eb",
+        })
+
+        return targets
+
+    def _find_opto_target_at(self, pos: QPoint, threshold_px: float = 30.0) -> dict | None:
+        """Find the closest optogenetic target within threshold_px of screen position."""
+        targets = self._get_opto_targets()
+        best_target = None
+        best_dist = float("inf")
+        for t in targets:
+            sx_arr, sy_arr, _, valid_arr = self._project_points(np.array([t["pos"]], dtype=np.float32))
+            if valid_arr[0]:
+                d = math.hypot(pos.x() - sx_arr[0], pos.y() - sy_arr[0])
+                if d <= threshold_px and d < best_dist:
+                    best_dist = d
+                    best_target = t
+        return best_target
+
+    def trigger_opto_stimulus(self, target: dict | str, intensity: float = 1.0):
+        """Trigger virtual optogenetic micro-stimulation on target circuit with ripple animation."""
+        if isinstance(target, str):
+            tid = target.lower()
+            all_t = self._get_opto_targets()
+            matched = next((t for t in all_t if t["id"] == tid), None)
+            if matched is None:
+                matched = next((t for t in all_t if tid in t["name"].lower()), None)
+            if matched is None:
+                matched = all_t[0] if all_t else None
+            target = matched
+
+        if target is None:
+            return
+
+        # Deliver physiological stimulation to runner
+        inj = target.get("inject", "")
+        if self.runner is not None and getattr(self.runner, "ready", False):
+            if inj == "gf":
+                self.runner.inject_gf(intensity)
+            elif inj == "mdn":
+                self.runner.inject_mdn(intensity)
+            elif inj == "walk":
+                self.runner.inject_walk(intensity)
+            elif inj == "reward":
+                self.runner.inject_reward(intensity)
+            elif inj == "punish":
+                self.runner.inject_punish(intensity)
+            elif inj == "food":
+                self.runner.inject_cue_food(intensity)
+            elif inj == "near":
+                self.runner.inject_cue_near(intensity)
+            elif inj == "steer":
+                if hasattr(self.runner, "inject_optogenetic"):
+                    self.runner.inject_optogenetic("steer", intensity)
+            elif inj == "eb":
+                self.heading_angle = (self.heading_angle + math.pi * 0.4) % (2 * math.pi)
+
+        # Register visual flash ripple
+        self._opto_flashes.append({
+            "pos": target["pos"],
+            "color": target["color"],
+            "name": target["name"],
+            "action": target["action"],
+            "time": time.perf_counter(),
+            "duration": 0.9,
+            "intensity": intensity,
+        })
+
+        self._opto_status = f"ChR2: {target['name']} -> {target['action']}"
+        self._opto_status_time = time.perf_counter()
+
+        if self._timer.interval() != 33:
+            self._timer.setInterval(33)
+        self.update()
+
+    def _trigger_opto_at_screen_pos(self, pos: QPoint):
+        """Fallback stimulation at screen coordinate by selecting nearest brain centroid."""
+        target = self._find_opto_target_at(pos, threshold_px=80.0)
+        if target is not None:
+            self.trigger_opto_stimulus(target)
+        else:
+            targets = self._get_opto_targets()
+            if targets:
+                self.trigger_opto_stimulus(targets[0])
+
     def toggle_layer(self, name: str):
         """Toggle an anatomical layer on or off."""
         attr = f"layer_{name}"
@@ -253,6 +483,8 @@ class MushroomBody3DView(QWidget):
         is_active = (
             self.auto_rotate
             or self._is_panning
+            or bool(self._opto_flashes)
+            or (time.perf_counter() - self._opto_status_time < 3.0)
             or self.pam > 0.02
             or self.ppl1 > 0.02
             or self.kc_active_count > 0
@@ -437,6 +669,9 @@ class MushroomBody3DView(QWidget):
         # 6. Motor Output System (Descending Neurons)
         if self.layer_motor:
             self._draw_descending_neurons(p)
+
+        # 6.5. Optogenetic Laser Pulses & Flash Ripples
+        self._draw_opto_flashes(p)
 
         # 7. Draw HUD Overlay (Valence gauge, stats, dopamine bars, toolbar)
         self._draw_hud(p)
@@ -968,13 +1203,112 @@ class MushroomBody3DView(QWidget):
             # Base dim cyan, sparks handled above
             return QColor(71, 85, 105, alpha)
 
+    def _draw_opto_flashes(self, p: QPainter):
+        """Draw animated optogenetic laser beams, concentric shockwave ripples, and floating badges."""
+        if not self._opto_flashes:
+            return
+
+        now = time.perf_counter()
+        active = []
+        for f in self._opto_flashes:
+            dt = now - f["time"]
+            dur = f.get("duration", 0.9)
+            if dt > dur:
+                continue
+            active.append(f)
+            progress = dt / dur
+            alpha = int(255 * (1.0 - progress))
+            col = f["color"]
+
+            sx_arr, sy_arr, _, valid_arr = self._project_points(np.array([f["pos"]], dtype=np.float32))
+            if not valid_arr[0]:
+                continue
+            sx, sy = float(sx_arr[0]), float(sy_arr[0])
+
+            p.save()
+            # 1. Optical laser beam from top of screen into target
+            beam_alpha = int(alpha * 0.75)
+            beam_pen = QPen(QColor(col.red(), col.green(), col.blue(), beam_alpha), 2.0, Qt.DashLine)
+            p.setPen(beam_pen)
+            p.drawLine(int(sx), 0, int(sx), int(sy))
+
+            # 2. Concentric expanding shockwave ripple rings
+            p.setBrush(Qt.NoBrush)
+            for r_idx in range(3):
+                phase = (progress + r_idx * 0.25) % 1.0
+                radius = 8.0 + phase * 65.0
+                ring_alpha = int(alpha * (1.0 - phase))
+                if ring_alpha > 5:
+                    r_col = QColor(col.red(), col.green(), col.blue(), ring_alpha)
+                    p.setPen(QPen(r_col, max(1.2, 3.5 * (1.0 - phase))))
+                    p.drawEllipse(QPointF(sx, sy), radius, radius)
+
+            # 3. Bright central photostimulation flare
+            flare_grad = QRadialGradient(sx, sy, 24.0)
+            flare_grad.setColorAt(0.0, QColor(255, 255, 255, alpha))
+            flare_grad.setColorAt(0.35, QColor(col.red(), col.green(), col.blue(), int(alpha * 0.85)))
+            flare_grad.setColorAt(1.0, QColor(col.red(), col.green(), col.blue(), 0))
+            p.setBrush(QBrush(flare_grad))
+            p.setPen(Qt.NoPen)
+            p.drawEllipse(QPointF(sx, sy), 24.0, 24.0)
+
+            # 4. Floating holographic badge
+            badge_y = sy - 30.0 - progress * 20.0
+            badge_text = f"⚡ ChR2: {f['name']} ({f['action']})"
+            font_badge = QFont("Segoe UI", 8, QFont.Bold)
+            p.setFont(font_badge)
+            bw = p.fontMetrics().horizontalAdvance(badge_text) + 16
+            bx = int(sx - bw / 2)
+            by = int(badge_y - 10)
+            b_rect = QRect(bx, by, bw, 20)
+
+            p.setBrush(QBrush(QColor(12, 14, 20, int(alpha * 0.88))))
+            p.setPen(QPen(QColor(col.red(), col.green(), col.blue(), int(alpha * 0.9)), 1.2))
+            p.drawRoundedRect(b_rect, 4, 4)
+
+            p.setPen(QColor(255, 255, 255, alpha))
+            p.drawText(b_rect, Qt.AlignCenter, badge_text)
+            p.restore()
+
+        self._opto_flashes = active
+
+    def _draw_opto_banner(self, p: QPainter, w: int):
+        """Draw glowing top status banner when optogenetic pulse is evoked."""
+        now = time.perf_counter()
+        dt = now - self._opto_status_time
+        if dt >= 3.0:
+            return
+
+        fade = max(0.0, min(1.0, 3.0 - dt))
+        alpha = int(255 * fade)
+
+        font_b = QFont("Segoe UI", 9, QFont.Bold)
+        p.setFont(font_b)
+        text = f"⚡ OPTOGENETIC PULSE: {self._opto_status}"
+        tw = p.fontMetrics().horizontalAdvance(text) + 28
+        bx = int((w - tw) / 2)
+        by = 12
+        rect = QRect(bx, by, tw, 26)
+
+        p.setBrush(QBrush(QColor(10, 18, 28, int(225 * fade))))
+        p.setPen(QPen(QColor(0, 229, 255, alpha), 1.5))
+        p.drawRoundedRect(rect, 13, 13)
+
+        p.setPen(QColor(230, 248, 255, alpha))
+        p.drawText(rect, Qt.AlignCenter, text)
+
     # ------------------------------------------------------------------ HUD
     def _draw_hud(self, p: QPainter):
         """Draw titles, control buttons, and live telemetry overlays."""
+        self._btn_rects.clear()
         w, h = self.width(), self.height()
         font_title = QFont("Segoe UI", 10, QFont.Bold)
         font_small = QFont("Segoe UI", 8, QFont.Normal)
         font_mono = QFont("Cascadia Mono", 9, QFont.DemiBold)
+
+        # 0.5. Top-Center Optogenetic Status Banner
+        if self._opto_status:
+            self._draw_opto_banner(p, w)
 
         # 1. Top-Left: Header
         p.setFont(font_title)
@@ -1089,8 +1423,6 @@ class MushroomBody3DView(QWidget):
         btn_h = 24
         spacing = 6
 
-        self._btn_rects.clear()
-
         # Render preset buttons right-to-left
         for bid, text in reversed(buttons):
             text_w = p.fontMetrics().horizontalAdvance(text) + 16
@@ -1129,6 +1461,40 @@ class MushroomBody3DView(QWidget):
 
             p.setPen(QColor(255, 255, 255, 240) if is_sel else QColor(160, 160, 170, 200))
             p.drawText(mrect, Qt.AlignCenter, mtext)
+
+            mbx -= spacing
+
+        # Separator gap
+        mbx -= 8
+
+        # Tool mode selector buttons
+        tool_buttons = [
+            ("tool_camera", "Orbit" if w < 640 else "📷 Orbit", self.tool_mode == "camera", QColor(148, 163, 184)),
+            ("tool_opto", "ChR2" if w < 640 else "⚡ ChR2 Opto", self.tool_mode == "opto", QColor(0, 229, 255)),
+            ("tool_inspect", "Inspect" if w < 640 else "🔍 Inspect", self.tool_mode == "inspect", QColor(168, 85, 247)),
+        ]
+
+        for tid, ttext, is_act, col in reversed(tool_buttons):
+            tw = p.fontMetrics().horizontalAdvance(ttext) + 14
+            mbx -= tw
+            trect = QRect(mbx, mby, tw, 22)
+            self._btn_rects[tid] = trect
+
+            if is_act:
+                bg_c = QColor(col.red(), col.green(), col.blue(), 75)
+                border_c = QColor(col.red(), col.green(), col.blue(), 210)
+                text_c = QColor(255, 255, 255, 250)
+            else:
+                bg_c = QColor(24, 24, 28, 160)
+                border_c = QColor(50, 50, 58, 140)
+                text_c = QColor(140, 140, 150, 200)
+
+            p.setBrush(QBrush(bg_c))
+            p.setPen(QPen(border_c, 1))
+            p.drawRoundedRect(trect, 5, 5)
+
+            p.setPen(text_c)
+            p.drawText(trect, Qt.AlignCenter, ttext)
 
             mbx -= spacing
 
@@ -1397,6 +1763,8 @@ class MushroomBody3DView(QWidget):
                     self.set_view_mode(bid.replace("mode_", ""))
                 elif bid.startswith("layer_"):
                     self.toggle_layer(bid.replace("layer_", ""))
+                elif bid.startswith("tool_"):
+                    self.set_tool_mode(bid.replace("tool_", ""))
                 return
 
         # If help overlay is open: dismiss if clicked outside card, ignore inside clicks
@@ -1405,6 +1773,17 @@ class MushroomBody3DView(QWidget):
                 self._show_help = False
                 self.update()
             return
+
+        # Virtual Optogenetics click stimulation
+        if self.tool_mode == "opto" or event.modifiers() & (Qt.ControlModifier | Qt.AltModifier):
+            thresh = 42.0 if self.tool_mode == "opto" else 22.0
+            target = self._find_opto_target_at(pos, threshold_px=thresh)
+            if target is not None:
+                self.trigger_opto_stimulus(target)
+                return
+            elif self.tool_mode == "opto":
+                self._trigger_opto_at_screen_pos(pos)
+                return
 
         self._last_mouse_pos = pos
         if event.button() == Qt.RightButton or event.modifiers() & Qt.ShiftModifier:
@@ -1461,6 +1840,9 @@ class MushroomBody3DView(QWidget):
                     "ant": "Front (Anterior) View Angle",
                     "rot": "Toggle Auto 3D Rotation",
                     "reset": "Reset Camera Angle & Position",
+                    "tool_camera": "Camera Orbit & Pan Tool [Default]",
+                    "tool_opto": "Virtual Optogenetics (ChR2 Laser): Micro-stimulate neural hubs to evoke behavioral reflexes",
+                    "tool_inspect": "Neuron & Synapse Inspector: Inspect connectome cell types and neurotransmitters",
                     "mode_valence": "Mental Map Mode: Valence (Reward / Punishment)",
                     "mode_plasticity": "Synaptic Plasticity Mode: |Δw| Weight Shifts",
                     "mode_anatomy": "Anatomy Mode: Biological Lobe Compartments",
@@ -1475,6 +1857,12 @@ class MushroomBody3DView(QWidget):
                 found = btn_tooltips.get(bid, "")
                 if found:
                     break
+
+        # Check optogenetic targets if in opto tool mode or general hover
+        if not found:
+            opto_target = self._find_opto_target_at(pos, threshold_px=28.0)
+            if opto_target is not None:
+                found = f"⚡ ChR2 Target: {opto_target['name']} — Click to evoke {opto_target['action']}"
 
         # Check proximity to known lobe centers if not hovering over a button
         if not found:
