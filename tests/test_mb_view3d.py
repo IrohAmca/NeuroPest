@@ -480,3 +480,70 @@ def test_neural_network_module_optional_and_system_load_warning(app):
     assert not hasattr(ctrl, "btn_circ_view_3d")
 
 
+def test_whole_brain_circuits_data_structure():
+    """Verify CX, VPN, ALPN, and DN circuits in geometry data."""
+    data = load_mushroom_3d()
+    assert data.n_cx > 0
+    assert data.n_vpn > 0
+    assert data.n_alpn > 0
+    assert data.n_dn >= 18
+    assert len(data.cx_sub) == data.n_cx
+    assert len(data.vpn_side) == data.n_vpn
+    assert len(data.alpn_side) == data.n_alpn
+    assert len(data.dn_type) == data.n_dn
+
+    fallback = build_fallback_model()
+    assert fallback.n_cx > 0
+    assert fallback.n_vpn > 0
+    assert fallback.n_alpn > 0
+    assert fallback.n_dn >= 18
+
+
+def test_anatomical_layer_toggles(app):
+    """Test layer toggle methods, button clicks, and rendering with selective layers."""
+    data = load_mushroom_3d()
+    view = MushroomBody3DView(data=data)
+    view.resize(640, 480)
+
+    # Initial layer states all True
+    assert view.layer_mb
+    assert view.layer_cx
+    assert view.layer_visual
+    assert view.layer_olfactory
+    assert view.layer_motor
+    assert view.layer_wireframe
+
+    # Toggle individual layers
+    view.toggle_layer("cx")
+    assert not view.layer_cx
+    view.toggle_layer("cx")
+    assert view.layer_cx
+
+    view.set_layer_visible("motor", False)
+    assert not view.layer_motor
+
+    # Render with various layer combinations
+    img = QImage(640, 480, QImage.Format_ARGB32)
+    p = QPainter(img)
+    view.paintEvent(None)
+    p.end()
+
+    # Toggle via simulated button clicks
+    class FakeClick:
+        def __init__(self, pos):
+            self._pos = pos
+        def pos(self):
+            return self._pos
+        def button(self):
+            return Qt.LeftButton
+        def modifiers(self):
+            return Qt.NoModifier
+
+    if "layer_visual" in view._btn_rects:
+        rect = view._btn_rects["layer_visual"]
+        initial_val = view.layer_visual
+        view.mousePressEvent(FakeClick(rect.center()))
+        assert view.layer_visual != initial_val
+
+
+

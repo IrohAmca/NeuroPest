@@ -8,7 +8,7 @@ lobe compartment spatial centroids.
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 import numpy as np
@@ -52,6 +52,23 @@ class Mushroom3DData:
     brain_wireframe: np.ndarray # (N_lines, 2, 3) float32: Drosophila brain wireframe segments
     lobe_centers: dict[str, tuple[float, float, float]]
 
+    # Extended whole-brain circuits (CX, Visual VPN, Olfactory ALPN, Motor DN)
+    cx_pts: np.ndarray = field(default_factory=lambda: np.zeros((0, 3), np.float32))
+    cx_type: np.ndarray = field(default_factory=lambda: np.empty(0, dtype=str))
+    cx_sub: np.ndarray = field(default_factory=lambda: np.zeros(0, dtype=np.int8))  # 0=EB ring, 1=PB bridge, 2=FB
+    vpn_soma: np.ndarray = field(default_factory=lambda: np.zeros((0, 3), np.float32))
+    vpn_target: np.ndarray = field(default_factory=lambda: np.zeros((0, 3), np.float32))
+    vpn_type: np.ndarray = field(default_factory=lambda: np.empty(0, dtype=str))
+    vpn_side: np.ndarray = field(default_factory=lambda: np.zeros(0, dtype=np.int8))
+    alpn_soma: np.ndarray = field(default_factory=lambda: np.zeros((0, 3), np.float32))
+    alpn_target: np.ndarray = field(default_factory=lambda: np.zeros((0, 3), np.float32))
+    alpn_type: np.ndarray = field(default_factory=lambda: np.empty(0, dtype=str))
+    alpn_side: np.ndarray = field(default_factory=lambda: np.zeros(0, dtype=np.int8))
+    dn_soma: np.ndarray = field(default_factory=lambda: np.zeros((0, 3), np.float32))
+    dn_target: np.ndarray = field(default_factory=lambda: np.zeros((0, 3), np.float32))
+    dn_type: np.ndarray = field(default_factory=lambda: np.empty(0, dtype=str))
+    dn_side: np.ndarray = field(default_factory=lambda: np.zeros(0, dtype=np.int8))
+
     @property
     def n_kc(self) -> int:
         return len(self.kc_soma)
@@ -63,6 +80,22 @@ class Mushroom3DData:
     @property
     def n_dan(self) -> int:
         return len(self.dan_pos)
+
+    @property
+    def n_cx(self) -> int:
+        return len(self.cx_pts)
+
+    @property
+    def n_vpn(self) -> int:
+        return len(self.vpn_soma)
+
+    @property
+    def n_alpn(self) -> int:
+        return len(self.alpn_soma)
+
+    @property
+    def n_dn(self) -> int:
+        return len(self.dn_soma)
 
 
 def norm3d(pts: np.ndarray) -> np.ndarray:
@@ -83,7 +116,7 @@ def build_mushroom_3d(raw_dir: Path = RAW_DIR,
 
     m = np.load(mushroom_path)
     ann_path = raw_dir / "Supplemental_file1_neuron_annotations.tsv"
-    want = ["root_id", "super_class", "cell_class", "cell_type", "side", "top_nt",
+    want = ["root_id", "super_class", "cell_class", "cell_type", "hemibrain_type", "side", "top_nt",
             "pos_x", "pos_y", "pos_z", "soma_x", "soma_y", "soma_z"]
     head = pd.read_csv(ann_path, sep="\t", nrows=0).columns
     usecols = [c for c in want if c in head]
@@ -229,6 +262,83 @@ def build_mushroom_3d(raw_dir: Path = RAW_DIR,
         "ppl1_punish": tuple(np.mean(dan_pos_norm[dan_cluster == DAN_PPL1], axis=0)),
     }
 
+    # 1. Central Complex (CX: Ellipsoid Body EB, Protocerebral Bridge PB, Fan-shaped Body FB)
+    cx_mask = df["cell_class"] == "CX"
+    cx_df = df[cx_mask].dropna(subset=["pos_x", "pos_y", "pos_z"]).copy()
+    if len(cx_df) > 0:
+        cx_sub_raw = np.zeros(len(cx_df), dtype=np.int8)
+        for i, t in enumerate(cx_df["cell_type"].fillna("").to_numpy(str)):
+            if "EPG" in t or "ER" in t or "EB" in t:
+                cx_sub_raw[i] = 0  # Ellipsoid Body ring
+            elif "PFN" in t or "Delta7" in t or "PB" in t:
+                cx_sub_raw[i] = 1  # Protocerebral Bridge
+            else:
+                cx_sub_raw[i] = 2  # Fan-shaped Body
+        step_cx = max(1, len(cx_df) // 150)
+        cx_df = cx_df.iloc[::step_cx]
+        cx_sub = cx_sub_raw[::step_cx]
+        cx_pts_norm = norm3d(cx_df[["pos_x", "pos_y", "pos_z"]].to_numpy())
+        cx_types = cx_df["cell_type"].fillna("CX").to_numpy(str)
+    else:
+        fb_c = build_fallback_circuits()
+        cx_pts_norm, cx_types, cx_sub = fb_c["cx_pts"], fb_c["cx_type"], fb_c["cx_sub"]
+
+    # 2. Visual Projection Neurons (VPN: LC4, LC10, LPLC2, LPC1)
+    vpn_types_list = ["LPLC2", "LC4", "LC10a", "LC10c-2", "LC10d", "LPC1"]
+    vpn_df = df[df["cell_type"].isin(vpn_types_list)].dropna(subset=["pos_x", "pos_y", "pos_z"]).copy()
+    if len(vpn_df) > 0:
+        step_vpn = max(1, len(vpn_df) // 120)
+        vpn_df = vpn_df.iloc[::step_vpn]
+        vpn_soma_norm = norm3d(vpn_df[["soma_x", "soma_y", "soma_z"]].to_numpy())
+        vpn_target_norm = norm3d(vpn_df[["pos_x", "pos_y", "pos_z"]].to_numpy())
+        vpn_types = vpn_df["cell_type"].fillna("VPN").to_numpy(str)
+        vpn_side = np.where(vpn_df["side"] == "right", 1, -1).astype(np.int8)
+    else:
+        fb_c = build_fallback_circuits()
+        vpn_soma_norm, vpn_target_norm = fb_c["vpn_soma"], fb_c["vpn_target"]
+        vpn_types, vpn_side = fb_c["vpn_type"], fb_c["vpn_side"]
+
+    # 3. Antennal Lobe Projection Neurons (ALPN: DM1-DM4 odors to Calyx & LH)
+    alpn_df = df[df["cell_class"] == "ALPN"].dropna(subset=["pos_x", "pos_y", "pos_z"]).copy()
+    if len(alpn_df) > 0:
+        step_alpn = max(1, len(alpn_df) // 64)
+        alpn_df = alpn_df.iloc[::step_alpn]
+        alpn_soma_norm = norm3d(alpn_df[["soma_x", "soma_y", "soma_z"]].to_numpy())
+        alpn_target_norm = norm3d(alpn_df[["pos_x", "pos_y", "pos_z"]].to_numpy())
+        alpn_types = alpn_df["cell_type"].fillna("ALPN").to_numpy(str)
+        alpn_side = np.where(alpn_df["side"] == "right", 1, -1).astype(np.int8)
+    else:
+        fb_c = build_fallback_circuits()
+        alpn_soma_norm, alpn_target_norm = fb_c["alpn_soma"], fb_c["alpn_target"]
+        alpn_types, alpn_side = fb_c["alpn_type"], fb_c["alpn_side"]
+
+    # 4. Descending Motor Neurons (DN Hub: GF escape, MDN moonwalk, DNp09 walk, DNa02 steer, aDN groom)
+    ct = df["cell_type"].fillna("")
+    hb = df["hemibrain_type"].fillna("")
+    dn_mask = (ct == "DNp01") | (ct == "MDN") | hb.isin(["DNp09", "DNa01", "DNa02"]) | ct.isin(["DNg62", "DNge078"])
+    dn_df = df[dn_mask].dropna(subset=["pos_x", "pos_y", "pos_z"]).copy()
+    if len(dn_df) > 0:
+        dn_soma_norm = norm3d(dn_df[["soma_x", "soma_y", "soma_z"]].to_numpy())
+        dn_side = np.where(dn_df["side"] == "right", 1, -1).astype(np.int8)
+        dn_types = np.array([
+            "GF" if r.cell_type == "DNp01" else
+            "MDN" if r.cell_type == "MDN" else
+            "WALK" if r.hemibrain_type == "DNp09" else
+            "DNa02" if r.hemibrain_type == "DNa02" else
+            "DNa01" if r.hemibrain_type == "DNa01" else
+            "GROOM" if r.cell_type in ("DNg62", "DNge078") else r.cell_type
+            for r in dn_df.itertuples()
+        ])
+        dn_target_norm = np.column_stack([
+            dn_side * 0.04,
+            np.full(len(dn_df), -0.32, dtype=np.float32),
+            np.full(len(dn_df), -0.85, dtype=np.float32),
+        ]).astype(np.float32)
+    else:
+        fb_c = build_fallback_circuits()
+        dn_soma_norm, dn_target_norm = fb_c["dn_soma"], fb_c["dn_target"]
+        dn_types, dn_side = fb_c["dn_type"], fb_c["dn_side"]
+
     out_path.parent.mkdir(parents=True, exist_ok=True)
     np.savez_compressed(
         out_path,
@@ -251,6 +361,21 @@ def build_mushroom_3d(raw_dir: Path = RAW_DIR,
         brain_wireframe=brain_wireframe,
         lobe_centers_keys=np.array(list(lobe_centers.keys())),
         lobe_centers_vals=np.array(list(lobe_centers.values()), dtype=np.float32),
+        cx_pts=cx_pts_norm,
+        cx_type=cx_types,
+        cx_sub=cx_sub,
+        vpn_soma=vpn_soma_norm,
+        vpn_target=vpn_target_norm,
+        vpn_type=vpn_types,
+        vpn_side=vpn_side,
+        alpn_soma=alpn_soma_norm,
+        alpn_target=alpn_target_norm,
+        alpn_type=alpn_types,
+        alpn_side=alpn_side,
+        dn_soma=dn_soma_norm,
+        dn_target=dn_target_norm,
+        dn_type=dn_types,
+        dn_side=dn_side,
     )
 
     return Mushroom3DData(
@@ -272,7 +397,126 @@ def build_mushroom_3d(raw_dir: Path = RAW_DIR,
         dan_cluster=dan_cluster,
         brain_wireframe=brain_wireframe,
         lobe_centers=lobe_centers,
+        cx_pts=cx_pts_norm,
+        cx_type=cx_types,
+        cx_sub=cx_sub,
+        vpn_soma=vpn_soma_norm,
+        vpn_target=vpn_target_norm,
+        vpn_type=vpn_types,
+        vpn_side=vpn_side,
+        alpn_soma=alpn_soma_norm,
+        alpn_target=alpn_target_norm,
+        alpn_type=alpn_types,
+        alpn_side=alpn_side,
+        dn_soma=dn_soma_norm,
+        dn_target=dn_target_norm,
+        dn_type=dn_types,
+        dn_side=dn_side,
     )
+
+
+def build_fallback_circuits() -> dict[str, np.ndarray]:
+    """Synthetic coordinates for CX, VPN, ALPN, and DN when annotations are absent."""
+    rng = np.random.default_rng(42)
+
+    # 1. Central Complex (CX)
+    # EB: Ellipsoid Body ring
+    n_eb = 32
+    ths = np.linspace(0, 2 * math.pi, n_eb, endpoint=False)
+    eb_pts = np.column_stack([
+        0.14 * np.cos(ths) + rng.normal(0, 0.01, n_eb),
+        0.08 + 0.04 * np.sin(ths) + rng.normal(0, 0.01, n_eb),
+        np.full(n_eb, 0.25, dtype=np.float32) + rng.normal(0, 0.01, n_eb),
+    ]).astype(np.float32)
+    eb_types = np.array([f"EPG_{i:02d}" for i in range(n_eb)])
+    eb_sub = np.zeros(n_eb, dtype=np.int8)
+
+    # PB: Protocerebral Bridge (horizontal arched mustache behind EB)
+    n_pb = 18
+    pb_xs = np.linspace(-0.35, 0.35, n_pb, dtype=np.float32)
+    pb_pts = np.column_stack([
+        pb_xs,
+        -0.04 - 0.12 * (pb_xs ** 2) + rng.normal(0, 0.01, n_pb),
+        np.full(n_pb, 0.38, dtype=np.float32) + rng.normal(0, 0.01, n_pb),
+    ]).astype(np.float32)
+    pb_types = np.array([f"PFN_{i:02d}" for i in range(n_pb)])
+    pb_sub = np.ones(n_pb, dtype=np.int8)
+
+    # FB: Fan-shaped Body
+    n_fb = 24
+    fb_xs = np.linspace(-0.25, 0.25, n_fb, dtype=np.float32)
+    fb_pts = np.column_stack([
+        fb_xs,
+        0.02 + rng.normal(0, 0.015, n_fb),
+        np.full(n_fb, 0.30, dtype=np.float32) + rng.normal(0, 0.015, n_fb),
+    ]).astype(np.float32)
+    fb_types = np.array([f"FS_{i:02d}" for i in range(n_fb)])
+    fb_sub = np.full(n_fb, 2, dtype=np.int8)
+
+    cx_pts = np.vstack([eb_pts, pb_pts, fb_pts]).astype(np.float32)
+    cx_type = np.concatenate([eb_types, pb_types, fb_types])
+    cx_sub = np.concatenate([eb_sub, pb_sub, fb_sub])
+
+    # 2. Visual Projection Neurons (VPN)
+    n_vpn = 96
+    v_sides = np.array([-1] * (n_vpn // 2) + [1] * (n_vpn // 2), dtype=np.int8)
+    v_types_pool = ["LC4", "LC10a", "LPLC2", "LPC1"]
+    vpn_types = rng.choice(v_types_pool, n_vpn)
+    vpn_soma = np.column_stack([
+        v_sides * rng.uniform(1.05, 1.35, n_vpn).astype(np.float32),
+        rng.uniform(-0.15, 0.35, n_vpn).astype(np.float32),
+        rng.uniform(-0.10, 0.35, n_vpn).astype(np.float32),
+    ]).astype(np.float32)
+    vpn_target = np.column_stack([
+        v_sides * rng.uniform(0.35, 0.60, n_vpn).astype(np.float32),
+        rng.uniform(0.05, 0.25, n_vpn).astype(np.float32),
+        rng.uniform(0.12, 0.38, n_vpn).astype(np.float32),
+    ]).astype(np.float32)
+
+    # 3. Antennal Lobe Projection Neurons (ALPN)
+    n_alpn = 48
+    a_sides = np.array([-1] * (n_alpn // 2) + [1] * (n_alpn // 2), dtype=np.int8)
+    alpn_soma = np.column_stack([
+        a_sides * rng.uniform(0.15, 0.35, n_alpn).astype(np.float32),
+        rng.uniform(0.50, 0.65, n_alpn).astype(np.float32),
+        rng.uniform(-0.30, -0.15, n_alpn).astype(np.float32),
+    ]).astype(np.float32)
+    alpn_target = np.column_stack([
+        a_sides * rng.uniform(0.50, 0.70, n_alpn).astype(np.float32),
+        rng.uniform(-0.20, -0.05, n_alpn).astype(np.float32),
+        rng.uniform(0.40, 0.58, n_alpn).astype(np.float32),
+    ]).astype(np.float32)
+    alpn_types = np.array([f"ALPN_DM{i % 4 + 1}" for i in range(n_alpn)])
+
+    # 4. Descending Motor Neurons (DN Hub)
+    dn_names = [
+        "GF", "GF",
+        "MDN", "MDN", "MDN", "MDN",
+        "WALK", "WALK", "WALK", "WALK",
+        "DNa01", "DNa01",
+        "DNa02", "DNa02",
+        "GROOM", "GROOM", "GROOM", "GROOM",
+    ]
+    n_dn = len(dn_names)
+    d_sides = np.array([-1, 1] * (n_dn // 2), dtype=np.int8)
+    dn_soma = np.column_stack([
+        d_sides * rng.uniform(0.15, 0.65, n_dn).astype(np.float32),
+        rng.uniform(-0.10, 0.35, n_dn).astype(np.float32),
+        rng.uniform(0.10, 0.55, n_dn).astype(np.float32),
+    ]).astype(np.float32)
+    dn_target = np.column_stack([
+        d_sides * 0.04,
+        np.full(n_dn, -0.32, dtype=np.float32),
+        np.full(n_dn, -0.85, dtype=np.float32),
+    ]).astype(np.float32)
+    dn_types = np.array(dn_names)
+
+    return {
+        "cx_pts": cx_pts, "cx_type": cx_type, "cx_sub": cx_sub,
+        "vpn_soma": vpn_soma, "vpn_target": vpn_target, "vpn_type": vpn_types, "vpn_side": v_sides,
+        "alpn_soma": alpn_soma, "alpn_target": alpn_target, "alpn_type": alpn_types, "alpn_side": a_sides,
+        "dn_soma": dn_soma, "dn_target": dn_target, "dn_type": dn_types, "dn_side": d_sides,
+    }
 
 
 def build_fallback_model() -> Mushroom3DData:
@@ -367,6 +611,8 @@ def build_fallback_model() -> Mushroom3DData:
         "ppl1_punish": (0.48, -0.05, -0.02),
     }
 
+    fb_c = build_fallback_circuits()
+
     return Mushroom3DData(
         kc_soma=kc_soma,
         kc_ped=kc_ped,
@@ -386,6 +632,21 @@ def build_fallback_model() -> Mushroom3DData:
         dan_cluster=d_cluster,
         brain_wireframe=brain_wireframe,
         lobe_centers=lobe_centers,
+        cx_pts=fb_c["cx_pts"],
+        cx_type=fb_c["cx_type"],
+        cx_sub=fb_c["cx_sub"],
+        vpn_soma=fb_c["vpn_soma"],
+        vpn_target=fb_c["vpn_target"],
+        vpn_type=fb_c["vpn_type"],
+        vpn_side=fb_c["vpn_side"],
+        alpn_soma=fb_c["alpn_soma"],
+        alpn_target=fb_c["alpn_target"],
+        alpn_type=fb_c["alpn_type"],
+        alpn_side=fb_c["alpn_side"],
+        dn_soma=fb_c["dn_soma"],
+        dn_target=fb_c["dn_target"],
+        dn_type=fb_c["dn_type"],
+        dn_side=fb_c["dn_side"],
     )
 
 
@@ -397,6 +658,33 @@ def load_mushroom_3d(path: Path = MUSHROOM_3D) -> Mushroom3DData:
                 keys = z["lobe_centers_keys"].tolist()
                 vals = [tuple(v) for v in z["lobe_centers_vals"]]
                 lobe_centers = dict(zip(keys, vals))
+
+                if "cx_pts" in z:
+                    cx_pts = z["cx_pts"]
+                    cx_type = z["cx_type"]
+                    cx_sub = z["cx_sub"]
+                    vpn_soma = z["vpn_soma"]
+                    vpn_target = z["vpn_target"]
+                    vpn_type = z["vpn_type"]
+                    vpn_side = z["vpn_side"]
+                    alpn_soma = z["alpn_soma"]
+                    alpn_target = z["alpn_target"]
+                    alpn_type = z["alpn_type"]
+                    alpn_side = z["alpn_side"]
+                    dn_soma = z["dn_soma"]
+                    dn_target = z["dn_target"]
+                    dn_type = z["dn_type"]
+                    dn_side = z["dn_side"]
+                else:
+                    fb_c = build_fallback_circuits()
+                    cx_pts, cx_type, cx_sub = fb_c["cx_pts"], fb_c["cx_type"], fb_c["cx_sub"]
+                    vpn_soma, vpn_target = fb_c["vpn_soma"], fb_c["vpn_target"]
+                    vpn_type, vpn_side = fb_c["vpn_type"], fb_c["vpn_side"]
+                    alpn_soma, alpn_target = fb_c["alpn_soma"], fb_c["alpn_target"]
+                    alpn_type, alpn_side = fb_c["alpn_type"], fb_c["alpn_side"]
+                    dn_soma, dn_target = fb_c["dn_soma"], fb_c["dn_target"]
+                    dn_type, dn_side = fb_c["dn_type"], fb_c["dn_side"]
+
                 return Mushroom3DData(
                     kc_soma=z["kc_soma"],
                     kc_ped=z["kc_ped"],
@@ -416,6 +704,21 @@ def load_mushroom_3d(path: Path = MUSHROOM_3D) -> Mushroom3DData:
                     dan_cluster=z["dan_cluster"],
                     brain_wireframe=z["brain_wireframe"],
                     lobe_centers=lobe_centers,
+                    cx_pts=cx_pts,
+                    cx_type=cx_type,
+                    cx_sub=cx_sub,
+                    vpn_soma=vpn_soma,
+                    vpn_target=vpn_target,
+                    vpn_type=vpn_type,
+                    vpn_side=vpn_side,
+                    alpn_soma=alpn_soma,
+                    alpn_target=alpn_target,
+                    alpn_type=alpn_type,
+                    alpn_side=alpn_side,
+                    dn_soma=dn_soma,
+                    dn_target=dn_target,
+                    dn_type=dn_type,
+                    dn_side=dn_side,
                 )
         except (OSError, KeyError, ValueError):
             pass

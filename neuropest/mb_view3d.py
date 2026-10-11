@@ -123,6 +123,34 @@ class MushroomBody3DView(QWidget):
         self._wf_p1 = self.data.brain_wireframe[:, 0] if len(self.data.brain_wireframe) > 0 else np.zeros((0, 3), dtype=np.float32)
         self._wf_p2 = self.data.brain_wireframe[:, 1] if len(self.data.brain_wireframe) > 0 else np.zeros((0, 3), dtype=np.float32)
 
+        # Anatomical Layer Visibility Toggles
+        self.layer_mb = True        # Mushroom Body
+        self.layer_cx = True        # Central Complex (EB Compass Ring, PB Bridge)
+        self.layer_visual = True    # Optic Lobes & Visual Projections (LC4, LC10, LPLC2, LPC1)
+        self.layer_olfactory = True # Antennal Lobes & Odor Projections (ALPN)
+        self.layer_motor = True     # Descending Motor Neurons (GF, MDN, DNp09, DNa02, aDN)
+        self.layer_wireframe = True # Brain Envelope Wireframe
+
+        # Pre-cached whole-brain circuits
+        self._cx_pts = getattr(self.data, "cx_pts", np.zeros((0, 3), dtype=np.float32))
+        self._cx_sub = getattr(self.data, "cx_sub", np.zeros(0, dtype=np.int8))
+        self._cx_type = getattr(self.data, "cx_type", np.empty(0, dtype=str))
+
+        self._vpn_soma = getattr(self.data, "vpn_soma", np.zeros((0, 3), dtype=np.float32))
+        self._vpn_target = getattr(self.data, "vpn_target", np.zeros((0, 3), dtype=np.float32))
+        self._vpn_type = getattr(self.data, "vpn_type", np.empty(0, dtype=str))
+        self._vpn_side = getattr(self.data, "vpn_side", np.zeros(0, dtype=np.int8))
+
+        self._alpn_soma = getattr(self.data, "alpn_soma", np.zeros((0, 3), dtype=np.float32))
+        self._alpn_target = getattr(self.data, "alpn_target", np.zeros((0, 3), dtype=np.float32))
+        self._alpn_type = getattr(self.data, "alpn_type", np.empty(0, dtype=str))
+        self._alpn_side = getattr(self.data, "alpn_side", np.zeros(0, dtype=np.int8))
+
+        self._dn_soma = getattr(self.data, "dn_soma", np.zeros((0, 3), dtype=np.float32))
+        self._dn_target = getattr(self.data, "dn_target", np.zeros((0, 3), dtype=np.float32))
+        self._dn_type = getattr(self.data, "dn_type", np.empty(0, dtype=str))
+        self._dn_side = getattr(self.data, "dn_side", np.zeros(0, dtype=np.int8))
+
         # Animation state (traveling pulses, dopamine glow ripple)
         self._pulse_phase = 0.0
         self._last_tick = time.perf_counter()
@@ -134,6 +162,20 @@ class MushroomBody3DView(QWidget):
 
         # Interactive UI buttons on canvas (rectangles in screen coordinates)
         self._btn_rects: dict[str, QRect] = {}
+
+    def toggle_layer(self, name: str):
+        """Toggle an anatomical layer on or off."""
+        attr = f"layer_{name}"
+        if hasattr(self, attr):
+            setattr(self, attr, not getattr(self, attr))
+            self.update()
+
+    def set_layer_visible(self, name: str, visible: bool):
+        """Explicitly set an anatomical layer's visibility."""
+        attr = f"layer_{name}"
+        if hasattr(self, attr):
+            setattr(self, attr, bool(visible))
+            self.update()
 
     def showEvent(self, event):
         super().showEvent(event)
@@ -328,19 +370,29 @@ class MushroomBody3DView(QWidget):
             p.drawLine(0, gy, w, gy)
 
         # 2. Draw Drosophila Brain Neuropil Wireframe
-        self._draw_brain_wireframe(p)
+        if self.layer_wireframe:
+            self._draw_brain_wireframe(p)
 
-        # 3. Draw Axon Streamlines (Calyx -> Pedunculus -> Lobes)
-        self._draw_axon_tracts(p)
+        # 3. Sensory Input Circuits (Olfactory & Visual)
+        if self.layer_olfactory:
+            self._draw_antennal_lobes(p)
+        if self.layer_visual:
+            self._draw_visual_projections(p)
 
-        # 4. Draw Kenyon Cell Somas (Calyx Cups)
-        self._draw_kenyon_somas(p)
+        # 4. Central Complex Navigation & Compass Ring
+        if self.layer_cx:
+            self._draw_central_complex(p)
 
-        # 5. Draw Dopaminergic Neurons (PAM & PPL1) & Burst Ripples
-        self._draw_dopamine_clusters(p)
+        # 5. Mushroom Body Learning Circuit
+        if self.layer_mb:
+            self._draw_axon_tracts(p)
+            self._draw_kenyon_somas(p)
+            self._draw_dopamine_clusters(p)
+            self._draw_mbons(p)
 
-        # 6. Draw MBON Output Terminals
-        self._draw_mbons(p)
+        # 6. Motor Output System (Descending Neurons)
+        if self.layer_motor:
+            self._draw_descending_neurons(p)
 
         # 7. Draw HUD Overlay (Valence gauge, stats, dopamine bars, toolbar)
         self._draw_hud(p)
@@ -584,7 +636,194 @@ class MushroomBody3DView(QWidget):
             r = 3.0 * persp[i]
             p.drawEllipse(QPointF(mx[i], my[i]), r, r)
 
-    # ------------------------------------------------------------------ color logic
+    # ------------------------------------------------------------------ central complex
+    def _draw_central_complex(self, p: QPainter):
+        """Draw Central Complex (CX) navigation hub: Ellipsoid Body (EB) compass ring & PB bridge."""
+        if len(self._cx_pts) == 0:
+            return
+
+        cx, cy, _, persp = self._project_points(self._cx_pts)
+        subs = self._cx_sub
+
+        # 1. Ellipsoid Body (EB) Ring: Toroidal compass ring
+        eb_mask = subs == 0
+        if np.any(eb_mask):
+            eb_idx = np.flatnonzero(eb_mask)
+            eb_cx = cx[eb_idx]
+            eb_cy = cy[eb_idx]
+
+            # Connect perimeter nodes to form the ring outline
+            p.setBrush(Qt.NoBrush)
+            p.setPen(QPen(QColor(56, 189, 248, 120), 1.6))
+            eb_poly = QPolygonF([QPointF(float(eb_cx[i]), float(eb_cy[i])) for i in range(len(eb_idx))])
+            p.drawPolyline(eb_poly)
+            if len(eb_idx) > 2:
+                p.drawLine(QPointF(float(eb_cx[-1]), float(eb_cy[-1])), QPointF(float(eb_cx[0]), float(eb_cy[0])))
+
+            # Draw E-PG compass neurons on the ring
+            heading_phase = (self._pulse_phase * 2 * math.pi) % (2 * math.pi)
+            for i in range(len(eb_idx)):
+                angle = (i / len(eb_idx)) * 2 * math.pi
+                diff = abs((angle - heading_phase + math.pi) % (2 * math.pi) - math.pi)
+                is_heading = diff < 0.45
+
+                if is_heading:
+                    col = QColor(255, 255, 255, 250)
+                    r = 3.6 * persp[eb_idx[i]]
+                else:
+                    col = QColor(56, 189, 248, 180)
+                    r = 2.2 * persp[eb_idx[i]]
+
+                p.setBrush(QBrush(col))
+                p.setPen(Qt.NoPen)
+                p.drawEllipse(QPointF(float(eb_cx[i]), float(eb_cy[i])), r, r)
+
+        # 2. Protocerebral Bridge (PB): Horizontal arched mustache
+        pb_mask = subs == 1
+        if np.any(pb_mask):
+            pb_idx = np.flatnonzero(pb_mask)
+            p.setBrush(Qt.NoBrush)
+            p.setPen(QPen(QColor(168, 85, 247, 130), 1.4))
+            for i in range(len(pb_idx) - 1):
+                p.drawLine(QPointF(float(cx[pb_idx[i]]), float(cy[pb_idx[i]])),
+                           QPointF(float(cx[pb_idx[i+1]]), float(cy[pb_idx[i+1]])))
+
+            p.setPen(Qt.NoPen)
+            p.setBrush(QBrush(QColor(168, 85, 247, 200)))
+            for i in range(len(pb_idx)):
+                r = 2.0 * persp[pb_idx[i]]
+                p.drawEllipse(QPointF(float(cx[pb_idx[i]]), float(cy[pb_idx[i]])), r, r)
+
+        # 3. Fan-shaped Body (FB):
+        fb_mask = subs == 2
+        if np.any(fb_mask):
+            fb_idx = np.flatnonzero(fb_mask)
+            p.setPen(Qt.NoPen)
+            p.setBrush(QBrush(QColor(234, 179, 8, 150)))
+            for i in range(len(fb_idx)):
+                r = 1.8 * persp[fb_idx[i]]
+                p.drawEllipse(QPointF(float(cx[fb_idx[i]]), float(cy[fb_idx[i]])), r, r)
+
+    # ------------------------------------------------------------------ visual projections
+    def _draw_visual_projections(self, p: QPainter):
+        """Draw Visual Projection Neurons (VPN) from Optic Lobes to central brain (LC4, LC10, LPLC2, LPC1)."""
+        if len(self._vpn_soma) == 0:
+            return
+
+        sx, sy, _, s_persp = self._project_points(self._vpn_soma)
+        tx, ty, _, _ = self._project_points(self._vpn_target)
+        types = self._vpn_type
+
+        p.setBrush(Qt.NoBrush)
+
+        for i in range(len(self._vpn_soma)):
+            vtype = types[i]
+            if "LC4" in vtype:
+                col = QColor(245, 158, 11, 140)    # Amber (Collision/Looming speed)
+            elif "LC10" in vtype:
+                col = QColor(14, 165, 233, 140)    # Electric Sky-Blue (Target tracking / Steering)
+            elif "LPLC2" in vtype:
+                col = QColor(249, 115, 22, 140)    # Coral Orange (Looming size detector)
+            elif "LPC1" in vtype:
+                col = QColor(168, 85, 247, 140)    # Violet (Retreat drive)
+            else:
+                col = QColor(56, 189, 248, 100)
+
+            mid_x = (sx[i] + tx[i]) * 0.5
+            mid_y = min(sy[i], ty[i]) - 8.0
+            p.setPen(QPen(col, 1.2))
+
+            path = QPainterPath()
+            path.moveTo(float(sx[i]), float(sy[i]))
+            path.quadTo(float(mid_x), float(mid_y), float(tx[i]), float(ty[i]))
+            p.drawPath(path)
+
+            p.setPen(Qt.NoPen)
+            p.setBrush(QBrush(col))
+            r = 2.2 * s_persp[i]
+            p.drawEllipse(QPointF(float(sx[i]), float(sy[i])), r, r)
+
+    # ------------------------------------------------------------------ antennal lobes
+    def _draw_antennal_lobes(self, p: QPainter):
+        """Draw Antennal Lobes (AL) and olfactory projection neurons (ALPN) to Calyx & Lateral Horn."""
+        if len(self._alpn_soma) == 0:
+            return
+
+        sx, sy, _, s_persp = self._project_points(self._alpn_soma)
+        tx, ty, _, _ = self._project_points(self._alpn_target)
+
+        p.setBrush(Qt.NoBrush)
+        pen = QPen(QColor(16, 185, 129, 90), 1.0)
+        p.setPen(pen)
+
+        for i in range(len(self._alpn_soma)):
+            path = QPainterPath()
+            path.moveTo(float(sx[i]), float(sy[i]))
+            mid_x = (sx[i] + tx[i]) * 0.5
+            mid_y = (sy[i] + ty[i]) * 0.5 - 12.0
+            path.quadTo(float(mid_x), float(mid_y), float(tx[i]), float(ty[i]))
+            p.drawPath(path)
+
+        p.setPen(Qt.NoPen)
+        p.setBrush(QBrush(QColor(16, 185, 129, 210)))
+        for i in range(len(self._alpn_soma)):
+            r = 2.6 * s_persp[i]
+            p.drawEllipse(QPointF(float(sx[i]), float(sy[i])), r, r)
+
+    # ------------------------------------------------------------------ descending neurons
+    def _draw_descending_neurons(self, p: QPainter):
+        """Draw Descending Motor Neurons (DN Hub) plunging through cervical connective toward the VNC."""
+        if len(self._dn_soma) == 0:
+            return
+
+        sx, sy, _, s_persp = self._project_points(self._dn_soma)
+        tx, ty, _, t_persp = self._project_points(self._dn_target)
+        types = self._dn_type
+
+        font_tag = QFont("Cascadia Mono", 7, QFont.Bold)
+
+        for i in range(len(self._dn_soma)):
+            ntype = types[i]
+
+            if ntype == "GF":
+                col = QColor(239, 68, 68, 240) # Giant Fiber (blazing crimson)
+                line_w = 2.6
+            elif ntype == "MDN":
+                col = QColor(217, 70, 239, 230) # Moonwalker (fuchsia)
+                line_w = 2.0
+            elif ntype == "WALK":
+                col = QColor(34, 197, 94, 230) # Forward walk (lime green)
+                line_w = 2.0
+            elif "DNa" in ntype:
+                col = QColor(6, 182, 212, 230) # Steering (cyan)
+                line_w = 2.0
+            elif ntype == "GROOM":
+                col = QColor(139, 92, 246, 230) # Grooming (violet)
+                line_w = 2.0
+            else:
+                col = QColor(148, 163, 184, 180)
+                line_w = 1.4
+
+            # Descending axon trunk
+            p.setBrush(Qt.NoBrush)
+            p.setPen(QPen(col, line_w))
+            p.drawLine(QPointF(float(sx[i]), float(sy[i])), QPointF(float(tx[i]), float(ty[i])))
+
+            # Soma node in central brain
+            p.setPen(Qt.NoPen)
+            p.setBrush(QBrush(col))
+            r = 3.8 * s_persp[i]
+            p.drawEllipse(QPointF(float(sx[i]), float(sy[i])), r, r)
+
+            # Cervical terminal marker
+            r_term = 2.0 * t_persp[i]
+            p.drawEllipse(QPointF(float(tx[i]), float(ty[i])), r_term, r_term)
+
+            # Labeled tag for primary anchor neurons
+            if ntype in ("GF", "MDN", "WALK") and i % 2 == 0:
+                p.setFont(font_tag)
+                p.setPen(col)
+                p.drawText(int(sx[i]) + 6, int(sy[i]) + 3, ntype)
     def _color_for_neuron(self, weight: float, lobe: int, is_active: bool, alpha: int = 180) -> QColor:
         """Map neuron attributes to color based on current visual mode."""
         if is_active:
@@ -654,11 +893,14 @@ class MushroomBody3DView(QWidget):
         # 1. Top-Left: Header
         p.setFont(font_title)
         p.setPen(QColor(236, 236, 241, 230))
-        p.drawText(16, 26, "3D MUSHROOM BODY & MENTAL MAP")
+        p.drawText(16, 24, "3D DROSOPHILA CONNECTOME & NEURAL MAP")
 
         p.setFont(font_small)
         p.setPen(QColor(139, 139, 150, 200))
-        p.drawText(16, 42, f"FlyWire v783 • {self.data.n_kc:,} Kenyon Cells | {self.data.n_mbon} MBONs | {self.data.n_dan} DANs")
+        p.drawText(16, 38, f"FlyWire v783 • {self.data.n_kc:,} KCs | {self.data.n_mbon} MBONs | {self.data.n_cx} CX Compass | {self.data.n_vpn} Optic | {self.data.n_dn} Motor DNs")
+
+        # 1.5. Layer Toggles Bar (below header)
+        self._draw_layer_filters(p, 16, 46)
 
         # 2. Top-Right: Toolbar buttons
         self._draw_toolbar(p, w)
@@ -674,6 +916,51 @@ class MushroomBody3DView(QWidget):
             rect = QRect(16, h - 84, 280, 24)
             p.drawRoundedRect(rect, 4, 4)
             p.drawText(rect.adjusted(8, 0, 0, 0), Qt.AlignVCenter, self._hover_text)
+
+    def _draw_layer_filters(self, p: QPainter, start_x: int, start_y: int):
+        """Draw interactive layer toggle pills on top-left."""
+        font_pill = QFont("Segoe UI", 7, QFont.DemiBold)
+        p.setFont(font_pill)
+
+        w = self.width()
+        is_compact = w < 760
+
+        layers = [
+            ("layer_mb", "Mushroom" if is_compact else "Mushroom Body", self.layer_mb, QColor(245, 158, 11)),
+            ("layer_cx", "CX Compass" if is_compact else "Central Complex (CX)", self.layer_cx, QColor(56, 189, 248)),
+            ("layer_visual", "Vision" if is_compact else "Vision (VPN)", self.layer_visual, QColor(249, 115, 22)),
+            ("layer_olfactory", "Odor" if is_compact else "Odor (AL)", self.layer_olfactory, QColor(16, 185, 129)),
+            ("layer_motor", "Motor" if is_compact else "Motor (DN)", self.layer_motor, QColor(239, 68, 68)),
+            ("layer_wireframe", "Cage" if is_compact else "Wireframe", self.layer_wireframe, QColor(148, 163, 184)),
+        ]
+
+        bx = start_x
+        by = start_y
+        pill_h = 19
+        spacing = 5
+
+        for lid, name, is_on, accent_col in layers:
+            text_w = p.fontMetrics().horizontalAdvance(name) + 12
+            rect = QRect(bx, by, text_w, pill_h)
+            self._btn_rects[lid] = rect
+
+            if is_on:
+                bg_col = QColor(accent_col.red(), accent_col.green(), accent_col.blue(), 55)
+                border_col = QColor(accent_col.red(), accent_col.green(), accent_col.blue(), 180)
+                text_col = QColor(255, 255, 255, 240)
+            else:
+                bg_col = QColor(24, 24, 30, 160)
+                border_col = QColor(55, 55, 65, 130)
+                text_col = QColor(120, 120, 130, 180)
+
+            p.setBrush(QBrush(bg_col))
+            p.setPen(QPen(border_col, 1))
+            p.drawRoundedRect(rect, 4, 4)
+
+            p.setPen(text_col)
+            p.drawText(rect, Qt.AlignCenter, name)
+
+            bx += text_w + spacing
 
     def _draw_toolbar(self, p: QPainter, w: int):
         """Draw interactive buttons on top-right corner."""
@@ -914,12 +1201,12 @@ class MushroomBody3DView(QWidget):
             ),
             (
                 QRect(panel2_x, top_y, panel_w, panel_h),
-                "2. BIOLOGICAL REGIONS (ANATOMY)",
+                "2. BIOLOGICAL CIRCUITS (LAYERS)",
                 [
-                    (QColor(76, 201, 240), "Calyx", "Posterior cup; 5,000+ KC somas receive olfactory input."),
-                    (QColor(168, 85, 247), "Pedunculus", "Main bundle of Kenyon cell axons extending to lobes."),
-                    (QColor(245, 158, 11), "Alpha / Beta Lobes", "Long-term memory and approach/avoidance balance."),
-                    (QColor(6, 182, 212), "Gamma Lobe", "Short-term odor memory and rapid plasticity site."),
+                    (QColor(245, 158, 11), "Mushroom Body (MB)", "Calyx somas, pedunculus & lobes for learned memory."),
+                    (QColor(56, 189, 248), "Central Complex (CX)", "Ellipsoid Body (EB) compass heading ring & PB bridge."),
+                    (QColor(249, 115, 22), "Visual System (VPN)", "LC4/LPLC2 (looming threat) & LC10 (target steering)."),
+                    (QColor(239, 68, 68), "Motor Hub (DN)", "Giant Fiber (GF escape), MDN (moonwalk), DNp09 (walk)."),
                 ],
             ),
             (
@@ -1002,6 +1289,8 @@ class MushroomBody3DView(QWidget):
                     self.reset_camera()
                 elif bid.startswith("mode_"):
                     self.set_view_mode(bid.replace("mode_", ""))
+                elif bid.startswith("layer_"):
+                    self.toggle_layer(bid.replace("layer_", ""))
                 return
 
         # If help overlay is open: dismiss if clicked outside card, ignore inside clicks
@@ -1070,6 +1359,12 @@ class MushroomBody3DView(QWidget):
                     "mode_plasticity": "Synaptic Plasticity Mode: |Δw| Weight Shifts",
                     "mode_anatomy": "Anatomy Mode: Biological Lobe Compartments",
                     "mode_activity": "Live Activity Mode: Neural Spikes & Sparks",
+                    "layer_mb": "Mushroom Body: Kenyon cell somas, MBONs, and dopamine memory circuit [Toggle]",
+                    "layer_cx": "Central Complex: Ellipsoid Body (EB) compass heading ring and PB bridge [Toggle]",
+                    "layer_visual": "Visual Projections: Optic lobes to central brain (LC4/LPLC2 looming, LC10 steering) [Toggle]",
+                    "layer_olfactory": "Antennal Lobes: Food & pheromone projection neurons (ALPN) to Calyx [Toggle]",
+                    "layer_motor": "Descending Motor Neurons: Giant Fiber (escape), MDN (moonwalk), DNp09 (walk), DNa02 (steer) [Toggle]",
+                    "layer_wireframe": "Drosophila Brain Wireframe Envelope [Toggle]",
                 }
                 found = btn_tooltips.get(bid, "")
                 if found:
