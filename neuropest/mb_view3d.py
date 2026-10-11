@@ -28,7 +28,15 @@ from PySide6.QtGui import (
     QPolygonF,
     QRadialGradient,
 )
-from PySide6.QtWidgets import QToolTip, QWidget
+from PySide6.QtWidgets import (
+    QFrame,
+    QHBoxLayout,
+    QLabel,
+    QPushButton,
+    QToolTip,
+    QVBoxLayout,
+    QWidget,
+)
 
 from .mb_geometry import (
     DAN_PAM,
@@ -61,22 +69,31 @@ class MushroomBody3DView(QWidget):
 
     def __init__(self, runner: Runner | None = None,
                  data: Mushroom3DData | None = None,
-                 parent: QWidget | None = None):
+                 parent: QWidget | None = None,
+                 pip_mode: bool = False):
         super().__init__(parent)
         self.runner = runner
         self.data = data or load_mushroom_3d()
+        self.pip_mode = pip_mode
 
-        self.setMinimumSize(480, 360)
+        if self.pip_mode:
+            self.setMinimumSize(180, 180)
+            self.auto_rotate = True
+            self.zoom = 180.0
+        else:
+            self.setMinimumSize(480, 360)
+            self.auto_rotate = False
+            self.zoom = 220.0
+
         self.setMouseTracking(True)
         self.setFocusPolicy(Qt.ClickFocus)
 
         # 3D Camera attributes
         self.yaw, self.pitch = PRESET_ISOMETRIC
-        self.zoom = 220.0
         self.pan_x = 0.0
         self.pan_y = 0.0
-        self.auto_rotate = False
         self._cam_R: np.ndarray | None = None
+
 
         # Visual mode
         self.view_mode = MODE_VALENCE
@@ -259,6 +276,14 @@ class MushroomBody3DView(QWidget):
         ol_r_center = np.mean(self._vpn_soma[self._vpn_side == 1], axis=0) if np.any(self._vpn_side == 1) else np.array([0.52, 0.05, 0.0], dtype=np.float32)
         v, f = build_ellipsoid(ol_r_center, 0.16, 0.22, 0.17)
         self._neuropil_volumes.append({"id": "ol_r", "name": "Right Optic Lobe", "color": QColor(168, 85, 247), "vertices": v, "faces": f})
+
+    def set_pip_mode(self, enabled: bool):
+        """Toggle compact Picture-in-Picture display mode."""
+        self.pip_mode = bool(enabled)
+        if self.pip_mode:
+            self.auto_rotate = True
+            self.zoom = 180.0
+        self.update()
 
     def set_tool_mode(self, mode: str):
         """Set active canvas tool mode ('camera', 'opto', 'inspect')."""
@@ -1879,11 +1904,59 @@ class MushroomBody3DView(QWidget):
 
         p.restore()
 
+    def _draw_pip_hud(self, p: QPainter, w: int, h: int):
+        """Draw ultra-compact glass picture-in-picture HUD for desktop mini-brain mode."""
+        font_badge = QFont("Segoe UI", 7, QFont.Bold)
+        font_mono = QFont("Cascadia Mono", 8, QFont.DemiBold)
+
+        # 1. Top-Left: Mini title & heading degrees
+        p.setFont(font_badge)
+        deg = int(math.degrees(self.heading_angle)) % 360
+        title_txt = f"FlyWire 3D • {deg}°"
+        p.setPen(QColor(56, 189, 248, 220))
+        p.drawText(10, 16, title_txt)
+
+        # Top-Right: Mini Reset & Rotate buttons
+        btn_w, btn_h = 34, 18
+        rot_rect = QRect(w - 76, 6, btn_w, btn_h)
+        rst_rect = QRect(w - 38, 6, btn_w, btn_h)
+        self._btn_rects["rot"] = rot_rect
+        self._btn_rects["reset"] = rst_rect
+
+        for b_rect, b_txt, active in [(rot_rect, "Rot", self.auto_rotate), (rst_rect, "Rst", False)]:
+            bg_c = QColor(56, 189, 248, 60) if active else QColor(24, 26, 34, 180)
+            brd_c = QColor(56, 189, 248, 160) if active else QColor(60, 65, 80, 140)
+            p.setBrush(QBrush(bg_c))
+            p.setPen(QPen(brd_c, 1))
+            p.drawRoundedRect(b_rect, 3, 3)
+            p.setPen(QColor(240, 245, 255))
+            p.drawText(b_rect, Qt.AlignCenter, b_txt)
+
+        # 2. Bottom: Compact 1-line glass telemetry pill
+        bar_h = 22
+        bar_y = h - bar_h - 6
+        bar_rect = QRect(8, bar_y, w - 16, bar_h)
+
+        p.setBrush(QBrush(QColor(12, 14, 20, 215)))
+        p.setPen(QPen(QColor(56, 189, 248, 100), 1))
+        p.drawRoundedRect(bar_rect, 4, 4)
+
+        p.setFont(font_mono)
+        v_sign = "+" if self.valence >= 0 else ""
+        tel_txt = f"V:{v_sign}{self.valence:.2f} | GF:{self.rate_gf:.0f} | W:{self.rate_walk:.0f} | PAM:{int(self.pam*100)}%"
+        p.setPen(QColor(230, 235, 245))
+        p.drawText(bar_rect, Qt.AlignCenter, tel_txt)
+
     # ------------------------------------------------------------------ HUD
     def _draw_hud(self, p: QPainter):
         """Draw titles, control buttons, and live telemetry overlays."""
         self._btn_rects.clear()
         w, h = self.width(), self.height()
+
+        if self.pip_mode:
+            self._draw_pip_hud(p, w, h)
+            return
+
         font_title = QFont("Segoe UI", 10, QFont.Bold)
         font_small = QFont("Segoe UI", 8, QFont.Normal)
         font_mono = QFont("Cascadia Mono", 9, QFont.DemiBold)
@@ -2499,3 +2572,79 @@ class MushroomBody3DView(QWidget):
         if found != self._hover_text:
             self._hover_text = found
             self.update()
+
+
+class FloatingMiniBrainHUD(QWidget):
+    """Floating on-top desktop picture-in-picture widget for live 3D connectome visualization."""
+    def __init__(self, runner=None, data: Mushroom3DData | None = None, parent=None):
+        super().__init__(parent)
+        self.setWindowFlags(Qt.Tool | Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint)
+        self.setAttribute(Qt.WA_TranslucentBackground)
+        self.resize(300, 270)
+
+        self._drag_pos = None
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(8, 8, 8, 8)
+        layout.setSpacing(0)
+
+        # Glass container frame
+        container = QFrame(self)
+        container.setObjectName("hud_container")
+        container.setStyleSheet("""
+            QFrame#hud_container {
+                background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+                    stop:0 rgba(18, 20, 28, 235), stop:1 rgba(10, 12, 16, 245));
+                border: 1px solid rgba(56, 189, 248, 120);
+                border-radius: 12px;
+            }
+        """)
+        c_layout = QVBoxLayout(container)
+        c_layout.setContentsMargins(6, 6, 6, 6)
+        c_layout.setSpacing(4)
+
+        # Header title and close button
+        head_row = QHBoxLayout()
+        head_row.setContentsMargins(6, 2, 4, 2)
+        lbl_title = QLabel("🧠 MINI-BRAIN HUD")
+        lbl_title.setStyleSheet("color: rgba(220, 230, 245, 220); font-family: 'Segoe UI'; font-weight: bold; font-size: 10px; background: transparent;")
+        head_row.addWidget(lbl_title)
+        head_row.addStretch(1)
+
+        btn_close = QPushButton("×")
+        btn_close.setFixedSize(18, 18)
+        btn_close.setCursor(Qt.PointingHandCursor)
+        btn_close.setStyleSheet("""
+            QPushButton {
+                color: #8b8b96;
+                background: transparent;
+                border: none;
+                font-size: 14px;
+                font-weight: bold;
+            }
+            QPushButton:hover {
+                color: #ff4757;
+            }
+        """)
+        btn_close.clicked.connect(self.close)
+        head_row.addWidget(btn_close)
+        c_layout.addLayout(head_row)
+
+        # 3D View embedded in PIP mode
+        self.view3d = MushroomBody3DView(runner=runner, data=data, pip_mode=True, parent=container)
+        c_layout.addWidget(self.view3d, 1)
+
+        layout.addWidget(container)
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.LeftButton:
+            self._drag_pos = event.globalPosition().toPoint() - self.frameGeometry().topLeft()
+            event.accept()
+
+    def mouseMoveEvent(self, event):
+        if self._drag_pos is not None and event.buttons() & Qt.LeftButton:
+            self.move(event.globalPosition().toPoint() - self._drag_pos)
+            event.accept()
+
+    def mouseReleaseEvent(self, event):
+        self._drag_pos = None

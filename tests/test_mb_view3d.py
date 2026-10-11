@@ -35,6 +35,7 @@ from neuropest.mb_view3d import (
     PRESET_DORSAL,
     PRESET_ISOMETRIC,
     PRESET_SAGITTAL,
+    FloatingMiniBrainHUD,
     MushroomBody3DView,
 )
 from neuropest.paths import MUSHROOM_3D
@@ -788,6 +789,83 @@ def test_translucent_neuropil_hulls_and_toggles(app):
     view.paintEvent(None)
     p.end()
     assert not img2.isNull()
+
+
+def test_pip_mode_and_floating_mini_brain_hud(app):
+    """Test compact PIP display mode and floating desktop mini-brain HUD."""
+    data = load_mushroom_3d()
+    runner = MockRunner()
+
+    # 1. Test PIP mode on MushroomBody3DView
+    view = MushroomBody3DView(runner=runner, data=data, pip_mode=True)
+    assert view.pip_mode is True
+    assert view.auto_rotate is True
+    assert view.zoom == 180.0
+
+    # Render in PIP mode
+    view.resize(280, 240)
+    img = QImage(280, 240, QImage.Format_ARGB32)
+    p = QPainter(img)
+    view.paintEvent(None)
+    p.end()
+    assert not img.isNull()
+
+    # Toggle PIP mode
+    view.set_pip_mode(False)
+    assert view.pip_mode is False
+    view.set_pip_mode(True)
+    assert view.pip_mode is True
+
+    # 2. Test FloatingMiniBrainHUD
+    hud = FloatingMiniBrainHUD(runner=runner, data=data)
+    assert hud.windowFlags() & Qt.FramelessWindowHint
+    assert hud.windowFlags() & Qt.WindowStaysOnTopHint
+    assert hasattr(hud, "view3d")
+    assert hud.view3d.pip_mode is True
+
+    # Test HUD dragging simulation
+    class FakeDragEvent:
+        def __init__(self, pos, btn=Qt.LeftButton, btns=Qt.LeftButton):
+            self._pos = pos
+            self._btn = btn
+            self._btns = btns
+        def button(self):
+            return self._btn
+        def buttons(self):
+            return self._btns
+        def globalPosition(self):
+            class GP:
+                def __init__(self, pt):
+                    self._pt = pt
+                def toPoint(self):
+                    return self._pt
+            return GP(self._pos)
+        def accept(self):
+            pass
+
+    hud.mousePressEvent(FakeDragEvent(QPoint(50, 50)))
+    assert hud._drag_pos is not None
+    hud.mouseMoveEvent(FakeDragEvent(QPoint(70, 70)))
+    hud.mouseReleaseEvent(FakeDragEvent(QPoint(70, 70)))
+    assert hud._drag_pos is None
+
+    # 3. Test Control window Mini-Brain HUD integration
+    ctrl = Control(MockOverlay(), runner)
+    assert hasattr(ctrl, "btn_mini_hud")
+    assert ctrl._mini_brain_hud is None
+
+    ctrl._open_mini_brain_hud()
+    assert ctrl._mini_brain_hud is not None
+    assert isinstance(ctrl._mini_brain_hud, FloatingMiniBrainHUD)
+    hud_ref = ctrl._mini_brain_hud
+
+    # Calling again raises/focuses the same window
+    ctrl._open_mini_brain_hud()
+    assert ctrl._mini_brain_hud is hud_ref
+
+    hud.close()
+    ctrl._mini_brain_hud.close()
+
 
 
 

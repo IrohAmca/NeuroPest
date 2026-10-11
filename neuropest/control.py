@@ -31,7 +31,7 @@ from PySide6.QtWidgets import (
 from PySide6.QtGui import QColor, QFont, QIcon, QImage, QPainter
 
 from . import eyeview
-from .mb_view3d import MushroomBody3DView
+from .mb_view3d import FloatingMiniBrainHUD, MushroomBody3DView
 from .paths import CACHE, EYE, FIELD, SKIN_THUMBNAILS, TIERS
 from .preferences import Preferences
 from .render import AVAILABLE_SKINS, SKIN_METADATA
@@ -221,6 +221,7 @@ class Control(QWidget):
         self.auto_scan_gpus = auto_scan_gpus
         self.tiers = load_tiers()
         self.tier_machine = load_tier_machine()
+        self._mini_brain_hud: FloatingMiniBrainHUD | None = None
         self.setObjectName("Control")
         self.setWindowTitle("NeuroPest")
         self.resize(760, 560)
@@ -777,6 +778,12 @@ class Control(QWidget):
         self.popout_btn.clicked.connect(self._open_3d_popout)
         popout_row.addWidget(self.popout_btn)
 
+        self.btn_mini_hud = QPushButton("🖥️ Mini-Brain HUD")
+        self.btn_mini_hud.setCursor(Qt.PointingHandCursor)
+        self.btn_mini_hud.setToolTip("Opens a frameless, translucent on-top desktop picture-in-picture mini-brain HUD.")
+        self.btn_mini_hud.clicked.connect(self._open_mini_brain_hud)
+        popout_row.addWidget(self.btn_mini_hud)
+
         popout_row.addStretch(1)
         card_3d.body.addLayout(popout_row)
 
@@ -930,6 +937,19 @@ class Control(QWidget):
         pop_view = MushroomBody3DView(runner=self.runner, data=self.mb_view3d.data, parent=dialog)
         d_lay.addWidget(pop_view, 1)
         dialog.exec()
+
+    def _open_mini_brain_hud(self):
+        """Open a transparent floating on-top desktop picture-in-picture mini-brain HUD."""
+        if self._mini_brain_hud is not None and self._mini_brain_hud.isVisible():
+            self._mini_brain_hud.raise_()
+            self._mini_brain_hud.activateWindow()
+            return
+        self._mini_brain_hud = FloatingMiniBrainHUD(
+            runner=self.runner,
+            data=self.mb_view3d.data,
+            parent=None,
+        )
+        self._mini_brain_hud.show()
 
     def _inject_test_action(self, action: str):
         r = self.runner
