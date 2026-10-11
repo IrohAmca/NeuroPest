@@ -546,4 +546,34 @@ def test_anatomical_layer_toggles(app):
         assert view.layer_visual != initial_val
 
 
+def test_sensorimotor_signal_flow_and_rates(app):
+    """Test action potential propagation when sensory cues and motor rates fire."""
+    data = load_mushroom_3d()
+    view = MushroomBody3DView(data=data)
+    view.resize(640, 480)
+    view.setVisible(True)
+
+    # Inject visual cue & motor take-off rates
+    view.cue_near = 0.8
+    view.rate_gf = 15.0
+    view.rate_walk = 22.0
+    view.rate_steer = 8.0
+    view.rate_mdn = 4.0
+    view.cue_food = 0.7
+
+    # Render frame with active signals
+    img = QImage(640, 480, QImage.Format_ARGB32)
+    p = QPainter(img)
+    view.paintEvent(None)
+    p.end()
+
+    # Advance tick and verify pulse propagation & heading updates
+    view._pulse_phase = 0.1
+    h0 = view.heading_angle
+    view._on_tick()
+    assert view._pulse_phase != 0.1
+    assert view.heading_angle != h0
+
+
+
 

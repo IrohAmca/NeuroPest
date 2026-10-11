@@ -99,6 +99,16 @@ class MushroomBody3DView(QWidget):
         self.kc_active_count = 0
         self.weights_dirty = 0
 
+        # Live motor and sensory rate readouts
+        self.rate_gf = 0.0
+        self.rate_walk = 0.0
+        self.rate_mdn = 0.0
+        self.rate_steer = 0.0
+        self.rate_groom = 0.0
+        self.cue_food = 0.0
+        self.cue_near = 0.0
+        self.heading_angle = 0.0
+
         # Memory buffer (per KC valence delta)
         self.kc_weights = np.zeros(self.data.n_kc, dtype=np.float32)
         self.active_kc_mask = np.zeros(self.data.n_kc, dtype=bool)
@@ -235,6 +245,10 @@ class MushroomBody3DView(QWidget):
 
         dirty = self._fetch_telemetry()
 
+        # Dynamic heading angle tracking
+        if abs(self.rate_steer) > 0.1:
+            self.heading_angle = (self.heading_angle + self.rate_steer * dt * 0.15) % (2 * math.pi)
+
         # Check if animation or telemetry is active
         is_active = (
             self.auto_rotate
@@ -242,6 +256,14 @@ class MushroomBody3DView(QWidget):
             or self.pam > 0.02
             or self.ppl1 > 0.02
             or self.kc_active_count > 0
+            or self.rate_gf > 1.5
+            or self.rate_walk > 1.5
+            or self.rate_mdn > 1.5
+            or abs(self.rate_steer) > 1.5
+            or self.rate_groom > 1.5
+            or self.cue_food > 0.02
+            or self.cue_near > 0.02
+            or self.view_mode == MODE_ACTIVITY
         )
 
         if is_active:
@@ -272,6 +294,14 @@ class MushroomBody3DView(QWidget):
         mbon_av = float(st.get("mbon_av", 1.0))
         kc_act = int(st.get("kc_active", 0))
 
+        r_gf = float(st.get("gf", 0.0))
+        r_walk = float(st.get("walk", 0.0))
+        r_mdn = float(st.get("mdn", 0.0))
+        r_steer = float(st.get("steer", 0.0))
+        r_groom = float(st.get("groom", 0.0))
+        c_food = float(st.get("cue_food", 0.0))
+        c_near = float(st.get("cue_near", 0.0))
+
         if (
             abs(val - self.valence) > 0.01
             or abs(pam - self.pam) > 0.02
@@ -279,6 +309,13 @@ class MushroomBody3DView(QWidget):
             or abs(mbon_app - self.mbon_app) > 0.02
             or abs(mbon_av - self.mbon_av) > 0.02
             or kc_act != self.kc_active_count
+            or abs(r_gf - self.rate_gf) > 0.8
+            or abs(r_walk - self.rate_walk) > 0.8
+            or abs(r_mdn - self.rate_mdn) > 0.8
+            or abs(r_steer - self.rate_steer) > 0.8
+            or abs(r_groom - self.rate_groom) > 0.8
+            or abs(c_food - self.cue_food) > 0.04
+            or abs(c_near - self.cue_near) > 0.04
         ):
             dirty = True
 
@@ -289,6 +326,13 @@ class MushroomBody3DView(QWidget):
         self.mbon_av = mbon_av
         prev_kc = self.kc_active_count
         self.kc_active_count = kc_act
+        self.rate_gf = r_gf
+        self.rate_walk = r_walk
+        self.rate_mdn = r_mdn
+        self.rate_steer = r_steer
+        self.rate_groom = r_groom
+        self.cue_food = c_food
+        self.cue_near = c_near
 
         # Check for updated KC weights
         new_dirty = st.get("weights_dirty", 0)
@@ -738,6 +782,17 @@ class MushroomBody3DView(QWidget):
             path.quadTo(float(mid_x), float(mid_y), float(tx[i]), float(ty[i]))
             p.drawPath(path)
 
+            # Traveling action potential pulse when visual stimuli or activity is present
+            vis_active = (self.cue_near > 0.02 or self.rate_gf > 1.5 or abs(self.rate_steer) > 1.5 or self.view_mode == MODE_ACTIVITY)
+            if vis_active:
+                t_pulse = (self._pulse_phase + (i % 7) * 0.14) % 1.0
+                bx = (1 - t_pulse) ** 2 * sx[i] + 2 * (1 - t_pulse) * t_pulse * mid_x + t_pulse ** 2 * tx[i]
+                by = (1 - t_pulse) ** 2 * sy[i] + 2 * (1 - t_pulse) * t_pulse * mid_y + t_pulse ** 2 * ty[i]
+                p.setPen(Qt.NoPen)
+                p.setBrush(QBrush(QColor(255, 255, 255, 240)))
+                p.drawEllipse(QPointF(float(bx), float(by)), 2.4, 2.4)
+                p.setBrush(Qt.NoBrush)
+
             p.setPen(Qt.NoPen)
             p.setBrush(QBrush(col))
             r = 2.2 * s_persp[i]
@@ -756,6 +811,8 @@ class MushroomBody3DView(QWidget):
         pen = QPen(QColor(16, 185, 129, 90), 1.0)
         p.setPen(pen)
 
+        odor_active = (self.cue_food > 0.02 or self.pam > 0.05 or self.view_mode == MODE_ACTIVITY)
+
         for i in range(len(self._alpn_soma)):
             path = QPainterPath()
             path.moveTo(float(sx[i]), float(sy[i]))
@@ -763,6 +820,16 @@ class MushroomBody3DView(QWidget):
             mid_y = (sy[i] + ty[i]) * 0.5 - 12.0
             path.quadTo(float(mid_x), float(mid_y), float(tx[i]), float(ty[i]))
             p.drawPath(path)
+
+            # Traveling olfactory pulse packet
+            if odor_active:
+                t_pulse = (self._pulse_phase + (i % 5) * 0.20) % 1.0
+                bx = (1 - t_pulse) ** 2 * sx[i] + 2 * (1 - t_pulse) * t_pulse * mid_x + t_pulse ** 2 * tx[i]
+                by = (1 - t_pulse) ** 2 * sy[i] + 2 * (1 - t_pulse) * t_pulse * mid_y + t_pulse ** 2 * ty[i]
+                p.setPen(Qt.NoPen)
+                p.setBrush(QBrush(QColor(167, 243, 208, 240)))
+                p.drawEllipse(QPointF(float(bx), float(by)), 2.2, 2.2)
+                p.setBrush(Qt.NoBrush)
 
         p.setPen(Qt.NoPen)
         p.setBrush(QBrush(QColor(16, 185, 129, 210)))
@@ -808,6 +875,25 @@ class MushroomBody3DView(QWidget):
             p.setBrush(Qt.NoBrush)
             p.setPen(QPen(col, line_w))
             p.drawLine(QPointF(float(sx[i]), float(sy[i])), QPointF(float(tx[i]), float(ty[i])))
+
+            # Action potentials propagating down motor axon trunks into the VNC
+            is_firing = (
+                (ntype == "GF" and self.rate_gf > 1.5) or
+                (ntype == "WALK" and self.rate_walk > 1.5) or
+                (ntype == "MDN" and self.rate_mdn > 1.5) or
+                ("DNa" in ntype and abs(self.rate_steer) > 1.5) or
+                (ntype == "GROOM" and self.rate_groom > 1.5) or
+                (self.view_mode == MODE_ACTIVITY)
+            )
+
+            if is_firing:
+                t_pulse = (self._pulse_phase * 2.2 + (i % 3) * 0.33) % 1.0
+                px = sx[i] + (tx[i] - sx[i]) * t_pulse
+                py = sy[i] + (ty[i] - sy[i]) * t_pulse
+                p.setPen(Qt.NoPen)
+                p.setBrush(QBrush(QColor(255, 255, 255, 250)))
+                p.drawEllipse(QPointF(float(px), float(py)), 3.2, 3.2)
+                p.setBrush(Qt.NoBrush)
 
             # Soma node in central brain
             p.setPen(Qt.NoPen)
@@ -1139,6 +1225,26 @@ class MushroomBody3DView(QWidget):
             p.setFont(font_mono)
             p.setPen(QColor(56, 189, 248))
             p.drawText(m_x, my + 9, f"+{self.mbon_app:.2f} / -{self.mbon_av:.2f}")
+
+        # 5. Live Descending Motor Outputs Readout
+        mot_x = m_x + 145
+        if mot_x < bar_rect.right() - 150:
+            p.setFont(font_small)
+            p.setPen(QColor(139, 139, 150, 220))
+            p.drawText(mot_x, vy, "MOTOR DNs (GF / WALK / MDN)")
+
+            p.setFont(font_mono)
+            gf_col = QColor(239, 68, 68) if self.rate_gf > 2.0 else QColor(148, 163, 184)
+            p.setPen(gf_col)
+            p.drawText(mot_x, my + 9, f"GF:{self.rate_gf:.0f}Hz")
+
+            walk_col = QColor(34, 197, 94) if self.rate_walk > 2.0 else QColor(148, 163, 184)
+            p.setPen(walk_col)
+            p.drawText(mot_x + 60, my + 9, f"W:{self.rate_walk:.0f}Hz")
+
+            mdn_col = QColor(217, 70, 239) if self.rate_mdn > 2.0 else QColor(148, 163, 184)
+            p.setPen(mdn_col)
+            p.drawText(mot_x + 115, my + 9, f"M:{self.rate_mdn:.0f}Hz")
 
     # ------------------------------------------------------------------ help overlay
     def _draw_help_overlay(self, p: QPainter):
