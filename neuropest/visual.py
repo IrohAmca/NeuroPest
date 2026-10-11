@@ -59,6 +59,7 @@ class VisionDrive:
         self.obj_rows = np.unique(np.concatenate([self.obj_col, self.mb_near_col])).astype(np.int32)
         self.eye_height = params.eye_height          # px above the screen; the GUI can change both while running
         self.skittish = 1.0                          # multiplier on the looming and retreat gains
+        self.last = None                             # (column luminance, expansion, object) of the last frame, for the preview
         self._fresh = True
 
     @property
@@ -124,6 +125,7 @@ class VisionDrive:
             self.features.reset(lum_now)
             self._fresh = False
         f = self.features.update(lum_now, lum_prev, dt, self.loom_rows, self.obj_rows)
+        self.last = (lum_now, f["expansion"], f["object"])
         e, o, eye = g * f["expansion_pooled"], f["object_pooled"], g * f["expansion_eye"]
         self.expansion = float(e[self.loom_col].max()) if len(self.loom_col) else 0.0   # for the brain's freeze rule
         el = e[self.loom_col]

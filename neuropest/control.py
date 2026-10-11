@@ -5,7 +5,9 @@ import importlib.util
 import json
 import threading
 
-from PySide6.QtCore import QSize, Qt, QTimer
+import numpy as np
+
+from PySide6.QtCore import QRect, QSize, Qt, QTimer
 from PySide6.QtWidgets import (
     QApplication,
     QButtonGroup,
@@ -26,15 +28,16 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
-from PySide6.QtGui import QIcon
+from PySide6.QtGui import QColor, QFont, QIcon, QImage, QPainter
 
+from . import eyeview
 from .mb_view3d import MushroomBody3DView
 from .paths import CACHE, EYE, FIELD, SKIN_THUMBNAILS, TIERS
 from .preferences import Preferences
 from .render import AVAILABLE_SKINS, SKIN_METADATA
 from .runner import GPU_AUTO_MIN_NEURONS, EngineConfig, list_gpus, pick_gpu
 
-from .theme import ERROR, FAINT, MUTED, STATE_STYLE
+from .theme import ACCENT, BORDER, ERROR, FAINT, MUTED, STATE_STYLE
 
 from .visionparams import VisionParams
 
@@ -127,6 +130,77 @@ def slider_row(target: Card | QLayout | QWidget, name: str, hint: str, slider: Q
 def labeled(card: Card, name: str, widget: QWidget) -> None:
     card.body.addWidget(_label(name, "Muted"))
     card.body.addWidget(widget)
+
+
+class EyePreview(QWidget):
+    """Picture of what the visual front end feeds the circuit (eyeview.py). Holds the last rendered frame."""
+
+    W, H = 440, 200
+
+    def __init__(self):
+        super().__init__()
+        self.mode = 0
+        self.snap = None
+        self.layout_ = None
+        self.message = ""
+        self._img: QImage | None = None
+        self._buf = None
+        sp = QSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+        sp.setHeightForWidth(True)
+        self.setSizePolicy(sp)
+        self.setMinimumSize(self.W // 2, self.H // 2)
+
+    def hasHeightForWidth(self) -> bool:
+        return True
+
+    def heightForWidth(self, w: int) -> int:
+        return int(w * self.H / self.W)
+
+    def sizeHint(self) -> QSize:
+        return QSize(self.W, self.H)
+
+    def set_message(self, text: str) -> None:
+        if text == self.message and self._img is None:
+            return
+        self.snap, self._img, self.message = None, None, text
+        self.update()
+
+    def set_frame(self, snap, mode: int) -> None:
+        """Render `snap` (eyeview.Snapshot) in the tab `mode`."""
+        if self.layout_ is None:
+            self.layout_ = eyeview.EyeLayout.load()
+        if self.layout_ is None:
+            self.set_message("No eye data (data/circuits/field.npz).")
+            return
+        self.snap, self.mode, self.message = snap, mode, ""
+        self._buf = np.ascontiguousarray(eyeview.RENDERERS[mode](snap, self.layout_, self.W, self.H))
+        self._img = QImage(self._buf.data, self.W, self.H, self.W * 3, QImage.Format_RGB888)
+        self.update()
+
+    def paintEvent(self, _):
+        p = QPainter(self)
+        r = self.rect()
+        p.fillRect(r, QColor(14, 14, 17))
+        if self._img is None:
+            p.setPen(QColor(MUTED))
+            p.drawText(r.adjusted(12, 8, -12, -8), Qt.AlignCenter | Qt.TextWordWrap, self.message)
+            return
+        p.drawImage(r, self._img)
+        scale = r.width() / self.W
+        f = QFont(p.font())
+        f.setPixelSize(11)
+        p.setFont(f)
+        if self.mode == 2 and self.snap is not None:
+            for i, name in enumerate(eyeview.GROUPS):
+                x0, y0, tw, th = eyeview.tile_rect(i, self.W, self.H)
+                p.setPen(QColor(*eyeview.GROUP_COLOURS[i]))
+                p.drawText(QRect(int((x0 + 6) * scale), int(y0 * scale), int(tw * scale), int(15 * scale)),
+                           Qt.AlignVCenter | Qt.AlignLeft, f"{name}  {eyeview.group_summary(self.snap, i)}")
+        else:
+            p.setPen(QColor(MUTED))
+            note = ("left + right eye on one panorama - dashed cyan: horizon" if self.mode == 0
+                    else "orange: expansion (looming) - cyan: small moving object")
+            p.drawText(QRect(6, r.height() - 18, r.width() - 12, 16), Qt.AlignVCenter | Qt.AlignLeft, note)
 
 
 class _ContentScrollArea(QScrollArea):
@@ -513,8 +587,46 @@ class Control(QWidget):
 
         self.vision_info = _label("", "Faint", wrap=True)
         card.body.addWidget(self.vision_info)
+
+        # fly's-eye preview: what the visual front end hands to the circuit (model input, not a real optic lobe)
+        sep = QFrame()
+        sep.setFixedHeight(1)
+        sep.setStyleSheet(f"background: {BORDER};")
+        card.body.addWidget(sep)
+        self.preview_check = QCheckBox("Fly's-eye preview", enabled=self.has_eye)
+        self.preview_check.setToolTip("Shows what the visual front end feeds into the circuit: the luminance each eye "
+                                      "column sees, the motion detectors and the drive of the looming, retreat and "
+                                      "small-object neurons. Preview only: it does not change behaviour.")
+        self.preview_check.setChecked(bool(self.has_eye and getattr(self.prefs, "eye_preview", False)))
+        card.body.addWidget(self.preview_check)
+        self.preview_tabs = QWidget()
+        self.preview_tabs.setStyleSheet(f"QPushButton:checked {{ border: 1px solid {ACCENT}; color: {ACCENT}; }}")
+        tabs = QHBoxLayout(self.preview_tabs)
+        tabs.setContentsMargins(0, 0, 0, 0)
+        tabs.setSpacing(6)
+        self._preview_buttons: list[QPushButton] = []
+        tab = int(getattr(self.prefs, "eye_preview_tab", 0))
+        for i, name in enumerate(eyeview.TABS):
+            b = QPushButton(name)
+            b.setCheckable(True)
+            b.setChecked(i == tab)
+            b.setCursor(Qt.PointingHandCursor)
+            b.clicked.connect(lambda _=False, i=i: self._on_preview_tab(i))
+            self._preview_buttons.append(b)
+            tabs.addWidget(b)
+        tabs.addStretch(1)
+        card.body.addWidget(self.preview_tabs)
+        self.preview = EyePreview()
+        card.body.addWidget(self.preview)
+        self.preview_note = _label("The model's input, not a recording of a real optic lobe: the detectors are "
+                                   "hand-built (vision.py). Redrawn about 10 times a second while this page is open.",
+                                   "Faint", wrap=True)
+        card.body.addWidget(self.preview_note)
+        self.preview_check.toggled.connect(self._on_preview_toggled)
+        self._preview_timer = QTimer(self, interval=100, timeout=self._update_preview)
         lay.addWidget(card)
         self._describe_vision(1.0 if init_on else 0.0)
+        self._on_preview_toggled(self.preview_check.isChecked(), save=False)
 
     def _describe_vision(self, state: float):
         if not self.has_eye:
@@ -533,6 +645,52 @@ class Control(QWidget):
         setattr(self.runner, "vision", on)
         self.prefs.vision_enabled = on
         self.prefs.save()
+        self._update_preview()
+
+    def _on_preview_toggled(self, on: bool, save: bool = True):
+        for w in (self.preview_tabs, self.preview, self.preview_note):
+            w.setVisible(on)
+        if on:
+            self._preview_timer.start()
+        else:
+            self._preview_timer.stop()
+            setattr(self.runner, "preview", False)
+        if save:
+            self.prefs.eye_preview = on
+            self.prefs.save()
+        self._update_preview()
+
+    def _on_preview_tab(self, i: int):
+        for j, b in enumerate(self._preview_buttons):
+            b.setChecked(j == i)
+        self.prefs.eye_preview_tab = i
+        self.prefs.save()
+        self._update_preview()
+
+    def _preview_mode(self) -> int:
+        return next((i for i, b in enumerate(self._preview_buttons) if b.isChecked()), 0)
+
+    def _update_preview(self):
+        """Ask the worker for snapshots only while the preview is on AND on screen, and redraw from the latest one."""
+        on = self.preview_check.isChecked() and self.has_eye
+        shown = on and self.isVisible() and self.stack.currentIndex() == 2
+        setattr(self.runner, "preview", bool(shown and self.vision.isChecked()))
+        if not shown:
+            return
+        snap_of = getattr(self.runner, "preview_snapshot", None)
+        if not self.vision.isChecked():
+            self.preview.set_message("Turn on Screen Capture Vision to see what the fly sees.")
+        elif self.runner.stats().get("vision", 0.0) < 0:
+            self.preview.set_message("This circuit has no looming neurons with receptive fields: no visual input.")
+        elif snap_of is None:
+            self.preview.set_message("Waiting for the first frame...")
+        else:
+            snap = snap_of()
+            if snap is None:
+                if self.preview.snap is None:
+                    self.preview.set_message("Waiting for the first frame...")
+            elif self.preview.snap is None or snap.seq != self.preview.snap.seq or self._preview_mode() != self.preview.mode:
+                self.preview.set_frame(snap, self._preview_mode())
 
     def _on_eye_height_changed(self, v: int):
         h = float(v)
