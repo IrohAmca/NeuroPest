@@ -52,6 +52,8 @@ class Preferences:
     # Vision & Screen Capture
     vision_enabled: bool = False
     eye_height: float = 140.0
+    eye_preview: bool = False      # show the fly's-eye preview on the Visual Input page
+    eye_preview_tab: int = 0       # 0 eye view, 1 motion, 2 neurons
 
     # Pheromone & Scent
     pheromone_enabled: bool = True
@@ -96,6 +98,11 @@ class Preferences:
         self.skittish = max(0.1, min(10.0, float(self.skittish)))
         self.wall_pain = max(0.0, min(3.0, float(self.wall_pain)))
         self.eye_height = max(40.0, min(300.0, float(self.eye_height)))
+        self.eye_preview = bool(self.eye_preview)
+        try:
+            self.eye_preview_tab = max(0, min(2, int(self.eye_preview_tab)))
+        except (TypeError, ValueError):
+            self.eye_preview_tab = 0
         if self.circuit not in ("flywire", "toy"):
             self.circuit = "flywire"
         if self.symmetry not in ("individual", "symmetric"):

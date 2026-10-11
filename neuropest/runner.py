@@ -16,6 +16,7 @@ from dataclasses import dataclass
 
 import numpy as np
 
+from .eyeview import PREVIEW_LEN, read_snapshot
 from .paths import CACHE
 from .states import GEARS, STAND, STATES
 
@@ -31,6 +32,7 @@ I_INJECT_REWARD = 21        # injected reward pulse (PAM test trigger)
 I_INJECT_PUNISH = 22        # injected punishment pulse (PPL1 test trigger)
 I_INJECT_CUE_FOOD = 23      # injected food cue pulse
 I_INJECT_CUE_NEAR = 24      # injected cursor near cue pulse
+I_PREVIEW = 25              # 1 = the GUI shows the fly's-eye preview: publish a snapshot every vision frame
 INP_LEN = 28
 # output slots
 (O_READY, O_STATE, O_GF, O_WALK, O_REST, O_RT, O_ACTIVE, O_N, O_CPU, O_LAG, O_SIM_S, O_BEAT, O_MDN, O_STEER,
@@ -116,9 +118,10 @@ def build_network(cfg: EngineConfig):
     return build(cfg.n, cfg.seed)
 
 
-def _worker_main(cfg: EngineConfig, inp, out, stop, cap_frame=None, cap_meta=None, mb_weights=None) -> None:
+def _worker_main(cfg: EngineConfig, inp, out, stop, cap_frame=None, cap_meta=None, mb_weights=None,
+                 eye_preview=None) -> None:
     try:
-        _run(cfg, inp, out, stop, cap_frame, cap_meta, mb_weights)
+        _run(cfg, inp, out, stop, cap_frame, cap_meta, mb_weights, eye_preview)
     except BaseException:
         import traceback
 
@@ -127,7 +130,7 @@ def _worker_main(cfg: EngineConfig, inp, out, stop, cap_frame=None, cap_meta=Non
         raise
 
 
-def _run(cfg: EngineConfig, inp, out, stop, cap_frame=None, cap_meta=None, mb_weights=None) -> None:
+def _run(cfg: EngineConfig, inp, out, stop, cap_frame=None, cap_meta=None, mb_weights=None, eye_preview=None) -> None:
     from .brain import Brain
 
     net = build_network(cfg)
@@ -137,7 +140,7 @@ def _run(cfg: EngineConfig, inp, out, stop, cap_frame=None, cap_meta=None, mb_we
     if memory is not None:
         brain.mb.load(memory)
     try:
-        _loop(cfg, brain, net, inp, out, stop, cap_frame, cap_meta, memory, mb_weights)
+        _loop(cfg, brain, net, inp, out, stop, cap_frame, cap_meta, memory, mb_weights, eye_preview)
     finally:
         if memory is not None:
             try:
@@ -149,11 +152,12 @@ def _run(cfg: EngineConfig, inp, out, stop, cap_frame=None, cap_meta=None, mb_we
             close()                                 # free the GPU buffers
 
 
-def _loop(cfg: EngineConfig, brain, net, inp, out, stop, cap_frame=None, cap_meta=None, memory=None, mb_weights=None) -> None:
+def _loop(cfg: EngineConfig, brain, net, inp, out, stop, cap_frame=None, cap_meta=None, memory=None, mb_weights=None,
+          eye_preview=None) -> None:
     brain.advance(cfg.dt * 4)                       # triggers/loads the compiled kernel
 
     chunk = CHUNK_MS if cfg.backend == "cpu" else CHUNK_MS_GPU
-    eye = _Eye(net, cap_frame, cap_meta)
+    eye = _Eye(net, cap_frame, cap_meta, eye_preview)
     approach = _Approach()
     last_in = None
     forget_seen = 0.0
@@ -297,7 +301,7 @@ class _Eye:
     """Worker side of the visual input: while switched on, turns the scene around the fly into projection
     neuron rates about every VISION_PERIOD_MS of simulated time and hands them to the brain."""
 
-    def __init__(self, net, cap_frame=None, cap_meta=None):
+    def __init__(self, net, cap_frame=None, cap_meta=None, eye_preview=None):
         import numpy as np
         from .capture import CROP_H, CROP_W, META_ORIGIN_X, META_ORIGIN_Y, META_SEQ, META_STAMP
         from .vision import image_scene
@@ -306,6 +310,8 @@ class _Eye:
         self.net = net
         self.cap_frame = cap_frame
         self.cap_meta = cap_meta
+        self.preview_buf = None if eye_preview is None else np.frombuffer(eye_preview, dtype=np.float32)
+        self.preview_seq = 0
         self.drive = None               # visual.VisionDrive, built on first use (loads eye.npz / field.npz)
         self.missing = False            # the eye data is not there
         self._builder = None
@@ -438,8 +444,23 @@ class _Eye:
                                     inp[I_X], inp[I_Y], inp[I_HEAD], dt)
 
         brain.set_vision(idx, rates, d.expansion, (d.mb_cue["cursor_near"], d.mb_cue["looming"]))
+        if self.preview_buf is not None and inp[I_PREVIEW] > 0.5:
+            self._publish(d, rates)
         self.cursor, self.last_ms, self.stamp = cursor, sim_ms, stamp
         self.next_ms = sim_ms + VISION_PERIOD_MS
+
+    def _publish(self, d, rates) -> None:
+        """Copy what the eye saw this frame into the shared preview array (only while the GUI shows it)."""
+        if d.last is None:
+            return
+        from .eyeview import write_snapshot
+
+        lum, expansion, obj = d.last
+        n_loom = len(d.loom_idx)
+        sizes = (d.n_lplc2, n_loom - d.n_lplc2, len(d.ret_idx), len(d.obj_idx))
+        cols = self._np.concatenate([d.loom_col, d.ret_col, d.obj_col])
+        self.preview_seq += 1
+        write_snapshot(self.preview_buf, self.preview_seq, lum, expansion, obj, cols, rates, sizes)
 
 
 class Runner:
@@ -466,6 +487,7 @@ class Runner:
         self.wall_pain = 1.0      # nociceptive wall collision punishment multiplier
         self.vision = False       # see the screen (funnel view, retinotopic detectors) instead of cursor numbers
         self.eye_height = 100.0
+        self.preview = False      # the GUI shows the fly's-eye preview: the worker publishes a snapshot per vision frame
         self.cfg = cfg or default_config()
         self.start(self.cfg)
 
@@ -475,21 +497,24 @@ class Runner:
         gen = self._gen
         inp, out = self._ctx.Array("d", INP_LEN, lock=False), self._ctx.Array("d", OUT_LEN, lock=False)
         mb_weights = self._ctx.Array("f", 2000, lock=False)
+        eye_preview = self._ctx.Array("f", PREVIEW_LEN, lock=False)
         old = (self._proc, self._stop)
         self._proc = self._stop = None
-        self.inp, self.out, self.mb_weights = inp, out, mb_weights
+        self.inp, self.out, self.mb_weights, self.eye_preview = inp, out, mb_weights, eye_preview
         self.send(1e6, 0.0)
         self._starting = True
-        threading.Thread(target=self._swap, args=(gen, cfg, inp, out, old, mb_weights), daemon=True, name="neuropest-swap").start()
+        threading.Thread(target=self._swap, args=(gen, cfg, inp, out, old, mb_weights, eye_preview), daemon=True,
+                         name="neuropest-swap").start()
 
-    def _swap(self, gen: int, cfg: EngineConfig, inp, out, old, mb_weights=None) -> None:
+    def _swap(self, gen: int, cfg: EngineConfig, inp, out, old, mb_weights=None, eye_preview=None) -> None:
         with self._swap_lock:
             _retire(*old)
             if gen != self._gen:
                 return                          # a newer start (or stop) took over while this one waited
             stop = self._ctx.Event()
             proc = self._ctx.Process(target=_worker_main,
-                                     args=(cfg, inp, out, stop, self.capture.frame_raw, self.capture.meta_raw, mb_weights),
+                                     args=(cfg, inp, out, stop, self.capture.frame_raw, self.capture.meta_raw, mb_weights,
+                                          eye_preview),
                                      daemon=True,
                                      name="neuropest-engine")
             proc.start()
@@ -525,6 +550,7 @@ class Runner:
         inp[I_CX], inp[I_CY] = cursor
         inp[I_STAMP] = stamp
         inp[I_VISION], inp[I_HEIGHT] = float(self.vision), self.eye_height
+        inp[I_PREVIEW] = float(self.preview and self.vision)
         inp[I_PHERO_STEER] = phero_steer
         inp[I_PHERO_DRIVE] = phero_drive
         inp[I_PHERO_REPEL] = phero_repel
@@ -620,6 +646,13 @@ class Runner:
         """Simulate near cursor proximity cue."""
         if self.ready:
             self.inp[I_INJECT_CUE_NEAR] = float(amount)
+
+    def preview_snapshot(self):
+        """Latest frame of the fly's-eye preview (eyeview.Snapshot), or None: not switched on, nothing yet, or torn."""
+        buf = getattr(self, "eye_preview", None)
+        if buf is None:
+            return None
+        return read_snapshot(np.frombuffer(buf, dtype=np.float32))
 
     def get_mb_weights(self) -> np.ndarray:
         """Return a copy of the learned net valence per Kenyon cell."""
