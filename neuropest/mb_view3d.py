@@ -179,6 +179,10 @@ class MushroomBody3DView(QWidget):
         self._opto_status = ""
         self._opto_status_time = 0.0
 
+        # Neuron & Connectome Inspector
+        self._inspected_neuron: dict | None = None
+        self._inspected_pinned: bool = False
+
     def set_tool_mode(self, mode: str):
         """Set active canvas tool mode ('camera', 'opto', 'inspect')."""
         if mode in ("camera", "opto", "inspect"):
@@ -403,6 +407,286 @@ class MushroomBody3DView(QWidget):
             if targets:
                 self.trigger_opto_stimulus(targets[0])
 
+    def _find_neuron_at(self, pos: QPoint, threshold_px: float = 24.0) -> dict | None:
+        """Find the closest neuron or circuit hub across all systems within screen threshold_px."""
+        best = None
+        best_dist = float("inf")
+
+        def check_pts(pts_3d, callback):
+            nonlocal best, best_dist
+            if len(pts_3d) == 0:
+                return
+            sx_arr, sy_arr, _, valid = self._project_points(pts_3d)
+            for i in range(len(pts_3d)):
+                if valid[i]:
+                    d = math.hypot(pos.x() - sx_arr[i], pos.y() - sy_arr[i])
+                    if d <= threshold_px and d < best_dist:
+                        cand = callback(i, (sx_arr[i], sy_arr[i]))
+                        if cand is not None:
+                            best_dist = d
+                            best = cand
+
+        # 1. Descending Motor Neurons (DNs)
+        if len(self._dn_soma) > 0 and self.layer_motor:
+            def dn_cb(i, s_pos):
+                dn_t = str(self._dn_type[i]) if i < len(self._dn_type) else "DN"
+                target_pt = self._dn_target[i] if i < len(self._dn_target) else None
+                soma_pt = self._dn_soma[i]
+
+                if dn_t == "GF":
+                    name = "Giant Fiber (DNp01 / GF)"
+                    role = "Ballistic takeoff escape reflex & jump initiation (< 5 ms)"
+                    hz = f"{self.rate_gf:.1f} Hz"
+                    nt = "ACh (Excitatory)"
+                    col = QColor(0, 229, 255)
+                    part = "In: LPLC2, LC4 Looming • Out: TTM Jump Motor, PSI Wing"
+                elif dn_t == "MDN":
+                    name = "Moonwalker DN (MDN)"
+                    role = "Evokes coordinated backward locomotion / retreat"
+                    hz = f"{self.rate_mdn:.1f} Hz"
+                    nt = "GABA (Inhibitory CPG)"
+                    col = QColor(255, 23, 68)
+                    part = "In: LPC1 visual • Out: Thoracic backward walking CPG"
+                elif dn_t in ("DNp09", "WALK"):
+                    name = f"Walking Command ({dn_t})"
+                    role = "Initiates and sustains forward walking locomotion"
+                    hz = f"{self.rate_walk:.1f} Hz"
+                    nt = "ACh (Excitatory)"
+                    col = QColor(118, 255, 3)
+                    part = "In: Central complex • Out: Leg central pattern generators"
+                elif dn_t == "DNa02":
+                    name = "Steering Command (DNa02)"
+                    role = "Bilateral asymmetric steering torque and body turning"
+                    hz = f"{abs(self.rate_steer):.1f} Hz"
+                    nt = "ACh (Excitatory)"
+                    col = QColor(255, 145, 0)
+                    part = "In: LC10 visual tracking • Out: Asymmetric leg motor bias"
+                else:
+                    name = f"Descending Motor Neuron ({dn_t})"
+                    role = "Motor command descending to ventral nerve cord"
+                    hz = f"{self.rate_groom:.1f} Hz" if "aDN" in dn_t else "Active"
+                    nt = "ACh (Cholinergic)"
+                    col = QColor(239, 68, 68)
+                    part = "In: Brain pre-motor • Out: Ventral nerve cord effector"
+
+                return {
+                    "name": name,
+                    "type": dn_t,
+                    "system": "Motor Descending (DN)",
+                    "nt": nt,
+                    "nt_color": QColor(56, 189, 248) if "ACh" in nt else QColor(249, 115, 22),
+                    "pos_3d": soma_pt,
+                    "target_3d": target_pt,
+                    "rate_hz": hz,
+                    "role": role,
+                    "partners": part,
+                    "color": col,
+                }
+            check_pts(self._dn_soma, dn_cb)
+
+        # 2. Dopaminergic Reinforcement Clusters (DANs)
+        if len(self.data.dan_pos) > 0 and self.layer_mb:
+            def dan_cb(i, s_pos):
+                dan_t = str(self.data.dan_type[i]) if i < len(self.data.dan_type) else "DAN"
+                clus = self.data.dan_cluster[i] if i < len(self.data.dan_cluster) else 2
+                pos_pt = self.data.dan_pos[i]
+                if clus == DAN_PAM:
+                    name = f"PAM Dopamine Cluster ({dan_t})"
+                    role = "Appetitive reinforcement: sugar reward & learned attraction"
+                    hz = f"{self.pam * 40.0:.1f} Hz"
+                    col = QColor(255, 215, 0)
+                    part = "In: Gustatory sugar ORNs • Out: KC Kenyon cell synapses"
+                elif clus == DAN_PPL1:
+                    name = f"PPL1 Dopamine Cluster ({dan_t})"
+                    role = "Aversive reinforcement: electric shock, heat & wall collisions"
+                    hz = f"{self.ppl1 * 40.0:.1f} Hz"
+                    col = QColor(255, 61, 113)
+                    part = "In: Nociceptive threat sensors • Out: KC Kenyon cell synapses"
+                else:
+                    name = f"Dopaminergic Neuron ({dan_t})"
+                    role = "Neuromodulatory arousal and behavioral state gating"
+                    hz = "10.0 Hz"
+                    col = QColor(217, 70, 239)
+                    part = "In: Sensory neuropils • Out: Central brain"
+
+                return {
+                    "name": name,
+                    "type": dan_t,
+                    "system": "Mushroom Body Dopamine (DAN)",
+                    "nt": "DA (Dopaminergic)",
+                    "nt_color": QColor(255, 215, 0),
+                    "pos_3d": pos_pt,
+                    "target_3d": None,
+                    "rate_hz": hz,
+                    "role": role,
+                    "partners": part,
+                    "color": col,
+                }
+            check_pts(self.data.dan_pos, dan_cb)
+
+        # 3. Mushroom Body Output Neurons (MBONs)
+        if len(self.data.mbon_pos) > 0 and self.layer_mb:
+            def mbon_cb(i, s_pos):
+                mbon_t = str(self.data.mbon_type[i]) if i < len(self.data.mbon_type) else "MBON"
+                sign = self.data.mbon_sign[i] if i < len(self.data.mbon_sign) else 0
+                nt = str(self.data.mbon_nt[i]) if i < len(self.data.mbon_nt) else "ACh"
+                pos_pt = self.data.mbon_pos[i]
+
+                if sign > 0:
+                    role = "Approach output pool: drives attraction toward learned odor"
+                    hz = f"{self.mbon_app * 18.0:.1f} Hz"
+                    col = QColor(16, 185, 129)
+                elif sign < 0:
+                    role = "Avoidance output pool: drives escape from learned danger"
+                    hz = f"{self.mbon_av * 18.0:.1f} Hz"
+                    col = QColor(239, 68, 68)
+                else:
+                    role = "Neutral / context-dependent behavioral gating"
+                    hz = "12.0 Hz"
+                    col = QColor(148, 163, 184)
+
+                nt_map = {"ACh": "ACh (Excitatory)", "GABA": "GABA (Inhibitory)", "Glu": "Glu (Glutamatergic)"}
+                nt_full = nt_map.get(nt, nt)
+                nt_col = QColor(56, 189, 248) if nt == "ACh" else (QColor(249, 115, 22) if nt == "GABA" else QColor(234, 179, 8))
+
+                return {
+                    "name": f"Output Neuron ({mbon_t})",
+                    "type": mbon_t,
+                    "system": "Mushroom Body Output (MBON)",
+                    "nt": nt_full,
+                    "nt_color": nt_col,
+                    "pos_3d": pos_pt,
+                    "target_3d": None,
+                    "rate_hz": hz,
+                    "role": role,
+                    "partners": "In: KC Kenyon cells • Out: Lateral horn & descending pre-motor",
+                    "color": col,
+                }
+            check_pts(self.data.mbon_pos, mbon_cb)
+
+        # 4. Central Complex Compass (CX)
+        if len(self._cx_pts) > 0 and self.layer_cx:
+            def cx_cb(i, s_pos):
+                cx_t = str(self._cx_type[i]) if i < len(self._cx_type) else "CX"
+                sub = self._cx_sub[i] if i < len(self._cx_sub) else 0
+                pos_pt = self._cx_pts[i]
+                if sub == 0:
+                    sub_name = "Ellipsoid Body (EB Ring)"
+                    role = "Internal compass heading: E-PG bump tracking fly orientation"
+                    part = "In: Ring neurons, PB • Out: Steering pre-motor"
+                elif sub == 1:
+                    sub_name = "Protocerebral Bridge (PB)"
+                    role = "Angular velocity integration & bilateral compass bridge"
+                    part = "In: EB heading ring • Out: Central fan-shaped body"
+                else:
+                    sub_name = "Fan-shaped Body (FB)"
+                    role = "Navigation vector calculation and goal-directed heading"
+                    part = "In: Protocerebral bridge • Out: Premotor hubs"
+
+                return {
+                    "name": f"{sub_name} ({cx_t})",
+                    "type": cx_t,
+                    "system": "Central Complex (CX Navigation)",
+                    "nt": "ACh / GABA",
+                    "nt_color": QColor(56, 189, 248),
+                    "pos_3d": pos_pt,
+                    "target_3d": None,
+                    "rate_hz": f"{10.0 + 6.0 * math.cos(self.heading_angle):.1f} Hz",
+                    "role": role,
+                    "partners": part,
+                    "color": QColor(56, 189, 248),
+                }
+            check_pts(self._cx_pts, cx_cb)
+
+        # 5. Visual Projection Neurons (VPN)
+        if len(self._vpn_soma) > 0 and self.layer_visual:
+            def vpn_cb(i, s_pos):
+                vpn_t = str(self._vpn_type[i]) if i < len(self._vpn_type) else "VPN"
+                pos_pt = self._vpn_soma[i]
+                target_pt = self._vpn_target[i] if i < len(self._vpn_target) else None
+
+                if "LC4" in vpn_t or "LPLC2" in vpn_t:
+                    role = "Detects expanding looming predators (direct input to Giant Fiber)"
+                    hz = f"{self.cue_near * 55.0:.1f} Hz"
+                    col = QColor(224, 64, 251)
+                    part = "In: Lobula complex • Out: Giant Fiber (DNp01 escape)"
+                elif "LC10" in vpn_t:
+                    role = "Tracks small high-contrast moving targets (drives DNa02 steering)"
+                    hz = f"{abs(self.rate_steer) * 2.5:.1f} Hz"
+                    col = QColor(249, 115, 22)
+                    part = "In: Lobula plate • Out: DNa02 steering command"
+                else:
+                    role = "Visual feature projection from optic lobe to central brain"
+                    hz = "14.0 Hz"
+                    col = QColor(249, 115, 22)
+                    part = "In: Optic lobes • Out: Posterior lateral protocerebrum"
+
+                return {
+                    "name": f"Visual Projection ({vpn_t})",
+                    "type": vpn_t,
+                    "system": "Optic Lobes (Visual VPN)",
+                    "nt": "ACh (Excitatory)",
+                    "nt_color": QColor(56, 189, 248),
+                    "pos_3d": pos_pt,
+                    "target_3d": target_pt,
+                    "rate_hz": hz,
+                    "role": role,
+                    "partners": part,
+                    "color": col,
+                }
+            check_pts(self._vpn_soma, vpn_cb)
+
+        # 6. Antennal Lobe Projection Neurons (ALPN)
+        if len(self._alpn_soma) > 0 and self.layer_olfactory:
+            def alpn_cb(i, s_pos):
+                alpn_t = str(self._alpn_type[i]) if i < len(self._alpn_type) else "ALPN"
+                pos_pt = self._alpn_soma[i]
+                target_pt = self._alpn_target[i] if i < len(self._alpn_target) else None
+                return {
+                    "name": f"Antennal Glomerulus ({alpn_t})",
+                    "type": alpn_t,
+                    "system": "Antennal Lobe (Olfactory PN)",
+                    "nt": "ACh (Excitatory)",
+                    "nt_color": QColor(56, 189, 248),
+                    "pos_3d": pos_pt,
+                    "target_3d": target_pt,
+                    "rate_hz": f"{self.cue_food * 45.0:.1f} Hz",
+                    "role": "Conveys uniglomerular odor identity from antenna to MB Calyx & LH",
+                    "partners": "In: Olfactory receptor ORNs • Out: Kenyon Cells & Lateral Horn",
+                    "color": QColor(16, 185, 129),
+                }
+            check_pts(self._alpn_soma, alpn_cb)
+
+        # 7. Kenyon Cells (KC)
+        if len(self._soma_pts) > 0 and self.layer_mb:
+            def kc_cb(i, s_pos):
+                real_idx = self._soma_indices[i]
+                kc_t = str(self.data.kc_type[real_idx]) if real_idx < len(self.data.kc_type) else "KC"
+                lobe = self._soma_lobes[i]
+                soma_pt = self._soma_pts[i]
+                target_pt = self.data.kc_target[real_idx] if real_idx < len(self.data.kc_target) else None
+                lobe_name = "Gamma Lobe" if lobe == 0 else ("Alpha/Beta Lobe" if lobe == 1 else "Alpha'/Beta' Lobe")
+
+                is_act = self.active_kc_mask[real_idx % len(self.active_kc_mask)] if len(self.active_kc_mask) > 0 else False
+                hz = "24.0 Hz (Spiking!)" if is_act else "0.5 Hz (Silent/Sparse)"
+
+                return {
+                    "name": f"Kenyon Cell ({kc_t})",
+                    "type": kc_t,
+                    "system": f"Mushroom Body ({lobe_name})",
+                    "nt": "ACh (Cholinergic)",
+                    "nt_color": QColor(56, 189, 248),
+                    "pos_3d": soma_pt,
+                    "target_3d": target_pt,
+                    "rate_hz": hz,
+                    "role": f"Sparse olfactory memory encoding in {lobe_name}",
+                    "partners": "In: Antennal PNs (Calyx) • Out: MBONs & DANs (Compartment)",
+                    "color": QColor(6, 182, 212) if lobe == 0 else (QColor(245, 158, 11) if lobe == 1 else QColor(217, 70, 239)),
+                }
+            check_pts(self._soma_pts, kc_cb)
+
+        return best
+
     def toggle_layer(self, name: str):
         """Toggle an anatomical layer on or off."""
         attr = f"layer_{name}"
@@ -478,6 +762,26 @@ class MushroomBody3DView(QWidget):
         # Dynamic heading angle tracking
         if abs(self.rate_steer) > 0.1:
             self.heading_angle = (self.heading_angle + self.rate_steer * dt * 0.15) % (2 * math.pi)
+
+        # Refresh live firing rate on inspected card if present
+        if self._inspected_neuron is not None:
+            t = str(self._inspected_neuron.get("type", ""))
+            if t == "GF":
+                self._inspected_neuron["rate_hz"] = f"{self.rate_gf:.1f} Hz"
+            elif t == "MDN":
+                self._inspected_neuron["rate_hz"] = f"{self.rate_mdn:.1f} Hz"
+            elif t in ("DNp09", "WALK"):
+                self._inspected_neuron["rate_hz"] = f"{self.rate_walk:.1f} Hz"
+            elif t == "DNa02":
+                self._inspected_neuron["rate_hz"] = f"{abs(self.rate_steer):.1f} Hz"
+            elif "PAM" in t:
+                self._inspected_neuron["rate_hz"] = f"{self.pam * 40.0:.1f} Hz"
+            elif "PPL1" in t:
+                self._inspected_neuron["rate_hz"] = f"{self.ppl1 * 40.0:.1f} Hz"
+            elif "LC4" in t or "LPLC2" in t:
+                self._inspected_neuron["rate_hz"] = f"{self.cue_near * 55.0:.1f} Hz"
+            elif "ALPN" in str(self._inspected_neuron.get("system", "")):
+                self._inspected_neuron["rate_hz"] = f"{self.cue_food * 45.0:.1f} Hz"
 
         # Check if animation or telemetry is active
         is_active = (
@@ -672,6 +976,9 @@ class MushroomBody3DView(QWidget):
 
         # 6.5. Optogenetic Laser Pulses & Flash Ripples
         self._draw_opto_flashes(p)
+
+        # 6.6. Inspected Neuron Reticle & Synaptic Streamline
+        self._draw_inspected_reticle(p)
 
         # 7. Draw HUD Overlay (Valence gauge, stats, dopamine bars, toolbar)
         self._draw_hud(p)
@@ -1297,6 +1604,146 @@ class MushroomBody3DView(QWidget):
         p.setPen(QColor(230, 248, 255, alpha))
         p.drawText(rect, Qt.AlignCenter, text)
 
+    def _draw_inspected_reticle(self, p: QPainter):
+        """Draw 3D animated target reticle and axon connection line for inspected neuron."""
+        if self._inspected_neuron is None:
+            return
+
+        pos_3d = self._inspected_neuron.get("pos_3d")
+        if pos_3d is None:
+            return
+
+        sx_arr, sy_arr, _, valid = self._project_points(np.array([pos_3d], dtype=np.float32))
+        if not valid[0]:
+            return
+
+        sx, sy = float(sx_arr[0]), float(sy_arr[0])
+        col = self._inspected_neuron.get("color", QColor(168, 85, 247))
+
+        p.save()
+        # 1. Axon projection line to target (if present)
+        target_3d = self._inspected_neuron.get("target_3d")
+        if target_3d is not None:
+            tx_arr, ty_arr, _, t_valid = self._project_points(np.array([target_3d], dtype=np.float32))
+            if t_valid[0]:
+                tx, ty = float(tx_arr[0]), float(ty_arr[0])
+                p.setPen(QPen(QColor(col.red(), col.green(), col.blue(), 170), 1.5, Qt.DashLine))
+                p.drawLine(int(sx), int(sy), int(tx), int(ty))
+
+                # Terminal end marker
+                p.setBrush(QBrush(QColor(col.red(), col.green(), col.blue(), 210)))
+                p.setPen(Qt.NoPen)
+                p.drawEllipse(QPointF(tx, ty), 4.5, 4.5)
+
+        # 2. Pulsing reticle rings
+        now = time.perf_counter()
+        pulse = 0.5 + 0.5 * math.sin(now * 5.0)
+        ring_r = 14.0 + pulse * 4.0
+
+        p.setBrush(Qt.NoBrush)
+        p.setPen(QPen(QColor(col.red(), col.green(), col.blue(), 190), 1.5))
+        p.drawEllipse(QPointF(sx, sy), ring_r, ring_r)
+
+        # Inner solid dot
+        p.setBrush(QBrush(QColor(255, 255, 255, 230)))
+        p.setPen(Qt.NoPen)
+        p.drawEllipse(QPointF(sx, sy), 3.0, 3.0)
+
+        # 4 Corner reticle tick marks
+        p.setPen(QPen(QColor(col.red(), col.green(), col.blue(), 220), 1.5))
+        t_len = 5.0
+        gap = ring_r + 2.0
+        p.drawLine(int(sx - gap - t_len), int(sy), int(sx - gap), int(sy))
+        p.drawLine(int(sx + gap), int(sy), int(sx + gap + t_len), int(sy))
+        p.drawLine(int(sx), int(sy - gap - t_len), int(sx), int(sy - gap))
+        p.drawLine(int(sx), int(sy + gap), int(sx), int(sy + gap + t_len))
+
+        p.restore()
+
+    def _draw_inspector_card(self, p: QPainter, w: int, h: int):
+        """Draw holographic glass card displaying FlyWire connectome metadata and real-time Hz."""
+        if self._inspected_neuron is None:
+            return
+
+        cw = min(360, w - 32)
+        ch = 118
+        cx = 16
+        cy = h - 52 - ch - 12
+        card_rect = QRect(cx, cy, cw, ch)
+
+        p.save()
+        # Card background gradient
+        bg = QLinearGradient(cx, cy, cx, cy + ch)
+        bg.setColorAt(0.0, QColor(14, 16, 24, 240))
+        bg.setColorAt(1.0, QColor(10, 11, 16, 248))
+        p.setBrush(QBrush(bg))
+
+        col = self._inspected_neuron.get("color", QColor(168, 85, 247))
+        p.setPen(QPen(QColor(col.red(), col.green(), col.blue(), 170), 1.2))
+        p.drawRoundedRect(card_rect, 6, 6)
+
+        # Top line: Category + Pin status
+        font_cat = QFont("Segoe UI", 7, QFont.Bold)
+        p.setFont(font_cat)
+        p.setPen(QColor(col.red(), col.green(), col.blue(), 230))
+        status_txt = "PINNED" if self._inspected_pinned else "HOVER PREVIEW"
+        cat_txt = f"NEURON INSPECTOR • {self._inspected_neuron.get('system', '')} • [{status_txt}]"
+        p.drawText(cx + 12, cy + 18, cat_txt)
+
+        # Close button [×] at top right
+        close_rect = QRect(cx + cw - 22, cy + 6, 16, 16)
+        self._btn_rects["close_inspector"] = close_rect
+        p.setPen(QColor(150, 150, 160, 200))
+        p.drawText(close_rect, Qt.AlignCenter, "×")
+
+        # Main Name
+        font_name = QFont("Segoe UI", 10, QFont.Bold)
+        p.setFont(font_name)
+        p.setPen(QColor(245, 245, 250))
+        p.drawText(cx + 12, cy + 36, self._inspected_neuron.get("name", "Neuron"))
+
+        # Badges row: Neurotransmitter + Rate
+        font_badge = QFont("Segoe UI", 7, QFont.DemiBold)
+        p.setFont(font_badge)
+
+        bx = cx + 12
+        by = cy + 44
+        # NT Badge
+        nt_txt = self._inspected_neuron.get("nt", "ACh")
+        nt_w = p.fontMetrics().horizontalAdvance(nt_txt) + 12
+        nt_rect = QRect(bx, by, nt_w, 18)
+        nt_c = self._inspected_neuron.get("nt_color", QColor(56, 189, 248))
+        p.setBrush(QBrush(QColor(nt_c.red(), nt_c.green(), nt_c.blue(), 55)))
+        p.setPen(QPen(QColor(nt_c.red(), nt_c.green(), nt_c.blue(), 180), 1))
+        p.drawRoundedRect(nt_rect, 3, 3)
+        p.setPen(QColor(245, 245, 250))
+        p.drawText(nt_rect, Qt.AlignCenter, nt_txt)
+        bx += nt_w + 6
+
+        # Rate Badge
+        rate_txt = f"Rate: {self._inspected_neuron.get('rate_hz', '0.0 Hz')}"
+        rate_w = p.fontMetrics().horizontalAdvance(rate_txt) + 12
+        rate_rect = QRect(bx, by, rate_w, 18)
+        p.setBrush(QBrush(QColor(30, 32, 42, 180)))
+        p.setPen(QPen(QColor(80, 85, 105, 140), 1))
+        p.drawRoundedRect(rate_rect, 3, 3)
+        p.setPen(QColor(220, 225, 235))
+        p.drawText(rate_rect, Qt.AlignCenter, rate_txt)
+
+        # Role description
+        font_role = QFont("Segoe UI", 8, QFont.Normal)
+        p.setFont(font_role)
+        p.setPen(QColor(180, 185, 195))
+        p.drawText(cx + 12, cy + 78, self._inspected_neuron.get("role", ""))
+
+        # Synaptic Partners
+        font_part = QFont("Segoe UI", 7, QFont.Normal)
+        p.setFont(font_part)
+        p.setPen(QColor(130, 135, 145))
+        p.drawText(cx + 12, cy + 96, self._inspected_neuron.get("partners", ""))
+
+        p.restore()
+
     # ------------------------------------------------------------------ HUD
     def _draw_hud(self, p: QPainter):
         """Draw titles, control buttons, and live telemetry overlays."""
@@ -1309,6 +1756,10 @@ class MushroomBody3DView(QWidget):
         # 0.5. Top-Center Optogenetic Status Banner
         if self._opto_status:
             self._draw_opto_banner(p, w)
+
+        # 0.6. Neuron Inspector Card
+        if self._inspected_neuron is not None:
+            self._draw_inspector_card(p, w, h)
 
         # 1. Top-Left: Header
         p.setFont(font_title)
@@ -1765,6 +2216,10 @@ class MushroomBody3DView(QWidget):
                     self.toggle_layer(bid.replace("layer_", ""))
                 elif bid.startswith("tool_"):
                     self.set_tool_mode(bid.replace("tool_", ""))
+                elif bid == "close_inspector":
+                    self._inspected_neuron = None
+                    self._inspected_pinned = False
+                    self.update()
                 return
 
         # If help overlay is open: dismiss if clicked outside card, ignore inside clicks
@@ -1784,6 +2239,20 @@ class MushroomBody3DView(QWidget):
             elif self.tool_mode == "opto":
                 self._trigger_opto_at_screen_pos(pos)
                 return
+
+        # Neuron & Connectome Inspector click handling
+        if self.tool_mode == "inspect" or (event.modifiers() & Qt.ShiftModifier and event.button() == Qt.LeftButton):
+            neuron = self._find_neuron_at(pos, threshold_px=28.0)
+            if neuron is not None:
+                self._inspected_neuron = neuron
+                self._inspected_pinned = True
+                self.update()
+                return
+            else:
+                if self._inspected_pinned:
+                    self._inspected_neuron = None
+                    self._inspected_pinned = False
+                    self.update()
 
         self._last_mouse_pos = pos
         if event.button() == Qt.RightButton or event.modifiers() & Qt.ShiftModifier:
@@ -1811,6 +2280,13 @@ class MushroomBody3DView(QWidget):
         else:
             # Hover detection for tooltips
             self._check_hover(pos)
+
+            # Live inspect hover preview
+            if self.tool_mode == "inspect" and not self._inspected_pinned:
+                neuron = self._find_neuron_at(pos, threshold_px=22.0)
+                if neuron != self._inspected_neuron:
+                    self._inspected_neuron = neuron
+                    self.update()
 
     def mouseReleaseEvent(self, event):
         self._last_mouse_pos = None

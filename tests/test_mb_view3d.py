@@ -691,6 +691,68 @@ def test_virtual_optogenetics_tool_mode_and_mouse_click(app):
     assert len(view._opto_flashes) >= 1
 
 
+def test_neuron_connectome_inspector_search_and_reticle(app):
+    """Test connectome inspection, metadata resolution, reticle rendering, and pinning."""
+    data = load_mushroom_3d()
+    view = MushroomBody3DView(data=data)
+    view.resize(640, 480)
+    view.setVisible(True)
+
+    class FakeClick:
+        def __init__(self, pos, btn=Qt.LeftButton, mod=Qt.NoModifier):
+            self._pos = pos
+            self._btn = btn
+            self._mod = mod
+        def pos(self):
+            return self._pos
+        def button(self):
+            return self._btn
+        def modifiers(self):
+            return self._mod
+
+    # 1. Inspect finding neurons by projecting known soma coordinates
+    gf_mask = view._dn_type == "GF"
+    assert np.any(gf_mask)
+    gf_soma = view._dn_soma[gf_mask][0]
+    sx, sy, _, valid = view._project_points(np.array([gf_soma], dtype=np.float32))
+    assert valid[0]
+
+    found_neuron = view._find_neuron_at(QPoint(int(sx[0]), int(sy[0])), threshold_px=30.0)
+    assert found_neuron is not None
+    assert "Giant Fiber" in found_neuron["name"]
+    assert "ACh" in found_neuron["nt"]
+    assert "Motor Descending" in found_neuron["system"]
+    assert "partners" in found_neuron
+
+    # 2. Test tool mode switch to inspect
+    view.set_tool_mode("inspect")
+    assert view.tool_mode == "inspect"
+
+    # Click on the neuron position -> pins it
+    view.mousePressEvent(FakeClick(QPoint(int(sx[0]), int(sy[0]))))
+    assert view._inspected_pinned
+    assert view._inspected_neuron is not None
+
+    # 3. Render offscreen with active inspection reticle & holographic card
+    img = QImage(640, 480, QImage.Format_ARGB32)
+    p = QPainter(img)
+    view.paintEvent(None)
+    p.end()
+    assert not img.isNull()
+
+    # 4. Dynamic firing rate refresh on tick
+    view.rate_gf = 42.5
+    view._on_tick()
+    assert "42.5 Hz" in view._inspected_neuron["rate_hz"]
+
+    # 5. Dismiss inspector via close button
+    if "close_inspector" in view._btn_rects:
+        c_rect = view._btn_rects["close_inspector"]
+        view.mousePressEvent(FakeClick(c_rect.center()))
+        assert view._inspected_neuron is None
+        assert not view._inspected_pinned
+
+
 
 
 
