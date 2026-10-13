@@ -157,25 +157,70 @@ class GDIScreenCapturer:
         self.gray = np.empty((self.crop_h, self.crop_w), dtype=np.uint8)
         self.prev_gray = np.zeros((self.crop_h, self.crop_w), dtype=np.uint8)
         self.has_prev = False
+        self.ok = True                          # the last grab() really read the screen
+        self._good_origin = None                # origin of the capture the DIB holds now
+
+    def _blit(self, origin_x: int, origin_y: int) -> bool:
+        """One BitBlt (0x00CC0020 = SRCCOPY) of the crop at the given screen origin into the DIB."""
+        if not self.hdc_screen:
+            return False
+        return bool(self._gdi32.BitBlt(
+            self.hdc_mem, 0, 0, self.crop_w, self.crop_h,
+            self.hdc_screen, origin_x, origin_y, 0x00CC0020
+        ))
+
+    def _blank_outside_desktop(self, origin_x: int, origin_y: int) -> None:
+        """BitBlt returns TRUE for a source rectangle that sticks out of the virtual desktop but leaves the matching
+        destination pixels untouched, and the DIB is reused: that strip would show an older capture. Paint it black,
+        like the gaps between monitors that GDI itself blanks."""
+        u = self._user32
+        vx, vy = u.GetSystemMetrics(76), u.GetSystemMetrics(77)        # SM_X/YVIRTUALSCREEN
+        vw, vh = u.GetSystemMetrics(78), u.GetSystemMetrics(79)        # SM_CX/CYVIRTUALSCREEN
+        if vw <= 0 or vh <= 0:
+            return
+        w, h = self.crop_w, self.crop_h
+        x0, x1 = min(w, max(0, vx - origin_x)), max(0, min(w, vx + vw - origin_x))   # columns that sit on the desktop
+        y0, y1 = min(h, max(0, vy - origin_y)), max(0, min(h, vy + vh - origin_y))
+        view = self._bgra_view
+        if x1 <= x0 or y1 <= y0:
+            view[:] = 0
+            return
+        if x0 > 0:
+            view[:, :x0] = 0
+        if x1 < w:
+            view[:, x1:] = 0
+        if y0 > 0:
+            view[:y0, x0:x1] = 0
+        if y1 < h:
+            view[y1:, x0:x1] = 0
 
     def grab(self, cx: float, cy: float) -> Tuple[np.ndarray, int, int, bool, float]:
         """Grabs the screen centered at (cx, cy).
 
         Returns:
             (gray_image, origin_x, origin_y, is_static, diff)
+
+        When the screen cannot be read (locked session, secure desktop) the previous capture is returned together with
+        its own origin, so the consumer sees an unchanged scene instead of old pixels moved to the new position.
         """
         origin_x = int(cx - self.crop_w // 2)
         origin_y = int(cy - self.crop_h // 2)
 
-        # BitBlt 0x00CC0020 = SRCCOPY
-        res = self._gdi32.BitBlt(
-            self.hdc_mem, 0, 0, self.crop_w, self.crop_h,
-            self.hdc_screen, origin_x, origin_y, 0x00CC0020
-        )
-        if not res:
-            # Refresh screen DC if invalid handle
-            self._user32.ReleaseDC(self.hwnd_desktop, self.hdc_screen)
+        ok = self._blit(origin_x, origin_y)
+        if not ok:
+            # The desktop DC can go stale (display-mode change, session switch): take a fresh one, try once more
+            if self.hdc_screen:
+                self._user32.ReleaseDC(self.hwnd_desktop, self.hdc_screen)
             self.hdc_screen = self._user32.GetDC(self.hwnd_desktop)
+            ok = self._blit(origin_x, origin_y)
+        self.ok = ok
+        if ok:
+            self._blank_outside_desktop(origin_x, origin_y)
+            self._good_origin = (origin_x, origin_y)
+        else:
+            if self._good_origin is None:        # nothing was ever captured: the (black) DIB belongs to this origin
+                self._good_origin = (origin_x, origin_y)
+            origin_x, origin_y = self._good_origin
 
         bgra_to_gray(self._bgra_view, self.gray)
 

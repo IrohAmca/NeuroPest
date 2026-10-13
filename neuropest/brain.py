@@ -61,6 +61,23 @@ class BrainSpec:
 
 FREEZE_ON = 0.7         # see BrainSpec.freeze_on; tools/vision_calibrate.py (image) and the cursor numbers agree on it
 
+# Food odor and the startle reflexes. A hungry fly that smells food is less ready to treat what approaches as a predator:
+# the looming, retreat and freeze reflexes are scaled by `odor_gate`, which falls from 1 (no odor) to 0 at an odor
+# strength (phero_drive x hunger) of ODOR_GATE_FULL. A faint plume edge costs a little sensitivity, the middle of a plume
+# or the cursor's own lure silences them (the cursor is food there, not a predator). One function for every place that
+# applies it, so they can not drift apart: the cursor-number expansion and the freeze input here (the worker passes the
+# raw closing speed), and the image path in the worker (runner._Eye scales the detector gain, VisionDrive.skittish, so
+# the gate acts before the per-cell rate caps and the freeze -> retreat -> take-off order is kept). 0.2 keeps the lure working down to hunger 0.2 (the default start is 0.35) while a fast
+# approach from outside the plume still startles: calibrated against the old hard 0.05 gate in tools/probe_odor_gate.py
+# (0.3 and 0.5 let the pet retreat from or take off at its own attractive cursor when it is only a little hungry).
+ODOR_GATE_FULL = 0.2
+ODOR_LEARN_GATE = 0.05  # below this odor strength an escape still teaches fear; above it a chase is not punished
+
+
+def odor_gate(strength: float) -> float:
+    """Sensitivity of the startle reflexes under a food odor of `strength` (phero_drive x hunger): 1 .. 0."""
+    return max(0.0, 1.0 - float(strength) / ODOR_GATE_FULL)
+
 # Toy circuit: calibrated with tools/calibrate.py
 TOY = BrainSpec(loom_gain=10.0, loom_max_hz=250.0, vis_max_hz=60.0, rest_drive=(500.0, 3.0), bulk_hz=150.0,
                gf_event_spikes=0)
@@ -121,8 +138,11 @@ class Brain:
             if mb_wiring == "flywire":                  # opt-in: the real FlyWire KC / MBON / DAN / PN wiring
                 try:
                     self.mb = MushroomBody.from_flywire()
-                except OSError as e:                    # tools/build_mushroom.py has not been run
-                    warnings.warn(f"real mushroom-body wiring not available ({e}); using the random model")
+                except Exception as e:                  # not built, empty, damaged or of another schema
+                    # (OSError, EOFError, BadZipFile, zlib.error, KeyError ...): a saved preference for the real cells must
+                    # not keep the engine from starting; the warning names what went wrong
+                    warnings.warn(f"real mushroom-body wiring not available ({type(e).__name__}: {e}); "
+                                  "using the random model")
         self.valence = 0.0                  # -1 fear .. +1 desire, for the cues present now
         self._last_cues = (0.0, 0.0, 0.0, 0.0, 0.0)
         self._mb_ms = 0.0
@@ -182,7 +202,8 @@ class Brain:
         While set, they replace the looming / retreat / bearing drive derived from the cursor position.
         `expansion` is the strongest looming expansion rate in the image (1/s), the input of the freeze rule.
         `mb_cues` (cursor, looming), each 0..1, is the drive of the visual projection neurons that reach the Kenyon
-        cells (visual.VisionDrive.mb_cue): the mushroom body reads these instead of the cursor numbers."""
+        cells (visual.VisionDrive.mb_cue): the mushroom body reads these instead of the cursor numbers.
+        The rates and cues already carry the food-odor gate: the worker scales the detector gain by odor_gate."""
         self._vision = (np.asarray(idx, np.int32), np.asarray(rates, np.float32))
         self._vision_expansion = float(expansion)
         self._vision_cues = mb_cues
@@ -217,7 +238,8 @@ class Brain:
         walk_bias in [0, 1]: tonic drive of the walking command neurons.
         skittish: multiplier on the looming and retreat sensitivity (1 = calibrated).
         phero_steer: right minus left tropotaxis bias (Hz), drives DNa02 steering.
-        phero_drive: attractive pheromone intensity (0..1), boosts walking/foraging.
+        phero_drive: attractive pheromone intensity (an unclamped sum of plumes, ~0..1), boosts walking/foraging;
+            phero_drive x hunger also weakens the looming / retreat / freeze reflexes (odor_gate).
         phero_repel: repulsive warning/border intensity (0..1).
         at_target: 1.0 when arrived at target/nectar source.
         hunger: 0..1 internal metabolic hunger drive.
@@ -249,16 +271,12 @@ class Brain:
         effective_walk_bias = min(1.0, (self.walk_bias + 0.65 * eff_phero_drive + 0.4 * desire)
                                   * (1.0 + 0.3 * self.arousal))
 
-        # Food odor / attractant actively suppresses predator looming escape (GF) and backward retreat (MDN)
-        # Satiated flies (eff_phero_drive == 0) maintain normal predator avoidance
-        if eff_phero_drive > 0.05:
-            expansion = 0.0
-            loom = 0.0
-            retreat = min(s.retreat_max_hz, self.phero_repel * 8.0)
-        else:
-            expansion = max(0.0, closing) / max(dist, 30.0) * effective_skittish
-            loom = min(s.loom_max_hz, expansion * s.loom_gain)
-            retreat = min(s.retreat_max_hz, expansion * s.retreat_gain + self.phero_repel * 8.0)
+        # Food odor / attractant suppresses predator looming escape (GF), backward retreat (MDN) and freezing in
+        # proportion to its strength (odor_gate); a satiated fly (eff_phero_drive == 0) keeps normal predator avoidance
+        gate = odor_gate(eff_phero_drive)
+        expansion = max(0.0, closing) / max(dist, 30.0) * effective_skittish * gate
+        loom = min(s.loom_max_hz, expansion * s.loom_gain)
+        retreat = min(s.retreat_max_hz, expansion * s.retreat_gain + self.phero_repel * 8.0)
 
         # Mechanical collision with solid boundaries triggers acute retreat reflex (MDN)
         if self.wall_bump > 0.0:
@@ -290,12 +308,12 @@ class Brain:
         e = self.engine
         fi, fr = [], []
         # an object in contact or food being approached is not an attacking predator
-        self._loom_in = 0.0 if (touch > 0 or eff_phero_drive > 0.05) else (
+        self._loom_in = 0.0 if touch > 0 else (
             self._vision_expansion if self._vision is not None
-            else max(0.0, closing) / max(dist, 30.0)) * effective_skittish
+            else max(0.0, closing) / max(dist, 30.0)) * effective_skittish * gate
         if self._vision is not None:                     # the image replaces the visual part of the cursor drive
             fi = [self._vision[0]]
-            fr = [self._vision[1]]
+            fr = [self._vision[1]]                       # already odor-gated through the detector gain (runner._Eye)
             cursor_drive = (("VIS", vis), ("BULK_DRIVE", s.bulk_hz),
                             ("LC10_R", ph_r), ("LC10_L", ph_l))
             touch_drive = (("TOUCH_R", s.touch_hz * touch * (side >= 0)), ("TOUCH_L", s.touch_hz * touch * (side < 0)))
@@ -391,8 +409,8 @@ class Brain:
         threat = max(self.rates["GF"] / (2.0 * s.gf_on_hz), self.rates["MDN"] / (3.0 * s.mdn_on_hz))
         if self.gf_window >= max(1, s.gf_event_spikes):
             threat = 1.0
-        if eff_phero_drive > 0.05 or self.flight_urge >= 0.5:
-            threat = 0.0
+        if eff_phero_drive > ODOR_LEARN_GATE or self.flight_urge >= 0.5:
+            threat = 0.0      # a startle under food odor, or a chase, is not a punishment: it must not teach fear
         # Physical wall collision delivers acute nociceptive punishment (PPL1 dopamine)
         if self.wall_bump > 0.0:
             threat = max(threat, min(1.0, self.wall_bump))

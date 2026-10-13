@@ -43,8 +43,10 @@ INP_LEN = 32
  O_PAM, O_PPL1, O_MBON_APP, O_MBON_AV, O_KC_ACTIVE,
  O_CUE_FOOD, O_CUE_ALARM, O_CUE_NEAR, O_CUE_LOOM, O_CUE_TOUCH,
  O_MB_WEIGHTS_DIRTY) = range(31)
+O_KC_N = 31                 # Kenyon cells of the running mushroom-body model = valid length of the shared `mb_active` mask
 OUT_LEN = 36
 
+MB_WEIGHTS_LEN = 8192       # shared per-Kenyon-cell valence buffer, one slot per KC (random model 2,000; real cells 5,177)
 CHUNK_MS = 4.0              # simulated time advanced per loop iteration
 CHUNK_MS_GPU = 12.0         # a GPU read-back costs ~1 ms regardless of size; measured x1.8 -> x2.8-4 on a GTX 1650
 STATS_EVERY_S = 0.25
@@ -101,13 +103,33 @@ def pick_gpu(gpus: list[dict]) -> int | None:
     return ranked[0]["index"] if ranked else None
 
 
+MB_WIRINGS = ("random", "flywire")
+
+
+def mb_wiring_from_env() -> str | None:
+    """NEUROPEST_MB=flywire|random forces the mushroom-body wiring over the saved preference; None when it is not set."""
+    value = os.environ.get("NEUROPEST_MB", "").strip().lower()
+    return value if value in MB_WIRINGS else None
+
+
+def effective_mb_wiring(preferred: str) -> str:
+    """The wiring that will really run: NEUROPEST_MB wins over the saved preference, and the real cells need their npz,
+    present and loadable (tools/build_mushroom.py; else the worker falls back to the random model with only a console
+    warning)."""
+    from .mushroom import wiring_usable
+    from .paths import MUSHROOM
+
+    wiring = mb_wiring_from_env() or (preferred if preferred in MB_WIRINGS else "random")
+    return "flywire" if wiring == "flywire" and wiring_usable(MUSHROOM) else "random"
+
+
 def default_config() -> EngineConfig:
     """The real connectome at 15,000 neurons (within ~2% of the full brain for every cursor
     stimulus, tools/fidelity.py) when its cache has been built, else the toy circuit."""
     from .paths import MEMORY
 
     # NEUROPEST_MB=flywire switches the mushroom body to the real cells (needs tools/build_mushroom.py to have been run)
-    wiring = "flywire" if os.environ.get("NEUROPEST_MB", "").lower() == "flywire" else "random"
+    wiring = mb_wiring_from_env() or "random"
     return EngineConfig("flywire", 15_000, memory_path=str(MEMORY), mb_wiring=wiring) if CACHE.exists() else EngineConfig()
 
 
@@ -122,9 +144,9 @@ def build_network(cfg: EngineConfig):
 
 
 def _worker_main(cfg: EngineConfig, inp, out, stop, cap_frame=None, cap_meta=None, mb_weights=None,
-                 eye_preview=None) -> None:
+                 eye_preview=None, mb_active=None) -> None:
     try:
-        _run(cfg, inp, out, stop, cap_frame, cap_meta, mb_weights, eye_preview)
+        _run(cfg, inp, out, stop, cap_frame, cap_meta, mb_weights, eye_preview, mb_active)
     except BaseException:
         import traceback
 
@@ -133,7 +155,8 @@ def _worker_main(cfg: EngineConfig, inp, out, stop, cap_frame=None, cap_meta=Non
         raise
 
 
-def _run(cfg: EngineConfig, inp, out, stop, cap_frame=None, cap_meta=None, mb_weights=None, eye_preview=None) -> None:
+def _run(cfg: EngineConfig, inp, out, stop, cap_frame=None, cap_meta=None, mb_weights=None, eye_preview=None,
+         mb_active=None) -> None:
     from .brain import Brain
 
     net = build_network(cfg)
@@ -143,7 +166,7 @@ def _run(cfg: EngineConfig, inp, out, stop, cap_frame=None, cap_meta=None, mb_we
     if memory is not None:
         brain.mb.load(memory)
     try:
-        _loop(cfg, brain, net, inp, out, stop, cap_frame, cap_meta, memory, mb_weights, eye_preview)
+        _loop(cfg, brain, net, inp, out, stop, cap_frame, cap_meta, memory, mb_weights, eye_preview, mb_active)
     finally:
         if memory is not None:
             try:
@@ -156,12 +179,14 @@ def _run(cfg: EngineConfig, inp, out, stop, cap_frame=None, cap_meta=None, mb_we
 
 
 def _loop(cfg: EngineConfig, brain, net, inp, out, stop, cap_frame=None, cap_meta=None, memory=None, mb_weights=None,
-          eye_preview=None) -> None:
+          eye_preview=None, mb_active=None) -> None:
     brain.advance(cfg.dt * 4)                       # triggers/loads the compiled kernel
 
     chunk = CHUNK_MS if cfg.backend == "cpu" else CHUNK_MS_GPU
     eye = _Eye(net, cap_frame, cap_meta, eye_preview)
     approach = _Approach()
+    mb_view = np.frombuffer(mb_weights, dtype=np.float32) if mb_weights is not None else None   # one memcpy per publish
+    act_view = np.frombuffer(mb_active, dtype=np.int8) if mb_active is not None else None
     last_in = None
     forget_seen = 0.0
     last_save = time.perf_counter()
@@ -177,7 +202,7 @@ def _loop(cfg: EngineConfig, brain, net, inp, out, stop, cap_frame=None, cap_met
         closing = approach.update(inp)
         raw_closing = inp[I_CLOSING] if closing is None else closing
         hunger = inp[I_HUNGER]
-        eff_closing = 0.0 if (inp[I_PHERO_DRIVE] * hunger) > 0.05 else raw_closing
+        eff_closing = raw_closing                       # the food-odor gate on the startle reflexes lives in Brain._drive
         eff_bias = inp[I_BIAS]
         wall_bump = inp[I_WALL_BUMP]
         cur = (round(inp[I_DIST], 1), round(eff_closing, 1), round(eff_bias, 3), inp[I_SKITTISH],
@@ -240,16 +265,26 @@ def _loop(cfg: EngineConfig, brain, net, inp, out, stop, cap_frame=None, cap_met
                 out[O_KC_ACTIVE] = float(len(brain.mb.active))
             elif hasattr(brain.mb, "kc"):
                 out[O_KC_ACTIVE] = float(np.count_nonzero(brain.mb.kc))
+            if act_view is not None:
+                # which Kenyon cells fired in the last step (the 3D view paints exactly these); one row, one memcpy
+                if hasattr(brain.mb, "active"):
+                    row = np.zeros(brain.mb.n_kc, np.int8)
+                    row[brain.mb.active] = 1
+                else:
+                    row = (brain.mb.kc > 0).astype(np.int8)
+                n_row = min(len(row), len(act_view))
+                act_view[:n_row] = row[:n_row]
+                out[O_KC_N] = float(n_row)
             cues = getattr(brain, "_last_cues", (0.0, 0.0, 0.0, 0.0, 0.0))
             if len(cues) >= 5:
                 out[O_CUE_FOOD], out[O_CUE_ALARM], out[O_CUE_NEAR], out[O_CUE_LOOM], out[O_CUE_TOUCH] = (
                     float(cues[0]), float(cues[1]), float(cues[2]), float(cues[3]), float(cues[4])
                 )
-            if mb_weights is not None and brain.mb.dirty:
+            if mb_view is not None and brain.mb.dirty:
                 v_vec = getattr(brain.mb, "valence_vector", None)
                 if v_vec is not None:
-                    n_cp = min(len(mb_weights), len(v_vec))
-                    mb_weights[:n_cp] = v_vec[:n_cp]
+                    n_cp = min(len(mb_view), len(v_vec))
+                    mb_view[:n_cp] = v_vec[:n_cp]
                     out[O_MB_WEIGHTS_DIRTY] += 1.0
         if memory is not None and brain.mb is not None and brain.mb.dirty and time.perf_counter() - last_save > MEMORY_SAVE_S:
             last_save = time.perf_counter()
@@ -317,6 +352,7 @@ class _Eye:
 
     def __init__(self, net, cap_frame=None, cap_meta=None, eye_preview=None):
         import numpy as np
+        from .brain import odor_gate
         from .capture import CROP_H, CROP_W, META_ORIGIN_X, META_ORIGIN_Y, META_SEQ, META_STAMP
         from .vision import image_scene
         from .visual import cursor_scene
@@ -349,6 +385,7 @@ class _Eye:
         self._meta_stamp = META_STAMP
         self._image_scene = image_scene
         self._cursor_scene = cursor_scene
+        self._odor_gate = odor_gate
 
     def update(self, brain, inp, out, sim_ms: float) -> None:
         want = inp[I_VISION] > 0.5
@@ -402,7 +439,10 @@ class _Eye:
 
     def _frame(self, brain, inp, sim_ms: float) -> None:
         d = self.drive
-        d.eye_height, d.skittish = max(10.0, inp[I_HEIGHT]), inp[I_SKITTISH]
+        d.eye_height = max(10.0, inp[I_HEIGHT])
+        # a food odor weakens the startle here as in the cursor path: through the detector gain, i.e. BEFORE the per-cell
+        # rate caps (scaling the capped rates would leave the retreat input under its threshold while take-off survives)
+        d.skittish = inp[I_SKITTISH] * self._odor_gate(inp[I_PHERO_DRIVE] * inp[I_HUNGER])
         p = d.params
         cursor = (inp[I_CX], inp[I_CY])
         prev = self.cursor or cursor
@@ -510,17 +550,20 @@ class Runner:
         self._gen += 1
         gen = self._gen
         inp, out = self._ctx.Array("d", INP_LEN, lock=False), self._ctx.Array("d", OUT_LEN, lock=False)
-        mb_weights = self._ctx.Array("f", 2000, lock=False)
+        mb_weights = self._ctx.Array("f", MB_WEIGHTS_LEN, lock=False)
+        mb_active = self._ctx.Array("b", MB_WEIGHTS_LEN, lock=False)
         eye_preview = self._ctx.Array("f", PREVIEW_LEN, lock=False)
         old = (self._proc, self._stop)
         self._proc = self._stop = None
         self.inp, self.out, self.mb_weights, self.eye_preview = inp, out, mb_weights, eye_preview
+        self.mb_active = mb_active
         self.send(1e6, 0.0)
         self._starting = True
-        threading.Thread(target=self._swap, args=(gen, cfg, inp, out, old, mb_weights, eye_preview), daemon=True,
-                         name="neuropest-swap").start()
+        threading.Thread(target=self._swap, args=(gen, cfg, inp, out, old, mb_weights, eye_preview, mb_active),
+                         daemon=True, name="neuropest-swap").start()
 
-    def _swap(self, gen: int, cfg: EngineConfig, inp, out, old, mb_weights=None, eye_preview=None) -> None:
+    def _swap(self, gen: int, cfg: EngineConfig, inp, out, old, mb_weights=None, eye_preview=None,
+              mb_active=None) -> None:
         with self._swap_lock:
             _retire(*old)
             if gen != self._gen:
@@ -528,7 +571,7 @@ class Runner:
             stop = self._ctx.Event()
             proc = self._ctx.Process(target=_worker_main,
                                      args=(cfg, inp, out, stop, self.capture.frame_raw, self.capture.meta_raw, mb_weights,
-                                          eye_preview),
+                                          eye_preview, mb_active),
                                      daemon=True,
                                      name="neuropest-engine")
             proc.start()
@@ -709,7 +752,18 @@ class Runner:
                 return np.frombuffer(buf, dtype=np.float32).copy()
             except Exception:
                 pass
-        return np.zeros(2000, dtype=np.float32)
+        return np.zeros(MB_WEIGHTS_LEN, dtype=np.float32)
+
+    def get_kc_active(self) -> np.ndarray | None:
+        """Mask (bool, one entry per Kenyon cell of the running mushroom-body model) of the cells that fired in its last
+        step, or None while the worker has not published a model (starting, or learning is off)."""
+        buf = getattr(self, "mb_active", None)
+        if buf is None or self.out is None:
+            return None
+        n = int(self.out[O_KC_N])
+        if n <= 0:
+            return None
+        return np.frombuffer(buf, dtype=np.int8)[:n] > 0
 
     def stats(self) -> dict:
         o = self.out
@@ -719,7 +773,8 @@ class Runner:
                     vision=o[O_VISION], valence=o[O_VALENCE], v_motor=o[O_VMOTOR], gear=GEARS[int(o[O_GEAR])],
                     pam=o[O_PAM], ppl1=o[O_PPL1], mbon_app=o[O_MBON_APP], mbon_av=o[O_MBON_AV],
                     kc_active=int(o[O_KC_ACTIVE]), cue_food=o[O_CUE_FOOD], cue_near=o[O_CUE_NEAR],
-                    weights_dirty=int(o[O_MB_WEIGHTS_DIRTY]))
+                    weights_dirty=int(o[O_MB_WEIGHTS_DIRTY]),
+                    heading=float(self.inp[I_HEAD]))     # the fly's on-screen heading, rad (the 3D compass shows it)
 
 
 def _retire(proc, stop) -> None:

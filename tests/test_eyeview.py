@@ -213,3 +213,54 @@ def test_real_eye_in_the_worker_loop_publishes_a_preview_of_an_approaching_curso
     layout = ev.EyeLayout.load()
     for render in ev.RENDERERS:
         assert render(snap, layout).any()
+
+
+@pytest.mark.skipif(not FIELD.exists(), reason="needs data/circuits/field.npz and eye.npz")
+def test_eye_applies_the_food_odor_gate_through_the_detector_gain_before_the_rate_caps():
+    """Scaling the capped rates (max_retreat 20 Hz) by a partial gate would keep the retreat input under the ~12 Hz
+    LPC1 -> MDN threshold for good while the looming input could still reach take-off: no retreat step any more. Gating
+    the gain keeps the freeze -> retreat -> take-off order; a strong enough looming still reaches the retreat cap."""
+    import time
+
+    from neuropest.brain import odor_gate
+    from neuropest.runner import (I_CX, I_CY, I_HEAD, I_HEIGHT, I_HUNGER, I_PHERO_DRIVE, I_SKITTISH, I_STAMP, I_VISION,
+                                  I_X, I_Y, INP_LEN, OUT_LEN, VISION_PERIOD_MS, _Eye)
+    from neuropest.vision import VisualField
+
+    field = VisualField.load()
+
+    def dash(phero, hunger):
+        seen = []
+        brain = SimpleNamespace(set_vision=lambda idx, rates, *a: seen.append(np.array(rates)), clear_vision=lambda: None)
+        eye = _Eye(SimpleNamespace(ids=field.rf_id.copy()), None, None, None)
+        inp, out = np.zeros(INP_LEN), np.zeros(OUT_LEN)
+        inp[I_VISION], inp[I_HEIGHT], inp[I_SKITTISH] = 1.0, 140.0, 1.0
+        inp[I_PHERO_DRIVE], inp[I_HUNGER] = phero, hunger
+        inp[I_X], inp[I_Y], inp[I_HEAD] = 500.0, 500.0, 0.0
+        sim_ms, deadline = 0.0, time.perf_counter() + 60.0
+        while not eye.on and time.perf_counter() < deadline:
+            eye.update(brain, inp, out, sim_ms)
+            time.sleep(0.02)
+        assert eye.on
+        stamp = 1.0
+        for k in range(60):                                         # parked, then a 1600 px/s dash to 30 px
+            d = 400.0 if k < 20 else max(30.0, 400.0 - 32.0 * (k - 20))
+            inp[I_CX], inp[I_CY] = 500.0 + d, 500.0
+            stamp += VISION_PERIOD_MS / 1000.0
+            inp[I_STAMP] = stamp
+            sim_ms += VISION_PERIOD_MS
+            eye.update(brain, inp, out, sim_ms)
+        n_loom, n_ret = len(eye.drive.loom_idx), len(eye.drive.ret_idx)
+        r = np.array(seen)
+        return eye.drive, r[:, :n_loom].max(), r[:, n_loom:n_loom + n_ret].max()
+
+    _, loom0, ret0 = dash(0.0, 1.0)
+    g = odor_gate(0.1)
+    drive, loom_g, ret_g = dash(0.1, 1.0)
+    assert 0.0 < g < 1.0 and drive.skittish == pytest.approx(g)     # the gate went into the detector gain
+    p = drive.params
+    assert ret0 == pytest.approx(p.max_retreat)                     # the dash saturates the retreat cells ...
+    assert ret_g > p.max_retreat * g + 1.0                          # ... and still goes past cap x gate under the odor
+    assert loom_g < loom0                                           # while the looming drive is weakened
+    _, loom_full, ret_full = dash(0.9, 1.0)
+    assert loom_full == 0.0 and ret_full == 0.0                     # a strong odor silences both

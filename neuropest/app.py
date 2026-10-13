@@ -24,7 +24,7 @@ from .metabolism import MetabolicState
 from .pheromone import PheromoneField
 from .preferences import Preferences
 from .render import RewardEffect, draw_fly, draw_reward_plus
-from .runner import EngineConfig, Runner, default_config
+from .runner import EngineConfig, Runner, default_config, effective_mb_wiring
 from .theme import apply_theme
 from .tray import Tray
 
@@ -258,14 +258,14 @@ class Overlay(QWidget):
         # Update metabolic energy depletion based on active state (fly burns ~16x rest)
         self.metabolism.update(dt, self.runner.state)
 
-        # pose and cursor in screen px feed visual input; pheromone feeds antennae
-        cursor_is_attract = self.pheromone_enabled and (self.cursor_phero_mode == "attract")
-        effective_closing = 0.0 if cursor_is_attract else closing
-
+        # pose and cursor in screen px feed visual input; pheromone feeds antennae. The worker measures the cursor's
+        # closing speed itself from the stamped samples (`closing` is only its fallback), and a food odor weakens the
+        # startle reflexes there in proportion to its strength (brain.odor_gate): the attractive cursor is a lure only
+        # while its own scent is strong at the fly, not at every distance.
         effective_cursor = (cur_x, cur_y)
         self.fly.update(dt, self.runner.state, effective_cursor, area, self.runner.steer)
 
-        self.runner.send(dist, effective_closing, bearing, touch,
+        self.runner.send(dist, closing, bearing, touch,
                          (self.fly.x, self.fly.y, self.fly.heading), (cur_x, cur_y), stamp=now,
                          capture_pos=(self.fly.x, self.fly.y),
                          phero_steer=phero_steer, phero_drive=phero_drive,
@@ -357,6 +357,7 @@ def main():
         dt=prefs.dt,
         symmetry=prefs.symmetry,
         learning=prefs.learning,
+        mb_wiring=effective_mb_wiring(prefs.mb_wiring),
         backend=backend,
         adapter=adapter,
     )

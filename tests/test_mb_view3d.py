@@ -795,3 +795,356 @@ def test_translucent_neuropil_hulls_and_toggles(app):
 
 
 
+
+
+# ----------------------------------------------------------------------
+# Central-complex compass
+# ----------------------------------------------------------------------
+
+class _HeadingRunner:
+    """Runner double that reports the fly's heading the way Runner.stats() does."""
+    ready = True
+
+    def __init__(self, heading=0.0, steer=0.0):
+        self.heading = heading
+        self.steer = steer
+
+    def stats(self):
+        return dict(ready=True, valence=0.0, pam=0.0, ppl1=0.0, mbon_app=1.0, mbon_av=1.0, kc_active=0,
+                    gf=0.0, walk=0.0, mdn=0.0, steer=self.steer, groom=0.0, cue_food=0.0, cue_near=0.0,
+                    weights_dirty=0, heading=self.heading)
+
+    def get_mb_weights(self):
+        return np.zeros(0, dtype=np.float32)
+
+
+def _ring_node_nearest(n, angle):
+    return int(np.argmin(np.abs((np.arange(n) * 2 * math.pi / n - angle + math.pi) % (2 * math.pi) - math.pi)))
+
+
+def test_compass_bump_follows_the_fly_heading_not_the_animation_clock(app):
+    runner = _HeadingRunner(1.0)
+    view = MushroomBody3DView(data=load_mushroom_3d(), runner=runner)
+    n = len(view._eb_ring)
+    assert n >= 3
+    view._fetch_telemetry()
+
+    def lit():
+        return set(np.flatnonzero(view._eb_lit(n)).tolist())
+
+    first = lit()
+    assert _ring_node_nearest(n, 1.0) in first
+    for clock in (0.0, 0.37, 0.8):                 # the pulse clock drives the other animations, not the compass
+        view._pulse_phase = clock
+        assert lit() == first
+
+    runner.heading = 4.0                           # the fly turned: the bump moves with it
+    view._fetch_telemetry()
+    assert lit() != first
+    assert _ring_node_nearest(n, 4.0) in lit()
+    assert abs(view._compass_phase() - 4.0) < 1e-9
+
+
+def test_compass_without_a_runner_heading_integrates_steering_at_the_body_turn_gain(app):
+    from neuropest.fly import TURN_GAIN
+
+    view = MushroomBody3DView(data=load_mushroom_3d())
+    view.setVisible(True)
+    view.rate_steer = 10.0
+    h0 = view.heading_angle
+    view._last_tick = view._last_tick - 0.1        # one 0.1 s tick
+    view._on_tick()
+    gained = (view.heading_angle - h0) % (2 * math.pi)
+    assert 0.0 < gained <= 10.0 * 0.12 * TURN_GAIN
+    assert view._fly_heading is None
+
+
+def test_a_real_heading_stops_the_steering_integral(app):
+    view = MushroomBody3DView(data=load_mushroom_3d(), runner=_HeadingRunner(2.5, steer=20.0))
+    view.setVisible(True)
+    view._fetch_telemetry()
+    h0 = view.heading_angle
+    view._last_tick = view._last_tick - 0.1
+    view._on_tick()
+    assert view.rate_steer == 20.0                 # steering is on: without the real heading this would integrate
+    assert view.heading_angle == h0
+    assert abs(view._compass_phase() - 2.5) < 1e-9
+
+
+def test_eb_kick_shifts_the_bump_for_a_moment_and_relaxes_back(app):
+    import time as _time
+
+    view = MushroomBody3DView(data=load_mushroom_3d(), runner=_HeadingRunner(2.0))
+    view.setVisible(True)
+    view._fetch_telemetry()
+    base = view._compass_phase()
+    view.trigger_opto_stimulus("eb")
+    shift = (view._compass_phase() - base + math.pi) % (2 * math.pi) - math.pi
+    assert abs(shift - 0.4 * math.pi) < 1e-9
+    for _ in range(100):                           # 10 s of 0.1 s ticks
+        view._last_tick = _time.perf_counter() - 0.1
+        view._on_tick()
+    assert view._compass_kick == 0.0
+    assert abs(view._compass_phase() - base) < 1e-9
+
+
+def test_eb_nodes_are_ordered_around_the_ring_whatever_the_table_order(app):
+    view = MushroomBody3DView(data=load_mushroom_3d())
+    k = 12
+    ang = np.linspace(0.0, 2 * math.pi, k, endpoint=False)
+    # a tilted ring (mostly in the x-z plane), so ordering by the raw x-y angle would not do
+    ring = np.stack([np.cos(ang), 0.1 * np.cos(ang), 0.6 * np.sin(ang)], axis=1).astype(np.float32)
+    perm = np.random.default_rng(3).permutation(k)
+    others = np.random.default_rng(4).normal(size=(5, 3)).astype(np.float32)
+    view._cx_pts = np.vstack([ring[perm], others])
+    view._cx_sub = np.array([0] * k + [1] * 5, dtype=np.int8)
+
+    order = view._eb_ring_order()
+    assert sorted(order.tolist()) == list(range(k))            # only the EB nodes
+    a = ang[perm][order]
+    steps = np.diff(np.concatenate([a, a[:1]]))
+    assert np.allclose(np.abs((steps + math.pi) % (2 * math.pi) - math.pi), 2 * math.pi / k)
+
+
+def test_real_eb_ring_is_a_proper_ring(app):
+    """The cached FlyWire table lists the EB nodes by cell type; the ring order must be positional."""
+    view = MushroomBody3DView(data=load_mushroom_3d())
+    ring = view._eb_ring
+    if len(ring) < 6:
+        pytest.skip("no real central-complex data")
+    p = view._cx_pts[ring].astype(np.float64)
+    p -= p.mean(axis=0)
+    _, _, vt = np.linalg.svd(p, full_matrices=False)
+    plane = p @ vt[:2].T
+    ang = np.arctan2(plane[:, 1], plane[:, 0])
+    assert np.all(np.diff(ang) >= 0)                           # angle increases along the drawn order
+
+
+# ----------------------------------------------------------------------
+# Kenyon-cell activity: the worker's real firing set, not a fixed mask
+# ----------------------------------------------------------------------
+
+class _KcRunner(_HeadingRunner):
+    """Runner double that publishes the model's firing set like Runner.get_kc_active()."""
+
+    def __init__(self, n_model=2000):
+        super().__init__(0.0)
+        self.n_model = n_model
+        self.fired = np.zeros(n_model, dtype=bool)
+
+    def get_kc_active(self):
+        return self.fired.copy() if self.n_model else None
+
+
+def test_active_kenyon_cells_are_the_models_own_firing_set(app):
+    runner = _KcRunner(2000)
+    view = MushroomBody3DView(data=load_mushroom_3d(), runner=runner)
+    assert view.data.n_kc >= 2000
+
+    runner.fired[[10, 11, 500, 1999]] = True
+    view._fetch_telemetry()
+    assert view._kc_from_model and view._kc_model_n == 2000
+    assert set(np.flatnonzero(view.active_kc_mask).tolist()) == {10, 11, 500, 1999}
+
+    runner.fired[:] = False                          # another stimulus: another set, not the same fixed subset
+    runner.fired[[7, 8, 9]] = True
+    view._fetch_telemetry()
+    assert {7, 8, 9} <= set(np.flatnonzero(view.active_kc_mask).tolist())       # (the earlier cells are still fading)
+
+
+def test_a_firing_cell_stays_lit_for_a_moment_and_then_fades(app):
+    import time as _time
+
+    runner = _KcRunner(2000)
+    view = MushroomBody3DView(data=load_mushroom_3d(), runner=runner)
+    view.setVisible(True)
+    runner.fired[42] = True
+    view._fetch_telemetry()
+    assert view.active_kc_mask[42]
+    runner.fired[:] = False                          # it stops firing
+    view._last_tick = _time.perf_counter() - 0.05
+    view._on_tick()
+    assert view.active_kc_mask[42]                   # still lit 50 ms later
+    for _ in range(10):
+        view._last_tick = _time.perf_counter() - 0.1
+        view._on_tick()
+    assert not view.active_kc_mask.any()
+
+
+def _patch_brightness(view, x, y, r=3):
+    img = view.grab().toImage()
+    return sum(img.pixelColor(x + dx, y + dy).red() + img.pixelColor(x + dx, y + dy).green()
+               + img.pixelColor(x + dx, y + dy).blue() for dx in range(-r, r + 1) for dy in range(-r, r + 1))
+
+
+def test_firing_cells_off_the_drawing_stride_are_still_painted(app):
+    runner = _KcRunner(2000)
+    view = MushroomBody3DView(data=load_mushroom_3d(), runner=runner)
+    view.resize(700, 520)
+    view.layer_hulls = False
+    step_s, step_t = view._soma_step, view._tract_step
+    on_both = [i for i in range(1, 400) if i % step_s != 0 and i % step_t != 0][:5]
+    assert on_both
+    cell = on_both[0]
+    runner.fired[on_both] = True
+    view._fetch_telemetry()
+    assert set(on_both) <= set(view._active_off_soma.tolist())
+    assert set(on_both) <= set(view._active_off_tract.tolist())
+    soma_tract = view._active_off_soma.copy(), view._active_off_tract.copy()
+
+    # the soma pass alone: a spark on the cell's soma
+    sx, sy, _, _ = view._project_points(view.data.kc_soma[[cell]])
+    at_soma = int(round(float(sx[0]))), int(round(float(sy[0])))
+    view._active_off_tract = np.zeros(0, dtype=np.int64)
+    with_soma = _patch_brightness(view, *at_soma)
+    view._active_off_soma = np.zeros(0, dtype=np.int64)
+    assert with_soma > _patch_brightness(view, *at_soma) + 1000
+
+    # the tract pass alone: the action-potential pulse halfway along the cell's own axon
+    view._active_off_soma, view._active_off_tract = np.zeros(0, dtype=np.int64), soma_tract[1]
+    view._pulse_phase = 0.5
+    pts = [view._project_points(a[[cell]]) for a in (view.data.kc_soma, view.data.kc_ped, view.data.kc_target)]
+    (s0, s1), (p0, p1), (t0, t1) = [(float(q[0][0]), float(q[1][0])) for q in pts]
+    mid = int(round(0.25 * s0 + 0.5 * p0 + 0.25 * t0)), int(round(0.25 * s1 + 0.5 * p1 + 0.25 * t1))
+    with_tract = _patch_brightness(view, *mid, r=2)
+    view._active_off_tract = np.zeros(0, dtype=np.int64)
+    assert with_tract > _patch_brightness(view, *mid, r=2) + 300
+
+
+def test_hovering_a_firing_cell_between_the_samples_shows_that_cell_and_its_card_follows_it(app):
+    import time as _time
+
+    runner = _KcRunner(2000)
+    view = MushroomBody3DView(data=load_mushroom_3d(), runner=runner)
+    view.resize(700, 520)
+    view.setVisible(True)
+    for layer in ("layer_visual", "layer_olfactory", "layer_motor", "layer_cx"):
+        setattr(view, layer, False)
+    cell = next(i for i in range(1, 400) if i % view._soma_step != 0)
+    runner.fired[cell] = True
+    view._fetch_telemetry()
+    sx, sy, _, _ = view._project_points(view.data.kc_soma[[cell]])
+    card = view._find_neuron_at(QPoint(int(round(float(sx[0]))), int(round(float(sy[0])))), threshold_px=1.5)
+    assert card is not None and card["kc_index"] == cell
+    assert card["rate_hz"].startswith("Active")
+
+    view._inspected_neuron = card                    # pinned; the cell stops firing
+    runner.fired[:] = False
+    view._last_tick = _time.perf_counter() - 0.05
+    view._on_tick()
+    assert view._inspected_neuron["rate_hz"].startswith("Fading")
+    for _ in range(10):
+        view._last_tick = _time.perf_counter() - 0.1
+        view._on_tick()
+    assert view._inspected_neuron["rate_hz"].startswith("Silent")
+
+
+def test_a_hidden_view_does_not_come_back_with_a_stale_firing_set(app):
+    runner = _KcRunner(2000)
+    view = MushroomBody3DView(data=load_mushroom_3d(), runner=runner)
+    view.setVisible(True)
+    runner.fired[42] = True
+    view._fetch_telemetry()
+    assert view.active_kc_mask[42]
+    view.setVisible(False)                           # hidden: no ticks, so no fading either
+    assert not view.active_kc_mask.any() and not view._kc_glow.any()
+
+
+def test_the_published_set_gives_the_models_cell_count_and_nothing_lights_without_a_model(app):
+    import time as _time
+
+    runner = _KcRunner(2000)
+    view = MushroomBody3DView(data=load_mushroom_3d(), runner=runner)
+    view.setVisible(True)
+    runner.fired[[3, 4, 5]] = True
+    view.kc_active_count = 100
+    view._fetch_telemetry()
+    view.kc_active_count = 100
+    assert view._kc_model_n == 2000 and view.active_kc_mask[[3, 4, 5]].all()
+    assert view._kc_hud_text() == "100 / 2,000 (5.0%)"           # the model's own cells, not the 3D anatomy's 5,177
+    runner.n_model = 0                               # no model published (learning off / starting)
+    runner.fired = np.zeros(0, dtype=bool)
+    for _ in range(10):
+        view._last_tick = _time.perf_counter() - 0.1
+        view._on_tick()
+    assert view._kc_model_n == 0 and not view.active_kc_mask.any()
+    view.kc_active_count = 0
+    assert view._kc_hud_text() == f"0 / {view.data.n_kc:,} (0.0%)"
+
+
+def test_a_runner_without_the_set_still_gets_the_illustrative_mask(app):
+    view = MushroomBody3DView(data=load_mushroom_3d(), runner=_HeadingRunner(0.0))
+    st_runner = view.runner
+    st_runner.stats = lambda: dict(valence=0.0, pam=0.0, ppl1=0.0, mbon_app=1.0, mbon_av=1.0, kc_active=100, gf=0.0,
+                                   walk=0.0, mdn=0.0, steer=0.0, groom=0.0, cue_food=0.8, cue_near=0.0,
+                                   weights_dirty=0)
+    view._fetch_telemetry()
+    assert not view._kc_from_model
+    assert view.active_kc_mask.any()
+
+
+def _cx_only(view):
+    for layer in ("layer_mb", "layer_visual", "layer_olfactory", "layer_motor", "layer_wireframe", "layer_hulls"):
+        setattr(view, layer, False)
+    view.layer_cx = True
+
+
+def test_the_drawn_ring_lights_the_nodes_at_the_fly_heading(app):
+    runner = _HeadingRunner(1.0)
+    view = MushroomBody3DView(data=load_mushroom_3d(), runner=runner)
+    view.resize(700, 520)
+    _cx_only(view)
+    ring = view._eb_ring
+    n = len(ring)
+    if n < 6:
+        pytest.skip("no real central-complex ring")
+
+    def brightness(k, r=2):                          # summed RGB around ring node k on the rendered widget
+        img = view.grab().toImage()
+        sx, sy, _, _ = view._project_points(view._cx_pts[[ring[k]]])
+        x, y = int(round(float(sx[0]))), int(round(float(sy[0])))
+        return sum(img.pixelColor(x + dx, y + dy).red() + img.pixelColor(x + dx, y + dy).green()
+                   + img.pixelColor(x + dx, y + dy).blue() for dx in range(-r, r + 1) for dy in range(-r, r + 1))
+
+    a, b = _ring_node_nearest(n, 1.0), _ring_node_nearest(n, 1.0 + math.pi)
+    view._fetch_telemetry()
+    lit_a, dark_b = brightness(a), brightness(b)
+    runner.heading = 1.0 + math.pi                   # the fly turns around: the bump goes to the other side
+    view._fetch_telemetry()
+    dark_a, lit_b = brightness(a), brightness(b)
+    assert lit_a > dark_a and lit_b > dark_b
+
+
+def test_inspector_rate_of_an_eb_node_follows_the_bump_also_on_a_pinned_card(app):
+    import time as _time
+
+    runner = _HeadingRunner(1.0)
+    view = MushroomBody3DView(data=load_mushroom_3d(), runner=runner)
+    view.resize(700, 520)
+    view.setVisible(True)
+    _cx_only(view)
+    ring = view._eb_ring
+    n = len(ring)
+    if n < 6:
+        pytest.skip("no real central-complex ring")
+    view._fetch_telemetry()
+    a = _ring_node_nearest(n, 1.0)
+    sx, sy, _, _ = view._project_points(view._cx_pts[[ring[a]]])
+    card = view._find_neuron_at(QPoint(int(round(float(sx[0]))), int(round(float(sy[0])))))
+    assert card is not None and card["cx_index"] == int(ring[a])
+    assert card["rate_hz"] == "16.0 Hz"                  # in the bump
+
+    view._inspected_neuron = card                        # pinned; the fly then turns away
+    runner.heading = 1.0 + math.pi
+    view._last_tick = _time.perf_counter() - 0.05
+    view._on_tick()
+    assert view._inspected_neuron["rate_hz"] == "4.0 Hz"
+
+
+def test_hover_compares_inspector_cards_without_numpy_ambiguity(app):
+    """Two KC cards of the same type differ only in their numpy position; `card_a != card_b` on the dicts would raise."""
+    view = MushroomBody3DView(data=load_mushroom_3d())
+    a, b = view._kc_card(0), view._kc_card(3)
+    a["name"] = b["name"] = "Kenyon Cell (same type)"
+    assert view._same_card(a, dict(a)) and not view._same_card(a, b)
+    assert view._same_card(None, None) and not view._same_card(a, None) and not view._same_card(None, b)

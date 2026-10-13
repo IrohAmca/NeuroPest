@@ -136,6 +136,24 @@ def test_extract_roundtrips_through_the_npz(wiring, tmp_path):
     assert set(z) == set(wiring) and all(np.array_equal(z[k], wiring[k]) for k in z)
 
 
+def test_the_in_app_download_builds_the_wiring_the_model_loads(raw, wiring, tmp_path):
+    """data_manager.build_all_circuits once called a build_mushroom.build that did not exist (the AttributeError was
+    swallowed), and the builder lived in tools/, which a packaged install does not have. It is in the package now."""
+    from neuropest import data_manager, mbbuild
+
+    out = tmp_path / "circuits" / "mushroom_flywire.npz"            # the directory does not exist yet
+    assert data_manager.build_mushroom_wiring(raw, out) is True
+    z = mushroom.load_wiring(out)
+    assert set(z) == set(wiring) and all(np.array_equal(z[k], wiring[k]) for k in z)
+    assert FlywireMushroomBody(z, cue_pn_types=CUE_TYPES).n_kc == N_KC
+    assert not list(out.parent.glob("*.partial.npz"))               # written through a temporary file, then renamed
+
+    w = mbbuild.build(raw_dir=raw, out=tmp_path / "strict.npz", min_syn=5)    # min_syn reaches the extraction
+    assert int(w["min_syn"]) == 5 and w["kc_mbon_n"].min() >= 5
+    assert build_mushroom.build is mbbuild.build                    # the command line is a thin wrapper around it
+    assert data_manager.build_mushroom_wiring(tmp_path / "no_raw_here", tmp_path / "x.npz") is False
+
+
 # ----------------------------------------------------------------------------------------------- the model
 def test_signs_come_from_the_dopamine_coupling_unless_the_literature_says_otherwise(wiring):
     mb = _mb(wiring, valence_table={})
@@ -275,6 +293,16 @@ def test_brain_uses_the_real_wiring_only_when_asked_and_falls_back_without_the_f
     assert _toy_brain(learning=False, mb_wiring="flywire").mb is None
 
 
+@pytest.mark.parametrize("payload", [b"", b"this is not an npz archive", b"PK" + bytes([3, 4]) + b" truncated"])
+def test_a_damaged_wiring_file_falls_back_to_the_random_model(tmp_path, monkeypatch, payload):
+    """A saved 'flywire' preference must not keep the engine from starting when the file is damaged."""
+    bad = tmp_path / "mushroom_flywire.npz"
+    bad.write_bytes(payload)
+    monkeypatch.setattr(mushroom, "MUSHROOM", bad)
+    with pytest.warns(UserWarning, match="random model"):
+        assert _toy_brain(mb_wiring="flywire").mb.kind == "random"
+
+
 # ---------------------------------------------------------------------------------------- the real file
 needs_real = pytest.mark.skipif(not MUSHROOM.exists(), reason="data/circuits/mushroom_flywire.npz not built here")
 
@@ -302,3 +330,16 @@ def test_real_wiring_step_cost_stays_far_below_the_50ms_step():
     for _ in range(200):
         mb.step(cues, 1.0, 0.0, 0.05)                      # the dearer case: learning
     assert (time.perf_counter() - t) / 200 < 3e-3
+
+
+def test_a_damaged_or_missing_wiring_file_is_not_usable_and_a_good_one_is(wiring, tmp_path):
+    good = tmp_path / "good.npz"
+    np.savez_compressed(good, **wiring)
+    assert mushroom.wiring_usable(good)
+    assert not mushroom.wiring_usable(tmp_path / "missing.npz")
+    empty = tmp_path / "empty.npz"
+    empty.write_bytes(b"")
+    assert not mushroom.wiring_usable(empty)
+    partial = tmp_path / "partial.npz"
+    np.savez_compressed(partial, kc_id=wiring["kc_id"])           # loads, but is not a wiring file
+    assert not mushroom.wiring_usable(partial)

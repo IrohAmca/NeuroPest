@@ -51,6 +51,7 @@ hidden_imports = [
     "neuropest.capture",
     "neuropest.data_manager",
     "neuropest.eyebuild",
+    "neuropest.mbbuild",
     "neuropest.mb_geometry",
     "neuropest.mb_view3d",
     "neuropest.metabolism",

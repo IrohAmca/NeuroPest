@@ -364,3 +364,42 @@ def test_tier_cache_is_written_once_and_follows_the_full_cache(raw, tmp_path):
     assert flywire.load_tier(150, cache, tiers).n == 150
     assert flywire.load_tier(full.n, cache, tiers).n == full.n
     assert not flywire.tier_path(full.n, cache, tiers).exists()
+
+
+def test_image_rates_reach_the_cells_unchanged_and_only_the_freeze_input_is_odor_gated_in_the_brain(tier):
+    """The worker applies the odor gate to the image path through the detector gain (before the rate caps, see
+    test_eyeview); the brain must not scale the already capped rates a second time."""
+    from neuropest.brain import odor_gate
+
+    loom, retreat = tier.groups["LOOM"], tier.groups["RETREAT_IN"]
+    idx = np.concatenate([loom, retreat])
+    rates = np.full(len(idx), 100.0, np.float32)
+    for phero, hunger in ((0.0, 1.0), (0.1, 1.0), (0.9, 1.0), (0.9, 0.0)):
+        b = Brain(tier)
+        b.set_stimulus(900, 0, 0.0, phero_drive=phero, hunger=hunger)
+        b.set_vision(idx, rates, expansion=2.0)
+        assert np.array_equal(b._last_fi[:len(idx)], idx)
+        assert (b._last_fr[:len(idx)] == 100.0).all()
+        assert b._loom_in == pytest.approx(2.0 * odor_gate(phero * hunger))
+
+
+def test_food_odor_scales_the_cursor_retreat_drive_like_the_looming_drive(tier):
+    from neuropest.brain import FLYWIRE, odor_gate
+
+    b = Brain(tier)
+    sl_loom, sl_ret = b._cursor_slices[0], b._cursor_slices[1]
+    assert len(b._cursor_fi[sl_ret]) > 0                              # FlyWire has RETREAT_IN cells (the toy has none)
+    for phero in (0.0, 0.1, 0.3):
+        b.set_stimulus(100, 200, 0.0, phero_drive=phero, hunger=1.0)  # 2 /s before the gate
+        g = odor_gate(phero)
+        assert b._cursor_fr[sl_ret] == pytest.approx(min(FLYWIRE.retreat_max_hz, 2.0 * g * FLYWIRE.retreat_gain))
+        assert b._cursor_fr[sl_loom] == pytest.approx(min(FLYWIRE.loom_max_hz, 2.0 * g * FLYWIRE.loom_gain))
+
+
+def test_the_default_pet_does_not_startle_at_its_own_lure(tier):
+    """Default start hunger 0.35 with the attractive cursor right on the fly (its own scent ~1): fully calm. This pins
+    the calibration of ODOR_GATE_FULL (at 0.5 the gate would stay 0.3 open here and the pet could back away)."""
+    b = Brain(tier)
+    b.set_stimulus(40, 1500, 0.0, phero_drive=0.99, hunger=0.35)
+    assert b._loom_in == 0.0
+    assert not b._cursor_fr[b._cursor_slices[0]].any() and not b._cursor_fr[b._cursor_slices[1]].any()

@@ -46,6 +46,13 @@ uv run neuropest
   - Approaching rapidly triggers an immediate **escape takeoff (fly)**.
   - Moving the cursor near the fly causes it to **turn towards or away** depending on learned valence.
   - Skittishness slider adjusts loom sensitivity. Cursors farther than 700 px are ignored (idling motor).
+  - **Food odor weakens the startle.** A hungry fly that smells food (a plume, or the cursor's own scent in the default
+    "attractive" cursor mode) scales its looming, retreat and freeze reflexes down in proportion to the odor strength
+    (`brain.odor_gate`: full reflex at no odor, none at odor x hunger >= 0.2, calibrated with `tools/probe_odor_gate.py`).
+    While a hungry pet approaches the attractive cursor or sits in the middle of a plume it chases rather than flees;
+    once it has eaten (hunger near 0, right after a bite) it startles as described above. With cursor mode "Disabled"
+    or "Repellent" the cursor carries no food scent, so only the invisible food plumes still soften a hungry pet's
+    startle.
 - **Hunger & Metabolism:**
   - The fly consumes energy based on its behavioral state:
     - Resting / grooming: $\approx 0.005 / \text{s}$ (basal rate)
@@ -223,7 +230,7 @@ The Mushroom Body mediates associative learning via three-factor synaptic plasti
   - Positive valence ($V > 0$): increases forward walking drive and attraction towards the cursor.
   - Negative valence ($V < 0$): heightens skittishness, reverses steering away from the cursor, and triggers defensive takeoff.
 - **Visual Learning from Connectome PNs:** When visual input is active, visual projection neurons reaching Kenyon cells (aMe12, MTe32, MTe30, LTe25, MTe40 for cursor; aMe26, LTe72, MTe37 for looming) directly stimulate KCs through connectome receptive fields (`tools/probe_mb_vision.py`).
-- **Real FlyWire Wiring Mode (Opt-in):** Setting `NEUROPEST_MB=flywire` loads real anatomical connectivity (`tools/build_mushroom.py`) with 5,177 Kenyon cells, 96 MBONs (35 types), and biological PAM/PPL1 innervation.
+- **Real FlyWire Wiring Mode (Opt-in):** Learning > *Mushroom Body Model* switches between the designed layer (2,000 Kenyon cells, default) and the real anatomical connectivity (`data/circuits/mushroom_flywire.npz`, built by `tools/build_mushroom.py` or the in-app download) with 5,177 Kenyon cells, 96 MBONs (35 types), and biological PAM/PPL1 innervation. The choice is saved as `mb_wiring` (`random` / `flywire`) in `data/preferences.json`; each model keeps its own memory file. The environment variable `NEUROPEST_MB=flywire|random` overrides the saved choice and locks the selector; without a usable npz the designed model runs.
 - **Persistence:** Learned memories persist between launches in `data/memory/fly_memory.npz` (or `fly_memory_flywire.npz`), with a one-click "Forget" button in the Behavior tab.
 
 ---

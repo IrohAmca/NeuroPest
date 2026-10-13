@@ -245,3 +245,121 @@ def test_eye_preview_asks_the_worker_only_while_it_is_on_screen_and_vision_is_on
     c.preview_check.setChecked(False)
     assert c.preview.isHidden() and r.preview is False
     c.hide()
+
+
+# ------------------------------------------------------------------------------------ mushroom-body model choice
+def test_mb_model_combo_reaches_the_engine_and_the_preferences(app, monkeypatch, tmp_path):
+    from neuropest import control
+    from neuropest.preferences import Preferences
+
+    f = tmp_path / "wiring_prefs.json"
+    monkeypatch.setenv("NEUROPEST_PREFERENCES", str(f))
+    monkeypatch.delenv("NEUROPEST_MB", raising=False)
+    monkeypatch.setattr(control, "MUSHROOM", f)                    # an existing file: the real cells count as built
+    monkeypatch.setattr(control, "wiring_usable", lambda path: path.exists())
+    f.write_text("{}", encoding="utf-8")
+    r = FakeRunner()
+    r.cfg = EngineConfig("toy", 146, 0.5, memory_path="mem/fly_memory.npz")
+    c = Control(FakeOverlay(), r, prefs=Preferences.load(f))
+    assert c.mb_wiring_combo.isEnabled() and c._mb_wiring() == "random"
+
+    c.mb_wiring_combo.setCurrentIndex(1)                           # -> real FlyWire cells
+    assert len(r.started) == 1 and r.started[-1].mb_wiring == "flywire"
+    assert c.prefs.mb_wiring == "flywire"
+    got = r.started[-1]                                            # nothing else changed
+    assert (got.circuit, got.n, got.dt, got.memory_path, got.learning) == ("toy", 146, 0.5, "mem/fly_memory.npz", True)
+
+
+def test_other_changes_do_not_overwrite_a_saved_model_choice(app, monkeypatch, tmp_path):
+    """A saved 'flywire' while the real cells are missing: the designed model runs, and changing anything else must not
+    save 'random' over the user's choice (only picking a model in the combo saves one)."""
+    from neuropest import control
+    from neuropest.preferences import Preferences
+
+    monkeypatch.setattr(control, "wiring_usable", lambda path: path.exists())
+    f = tmp_path / "keep_prefs.json"
+    f.write_text('{"mb_wiring": "flywire"}', encoding="utf-8")
+    monkeypatch.setenv("NEUROPEST_PREFERENCES", str(f))
+    monkeypatch.delenv("NEUROPEST_MB", raising=False)
+    monkeypatch.setattr(control, "MUSHROOM", tmp_path / "missing.npz")
+    r = FakeRunner()                                               # app.py resolved the missing file to 'random'
+    c = Control(FakeOverlay(), r, prefs=Preferences.load(f))
+    c.learn_enable.setChecked(False)
+    c.learn_enable.setChecked(True)
+    c.hw.setCurrentIndex(1)
+    c.size.setValue(c.size.maximum())
+    c._apply()
+    assert c.prefs.mb_wiring == "flywire"
+    assert Preferences.load(f).mb_wiring == "flywire"
+
+
+def test_mb_model_combo_is_locked_when_learning_is_off_or_the_cells_are_not_built_or_the_env_decides(app, monkeypatch,
+                                                                                                    tmp_path):
+    from neuropest import control
+
+    monkeypatch.setattr(control, "wiring_usable", lambda path: path.exists())
+    monkeypatch.delenv("NEUROPEST_MB", raising=False)
+    built = tmp_path / "mushroom_flywire.npz"
+    built.write_text("x", encoding="utf-8")
+
+    monkeypatch.setattr(control, "MUSHROOM", built)
+    c = Control(FakeOverlay(), FakeRunner())
+    assert c.mb_wiring_combo.isEnabled()
+    c.learn_enable.setChecked(False)
+    assert not c.mb_wiring_combo.isEnabled() and "off" in c.mb_wiring_combo.toolTip()
+    c.learn_enable.setChecked(True)
+    assert c.mb_wiring_combo.isEnabled()
+
+    monkeypatch.setattr(control, "MUSHROOM", tmp_path / "missing.npz")
+    c = Control(FakeOverlay(), FakeRunner())
+    assert not c.mb_wiring_combo.isEnabled() and "build_mushroom" in c.mb_wiring_combo.toolTip()
+
+    monkeypatch.setattr(control, "MUSHROOM", built)
+    monkeypatch.setenv("NEUROPEST_MB", "flywire")
+    r = FakeRunner()
+    r.cfg = EngineConfig("toy", 146, 0.5, mb_wiring="flywire")
+    c = Control(FakeOverlay(), r)
+    assert not c.mb_wiring_combo.isEnabled() and c._mb_wiring() == "flywire"
+    assert "NEUROPEST_MB" in c.mb_wiring_combo.toolTip()
+
+
+def test_a_wiring_forced_by_the_env_var_is_not_written_into_the_preferences(app, monkeypatch, tmp_path):
+    from neuropest import control
+    from neuropest.preferences import Preferences
+
+    monkeypatch.setattr(control, "wiring_usable", lambda path: path.exists())
+    f = tmp_path / "forced_prefs.json"
+    f.write_text("{}", encoding="utf-8")
+    monkeypatch.setenv("NEUROPEST_PREFERENCES", str(f))
+    monkeypatch.setenv("NEUROPEST_MB", "flywire")
+    monkeypatch.setattr(control, "MUSHROOM", f)
+    r = FakeRunner()
+    r.cfg = EngineConfig("toy", 146, 0.5, mb_wiring="flywire")
+    c = Control(FakeOverlay(), r, prefs=Preferences.load(f))
+    c.hw.setCurrentIndex(1)                                         # CPU: no GPU scan before the change is applied
+    c.size.setValue(c.size.maximum())                               # any other change goes through _apply()
+    c._apply()
+    assert r.started and r.started[-1].mb_wiring == "flywire"
+    assert c.prefs.mb_wiring == "random"
+
+
+def test_env_var_asking_for_real_cells_that_are_not_built_says_so(app, monkeypatch, tmp_path):
+    from neuropest import control
+
+    monkeypatch.setattr(control, "wiring_usable", lambda path: path.exists())
+    monkeypatch.setattr(control, "MUSHROOM", tmp_path / "missing.npz")
+    monkeypatch.setenv("NEUROPEST_MB", "flywire")
+    c = Control(FakeOverlay(), FakeRunner())                        # app.py resolved this to the designed model
+    assert not c.mb_wiring_combo.isEnabled() and c._mb_wiring() == "random"
+    assert "missing" in c.mb_wiring_combo.toolTip()
+
+
+def test_a_damaged_real_wiring_file_locks_the_model_choice_and_says_so(app, monkeypatch, tmp_path):
+    from neuropest import control
+
+    bad = tmp_path / "mushroom_flywire.npz"
+    bad.write_bytes(b"")                                            # e.g. an interrupted copy
+    monkeypatch.delenv("NEUROPEST_MB", raising=False)
+    monkeypatch.setattr(control, "MUSHROOM", bad)
+    c = Control(FakeOverlay(), FakeRunner())
+    assert not c.mb_wiring_combo.isEnabled() and "damaged" in c.mb_wiring_combo.toolTip()

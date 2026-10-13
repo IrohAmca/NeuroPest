@@ -30,6 +30,7 @@ from PySide6.QtGui import (
 )
 from PySide6.QtWidgets import QToolTip, QWidget
 
+from .fly import TURN_GAIN
 from .mb_geometry import (
     DAN_PAM,
     DAN_PPL1,
@@ -108,11 +109,17 @@ class MushroomBody3DView(QWidget):
         self.rate_groom = 0.0
         self.cue_food = 0.0
         self.cue_near = 0.0
-        self.heading_angle = 0.0
+        self.heading_angle = 0.0    # steering integral: the compass only falls back to it without a runner heading
+        self._fly_heading = None    # the fly's real on-screen heading (rad) from the runner, None until it reports one
+        self._compass_kick = 0.0    # optogenetic offset of the compass bump (rad), relaxes back to the real heading
 
         # Memory buffer (per KC valence delta)
         self.kc_weights = np.zeros(self.data.n_kc, dtype=np.float32)
         self.active_kc_mask = np.zeros(self.data.n_kc, dtype=bool)
+        self._kc_glow = np.zeros(self.data.n_kc, dtype=np.float32)   # fades after a Kenyon cell fires (a moment of persistence)
+        self._kc_from_model = False     # the mask is the worker's real firing set (else an illustrative stand-in)
+        self._kc_fired_now = np.zeros(self.data.n_kc, dtype=bool)   # the set of the last published step (no fade)
+        self._kc_model_n = 0            # Kenyon cells of the running model (2,000 designed, 5,177 real); 0 = unknown
 
         # Pre-sliced geometry cache for fast rendering
         n_kc = self.data.n_kc
@@ -123,12 +130,15 @@ class MushroomBody3DView(QWidget):
         self._soma_lobes = self.data.kc_lobe[self._soma_indices]
 
         # Axon tracts: sample ~160 representative streamlines
-        tract_step = max(1, n_kc // 160)
+        tract_step = self._tract_step = max(1, n_kc // 160)
         self._tract_indices = np.arange(0, n_kc, tract_step)
         self._tract_soma = self.data.kc_soma[self._tract_indices]
         self._tract_ped = self.data.kc_ped[self._tract_indices]
         self._tract_target = self.data.kc_target[self._tract_indices]
         self._tract_lobes = self.data.kc_lobe[self._tract_indices]
+        # lit cells that the stride samples above would miss: drawn on top, so every firing cell shows
+        self._active_off_soma = np.zeros(0, dtype=np.int64)
+        self._active_off_tract = np.zeros(0, dtype=np.int64)
 
         # Wireframe pre-sliced segments
         self._wf_p1 = self.data.brain_wireframe[:, 0] if len(self.data.brain_wireframe) > 0 else np.zeros((0, 3), dtype=np.float32)
@@ -147,6 +157,7 @@ class MushroomBody3DView(QWidget):
         self._cx_pts = getattr(self.data, "cx_pts", np.zeros((0, 3), dtype=np.float32))
         self._cx_sub = getattr(self.data, "cx_sub", np.zeros(0, dtype=np.int8))
         self._cx_type = getattr(self.data, "cx_type", np.empty(0, dtype=str))
+        self._eb_ring = self._eb_ring_order()
 
         self._vpn_soma = getattr(self.data, "vpn_soma", np.zeros((0, 3), dtype=np.float32))
         self._vpn_target = getattr(self.data, "vpn_target", np.zeros((0, 3), dtype=np.float32))
@@ -405,6 +416,46 @@ class MushroomBody3DView(QWidget):
 
         return targets
 
+    # ------------------------------------------------------------------ compass
+    def _eb_ring_order(self) -> np.ndarray:
+        """Indices (into the CX arrays) of the Ellipsoid Body nodes in ring order.
+
+        The table lists them by cell type, not by position, so drawing them in table order gives a zig-zag and a bump
+        that jumps between unrelated places. Sort them by their angle around the centroid in the plane of best fit."""
+        pts, subs = self._cx_pts, self._cx_sub
+        if len(subs) != len(pts):
+            return np.zeros(0, dtype=np.int64)
+        idx = np.flatnonzero(subs == 0)
+        if len(idx) < 3:
+            return idx
+        p = np.asarray(pts[idx], dtype=np.float64)
+        p = p - p.mean(axis=0)
+        _, _, vt = np.linalg.svd(p, full_matrices=False)
+        plane = p @ vt[:2].T
+        return idx[np.argsort(np.arctan2(plane[:, 1], plane[:, 0]), kind="stable")]
+
+    def _compass_phase(self) -> float:
+        """Angle (rad) the E-PG bump sits at: the fly's real on-screen heading from the runner plus the decaying
+        optogenetic kick. Without a runner heading (standalone view, test doubles) it is the steering integral."""
+        base = self._fly_heading if self._fly_heading is not None else self.heading_angle
+        return (base + self._compass_kick) % (2 * math.pi)
+
+    def _eb_lit(self, n: int) -> np.ndarray:
+        """Which of the n ring positions the bump covers (within 0.45 rad of the compass phase)."""
+        if n <= 0:
+            return np.zeros(0, dtype=bool)
+        ang = np.arange(n) * (2 * math.pi / n)
+        return np.abs((ang - self._compass_phase() + math.pi) % (2 * math.pi) - math.pi) < 0.45
+
+    def _cx_rate(self, i: int) -> float:
+        """Illustrative rate of central-complex node i for the inspector: an EB node in the E-PG bump (the nodes the ring
+        draws white) 16 Hz, the rest of the ring 4 Hz; PB / FB nodes follow the compass phase."""
+        if i < len(self._cx_sub) and self._cx_sub[i] == 0:
+            ring_pos = np.flatnonzero(self._eb_ring == i)
+            if len(ring_pos):
+                return 16.0 if self._eb_lit(len(self._eb_ring))[ring_pos[0]] else 4.0
+        return 10.0 + 6.0 * math.cos(self._compass_phase())
+
     def _find_opto_target_at(self, pos: QPoint, threshold_px: float = 30.0) -> dict | None:
         """Find the closest optogenetic target within threshold_px of screen position."""
         targets = self._get_opto_targets()
@@ -436,6 +487,9 @@ class MushroomBody3DView(QWidget):
 
         # Deliver physiological stimulation to runner
         inj = target.get("inject", "")
+        if inj == "eb":
+            # a display-only perturbation of the compass bump: it relaxes back to the fly's real heading
+            self._compass_kick = (self._compass_kick + math.pi * 0.4 + math.pi) % (2 * math.pi) - math.pi
         if self.runner is not None and getattr(self.runner, "ready", False):
             if inj == "gf":
                 self.runner.inject_gf(intensity)
@@ -454,8 +508,6 @@ class MushroomBody3DView(QWidget):
             elif inj == "steer":
                 if hasattr(self.runner, "inject_optogenetic"):
                     self.runner.inject_optogenetic("steer", intensity)
-            elif inj == "eb":
-                self.heading_angle = (self.heading_angle + math.pi * 0.4) % (2 * math.pi)
 
         # Register visual flash ripple
         self._opto_flashes.append({
@@ -669,7 +721,8 @@ class MushroomBody3DView(QWidget):
                     "nt_color": QColor(56, 189, 248),
                     "pos_3d": pos_pt,
                     "target_3d": None,
-                    "rate_hz": f"{10.0 + 6.0 * math.cos(self.heading_angle):.1f} Hz",
+                    "rate_hz": f"{self._cx_rate(i):.1f} Hz",
+                    "cx_index": int(i),                  # a pinned card keeps following the bump (_on_tick)
                     "role": role,
                     "partners": part,
                     "color": QColor(56, 189, 248),
@@ -735,35 +788,60 @@ class MushroomBody3DView(QWidget):
                 }
             check_pts(self._alpn_soma, alpn_cb)
 
-        # 7. Kenyon Cells (KC)
+        # 7. Kenyon Cells (KC): the sampled somas, and the firing cells between them (drawn by the off-stride pass)
         if len(self._soma_pts) > 0 and self.layer_mb:
-            def kc_cb(i, s_pos):
-                real_idx = self._soma_indices[i]
-                kc_t = str(self.data.kc_type[real_idx]) if real_idx < len(self.data.kc_type) else "KC"
-                lobe = self._soma_lobes[i]
-                soma_pt = self._soma_pts[i]
-                target_pt = self.data.kc_target[real_idx] if real_idx < len(self.data.kc_target) else None
-                lobe_name = "Gamma Lobe" if lobe == 0 else ("Alpha/Beta Lobe" if lobe == 1 else "Alpha'/Beta' Lobe")
-
-                is_act = self.active_kc_mask[real_idx % len(self.active_kc_mask)] if len(self.active_kc_mask) > 0 else False
-                hz = "24.0 Hz (Spiking!)" if is_act else "0.5 Hz (Silent/Sparse)"
-
-                return {
-                    "name": f"Kenyon Cell ({kc_t})",
-                    "type": kc_t,
-                    "system": f"Mushroom Body ({lobe_name})",
-                    "nt": "ACh (Cholinergic)",
-                    "nt_color": QColor(56, 189, 248),
-                    "pos_3d": soma_pt,
-                    "target_3d": target_pt,
-                    "rate_hz": hz,
-                    "role": f"Sparse olfactory memory encoding in {lobe_name}",
-                    "partners": "In: Antennal PNs (Calyx) • Out: MBONs & DANs (Compartment)",
-                    "color": QColor(6, 182, 212) if lobe == 0 else (QColor(245, 158, 11) if lobe == 1 else QColor(217, 70, 239)),
-                }
-            check_pts(self._soma_pts, kc_cb)
+            check_pts(self._soma_pts, lambda i, s_pos: self._kc_card(int(self._soma_indices[i])))
+            lit = self._active_off_soma
+            if len(lit):
+                check_pts(self.data.kc_soma[lit], lambda i, s_pos: self._kc_card(int(lit[i])))
 
         return best
+
+    @staticmethod
+    def _same_card(a: dict | None, b: dict | None) -> bool:
+        """Inspector cards hold numpy positions, so `a != b` on two dicts can raise (ambiguous truth value of an array)."""
+        if a is None or b is None:
+            return a is b
+        return a.get("name") == b.get("name") and np.array_equal(np.asarray(a.get("pos_3d"), dtype=float),
+                                                                np.asarray(b.get("pos_3d"), dtype=float))
+
+    def _kc_status(self, real_idx: int) -> str:
+        """What the inspector says about Kenyon cell real_idx. The model gives a binary sparse code per mushroom-body
+        step (50 ms), not a rate in Hz; a cell keeps glowing for a moment after it fired."""
+        if not self._kc_from_model:
+            lit = bool(self.active_kc_mask[real_idx]) if real_idx < len(self.active_kc_mask) else False
+            return "Active (illustrative)" if lit else "Silent (illustrative)"
+        if real_idx < len(self._kc_fired_now) and self._kc_fired_now[real_idx]:
+            return "Active (fired in the last 50 ms step)"
+        if real_idx < len(self.active_kc_mask) and self.active_kc_mask[real_idx]:
+            return "Fading (fired a moment ago)"
+        return "Silent (sparse code)"
+
+    def _kc_card(self, real_idx: int) -> dict:
+        kc_t = str(self.data.kc_type[real_idx]) if real_idx < len(self.data.kc_type) else "KC"
+        lobe = int(self.data.kc_lobe[real_idx])
+        target_pt = self.data.kc_target[real_idx] if real_idx < len(self.data.kc_target) else None
+        lobe_name = "Gamma Lobe" if lobe == 0 else ("Alpha/Beta Lobe" if lobe == 1 else "Alpha'/Beta' Lobe")
+        return {
+            "name": f"Kenyon Cell ({kc_t})",
+            "type": kc_t,
+            "system": f"Mushroom Body ({lobe_name})",
+            "nt": "ACh (Cholinergic)",
+            "nt_color": QColor(56, 189, 248),
+            "pos_3d": self.data.kc_soma[real_idx],
+            "target_3d": target_pt,
+            "rate_hz": self._kc_status(real_idx),
+            "kc_index": real_idx,                    # a pinned card keeps following the cell (_on_tick)
+            "role": f"Sparse olfactory memory encoding in {lobe_name}",
+            "partners": "In: Antennal PNs (Calyx) • Out: MBONs & DANs (Compartment)",
+            "color": QColor(6, 182, 212) if lobe == 0 else (QColor(245, 158, 11) if lobe == 1 else QColor(217, 70, 239)),
+        }
+
+    def _kc_hud_text(self) -> str:
+        """The ACTIVE KC readout: active cells of the running model over that model's own cell count."""
+        n_model = self._kc_model_n or self.data.n_kc      # the running model's cells, not the 3D anatomy's
+        sparsity = (self.kc_active_count / max(1, n_model)) * 100
+        return f"{self.kc_active_count:,} / {n_model:,} ({sparsity:.1f}%)"
 
     def toggle_layer(self, name: str):
         """Toggle an anatomical layer on or off."""
@@ -790,6 +868,9 @@ class MushroomBody3DView(QWidget):
     def hideEvent(self, event):
         super().hideEvent(event)
         self._timer.stop()
+        if self._kc_from_model:          # no ticks while hidden: the glow would come back stale when shown again
+            self._kc_glow[:] = 0.0
+            self._set_active_kc_mask(np.zeros(self.data.n_kc, dtype=bool))
 
     def set_view_mode(self, mode: str):
         if mode in (MODE_VALENCE, MODE_PLASTICITY, MODE_ANATOMY, MODE_ACTIVITY):
@@ -837,9 +918,19 @@ class MushroomBody3DView(QWidget):
 
         dirty = self._fetch_telemetry()
 
-        # Dynamic heading angle tracking
-        if abs(self.rate_steer) > 0.1:
-            self.heading_angle = (self.heading_angle + self.rate_steer * dt * 0.15) % (2 * math.pi)
+        # Compass: the runner reports the fly's real heading; only without it integrate the steering command
+        # (at the body's own turn gain) so a standalone view still reacts to steering
+        if self._fly_heading is None and abs(self.rate_steer) > 0.1:
+            self.heading_angle = (self.heading_angle + self.rate_steer * dt * TURN_GAIN) % (2 * math.pi)
+        if self._kc_from_model and self._kc_glow.any():
+            self._kc_glow *= math.exp(-dt / 0.15)
+            if self._set_active_kc_mask(self._kc_glow > 0.2):
+                dirty = True
+        if self._compass_kick:
+            self._compass_kick *= math.exp(-dt / 1.5)
+            if abs(self._compass_kick) < 0.01:
+                self._compass_kick = 0.0
+            dirty = True
 
         # Refresh live firing rate on inspected card if present
         if self._inspected_neuron is not None:
@@ -860,12 +951,17 @@ class MushroomBody3DView(QWidget):
                 self._inspected_neuron["rate_hz"] = f"{self.cue_near * 55.0:.1f} Hz"
             elif "ALPN" in str(self._inspected_neuron.get("system", "")):
                 self._inspected_neuron["rate_hz"] = f"{self.cue_food * 45.0:.1f} Hz"
+            elif "cx_index" in self._inspected_neuron:
+                self._inspected_neuron["rate_hz"] = f"{self._cx_rate(self._inspected_neuron['cx_index']):.1f} Hz"
+            elif "kc_index" in self._inspected_neuron:
+                self._inspected_neuron["rate_hz"] = self._kc_status(self._inspected_neuron["kc_index"])
 
         # Check if animation or telemetry is active
         is_active = (
             self.auto_rotate
             or self._is_panning
             or bool(self._opto_flashes)
+            or self._compass_kick != 0.0
             or (time.perf_counter() - self._opto_status_time < 3.0)
             or self.pam > 0.02
             or self.ppl1 > 0.02
@@ -948,6 +1044,14 @@ class MushroomBody3DView(QWidget):
         self.cue_food = c_food
         self.cue_near = c_near
 
+        heading = st.get("heading")
+        if heading is not None:
+            heading = float(heading) % (2 * math.pi)
+            moved = self._fly_heading is None or abs(
+                (heading - self._fly_heading + math.pi) % (2 * math.pi) - math.pi) > 0.03
+            self._fly_heading = heading
+            dirty = dirty or moved
+
         # Check for updated KC weights
         new_dirty = st.get("weights_dirty", 0)
         if new_dirty != self.weights_dirty:
@@ -958,22 +1062,49 @@ class MushroomBody3DView(QWidget):
                 self.kc_weights[:n_cp] = w[:n_cp]
                 dirty = True
 
-        # Active KC indicators based on cue drives
-        cue_food = float(st.get("cue_food", 0.0))
-        cue_near = float(st.get("cue_near", 0.0))
-        has_active = self.kc_active_count > 0 or cue_food > 0.05 or cue_near > 0.05
-        if has_active:
-            if dirty or prev_kc != self.kc_active_count:
-                rng = np.random.default_rng(123)
-                prob = max(0.04, min(0.15, self.kc_active_count / max(1, self.data.n_kc)))
-                self.active_kc_mask = rng.uniform(0, 1, self.data.n_kc) < prob
+        # Which Kenyon cells fire. A runner that publishes the model's real set (Runner.get_kc_active) is authoritative:
+        # a cell stays lit for a moment after it fires, so a cue that moves between tuning bins does not shimmer. Runners
+        # without it (test doubles, a standalone view) get the illustrative stand-in below.
+        getter = getattr(self.runner, "get_kc_active", None)
+        if callable(getter):
+            self._kc_from_model = True
+            fired = getter()
+            self._kc_fired_now = np.zeros(self.data.n_kc, dtype=bool)
+            if fired is not None:
+                self._kc_model_n = len(fired)
+                n = min(len(fired), len(self._kc_glow))
+                self._kc_fired_now[:n] = fired[:n]
+                self._kc_glow[:n] = np.maximum(self._kc_glow[:n], fired[:n])
+            else:
+                self._kc_model_n = 0
+            if self._set_active_kc_mask(self._kc_glow > 0.2):
                 dirty = True
         else:
-            if np.any(self.active_kc_mask):
-                self.active_kc_mask.fill(False)
+            self._kc_from_model = False
+            cue_food = float(st.get("cue_food", 0.0))
+            cue_near = float(st.get("cue_near", 0.0))
+            has_active = self.kc_active_count > 0 or cue_food > 0.05 or cue_near > 0.05
+            if has_active:
+                if dirty or prev_kc != self.kc_active_count:
+                    rng = np.random.default_rng(123)         # fixed: an unseeded mask would strobe on every refresh
+                    prob = max(0.04, min(0.15, self.kc_active_count / max(1, self.data.n_kc)))
+                    self._set_active_kc_mask(rng.uniform(0, 1, self.data.n_kc) < prob)
+                    dirty = True
+            elif np.any(self.active_kc_mask):
+                self._set_active_kc_mask(np.zeros(self.data.n_kc, dtype=bool))
                 dirty = True
 
         return dirty
+
+    def _set_active_kc_mask(self, mask: np.ndarray) -> bool:
+        """Install a new firing mask; also index the lit cells that the soma / tract strides skip. True if it changed."""
+        if np.array_equal(mask, self.active_kc_mask):
+            return False
+        self.active_kc_mask = mask
+        lit = np.flatnonzero(mask)
+        self._active_off_soma = lit[lit % self._soma_step != 0]
+        self._active_off_tract = lit[lit % self._tract_step != 0]
+        return True
 
     # ------------------------------------------------------------------ 3D projection
     def _project_points(self, pts_3d: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
@@ -1145,18 +1276,22 @@ class MushroomBody3DView(QWidget):
         """Draw curved axon bundles connecting Calyx to anterior heel and lobes."""
         if len(self._tract_indices) == 0:
             return
+        self._draw_tract_set(p, self._tract_soma, self._tract_ped, self._tract_target,
+                             self.kc_weights[self._tract_indices], self._tract_lobes,
+                             self.active_kc_mask[self._tract_indices])
+        lit = self._active_off_tract
+        if len(lit):                    # firing cells between the sampled streamlines
+            self._draw_tract_set(p, self.data.kc_soma[lit], self.data.kc_ped[lit], self.data.kc_target[lit],
+                                 self.kc_weights[lit], self.data.kc_lobe[lit], np.ones(len(lit), dtype=bool))
 
-        sx, sy, _, _ = self._project_points(self._tract_soma)
-        px, py, _, _ = self._project_points(self._tract_ped)
-        tx, ty, _, _ = self._project_points(self._tract_target)
-
-        weights = self.kc_weights[self._tract_indices]
-        lobes = self._tract_lobes
-        active = self.active_kc_mask[self._tract_indices]
+    def _draw_tract_set(self, p: QPainter, soma, ped, target, weights, lobes, active):
+        sx, sy, _, _ = self._project_points(soma)
+        px, py, _, _ = self._project_points(ped)
+        tx, ty, _, _ = self._project_points(target)
 
         p.setBrush(Qt.NoBrush)
 
-        for i in range(len(self._tract_indices)):
+        for i in range(len(soma)):
             w_val = weights[i]
             is_on = active[i]
             lobe = lobes[i]
@@ -1272,6 +1407,23 @@ class MushroomBody3DView(QWidget):
                     p.setBrush(QBrush(halo_col))
                     p.drawEllipse(pt, base_r * 2.2, base_r * 2.2)
 
+        # 3. Firing cells that the stride sample skipped
+        lit = self._active_off_soma
+        if len(lit):
+            lx, ly, _, lp = self._project_points(self.data.kc_soma[lit])
+            lw, ll = self.kc_weights[lit], self.data.kc_lobe[lit]
+            p.setPen(Qt.NoPen)
+            for j in range(len(lit)):
+                base_r = max(1.8 * lp[j] * 1.8, 3.2)
+                col = self._color_for_neuron(lw[j], ll[j], True, alpha=255)
+                pt = QPointF(lx[j], ly[j])
+                p.setBrush(QBrush(col))
+                p.drawEllipse(pt, base_r, base_r)
+                halo_col = QColor(col)
+                halo_col.setAlpha(45)
+                p.setBrush(QBrush(halo_col))
+                p.drawEllipse(pt, base_r * 2.2, base_r * 2.2)
+
     # ------------------------------------------------------------------ dopamine
     def _draw_dopamine_clusters(self, p: QPainter):
         """Draw PAM (reward) and PPL1 (punishment) dopaminergic clusters."""
@@ -1367,10 +1519,9 @@ class MushroomBody3DView(QWidget):
         cx, cy, _, persp = self._project_points(self._cx_pts)
         subs = self._cx_sub
 
-        # 1. Ellipsoid Body (EB) Ring: Toroidal compass ring
-        eb_mask = subs == 0
-        if np.any(eb_mask):
-            eb_idx = np.flatnonzero(eb_mask)
+        # 1. Ellipsoid Body (EB) Ring: Toroidal compass ring (nodes in ring order, see _eb_ring_order)
+        eb_idx = self._eb_ring
+        if len(eb_idx) > 0:
             eb_cx = cx[eb_idx]
             eb_cy = cy[eb_idx]
 
@@ -1382,12 +1533,10 @@ class MushroomBody3DView(QWidget):
             if len(eb_idx) > 2:
                 p.drawLine(QPointF(float(eb_cx[-1]), float(eb_cy[-1])), QPointF(float(eb_cx[0]), float(eb_cy[0])))
 
-            # Draw E-PG compass neurons on the ring
-            heading_phase = (self._pulse_phase * 2 * math.pi) % (2 * math.pi)
+            # Draw E-PG compass neurons on the ring: the bump sits at the fly's heading
+            lit = self._eb_lit(len(eb_idx))
             for i in range(len(eb_idx)):
-                angle = (i / len(eb_idx)) * 2 * math.pi
-                diff = abs((angle - heading_phase + math.pi) % (2 * math.pi) - math.pi)
-                is_heading = diff < 0.45
+                is_heading = bool(lit[i])
 
                 if is_heading:
                     col = QColor(255, 255, 255, 250)
@@ -2167,8 +2316,7 @@ class MushroomBody3DView(QWidget):
 
             p.setFont(font_mono)
             p.setPen(QColor(236, 236, 241))
-            sparsity = (self.kc_active_count / max(1, self.data.n_kc)) * 100
-            p.drawText(k_x, my + 9, f"{self.kc_active_count:,} / {self.data.n_kc:,} ({sparsity:.1f}%)")
+            p.drawText(k_x, my + 9, self._kc_hud_text())
 
         # 4. MBON Balance
         m_x = k_x + 160
@@ -2422,7 +2570,7 @@ class MushroomBody3DView(QWidget):
             # Live inspect hover preview
             if self.tool_mode == "inspect" and not self._inspected_pinned:
                 neuron = self._find_neuron_at(pos, threshold_px=22.0)
-                if neuron != self._inspected_neuron:
+                if not self._same_card(neuron, self._inspected_neuron):
                     self._inspected_neuron = neuron
                     self.update()
 

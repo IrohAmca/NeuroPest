@@ -141,8 +141,8 @@ def test_positive_cursor_approach_does_not_flee():
     net = build(146, seed=42)
     brain = Brain(net)
 
-    # 1. When phero_drive > 0.05 (attractive cursor/food):
-    # Approaching with high closing speed must NOT trigger retreat or loom
+    # 1. A strong food odor (phero_drive x hunger >= brain.ODOR_GATE_FULL; hunger defaults to 1):
+    # Approaching with high closing speed must NOT trigger retreat or loom (a weaker odor only weakens them)
     brain.set_stimulus(dist=80.0, closing_speed=400.0, phero_drive=0.8, phero_steer=15.0)
     assert brain._loom_in == 0.0
     for _ in range(5):
@@ -172,3 +172,66 @@ def test_corner_sampling_zero_division_guard():
 
 
 
+
+
+# ------------------------------------------------------------------------------ food odor and the startle reflexes
+def test_odor_gate_falls_smoothly_from_full_sensitivity_to_none():
+    import numpy as np
+
+    from neuropest.brain import ODOR_GATE_FULL, odor_gate
+
+    assert odor_gate(0.0) == 1.0
+    assert 0.5 < odor_gate(0.05) < 1.0                   # the old cliff (0.05): a faint plume edge costs a part, not all
+    values = [odor_gate(x) for x in np.linspace(0.0, 1.5, 31)]
+    assert all(a >= b for a, b in zip(values, values[1:]))
+    assert odor_gate(ODOR_GATE_FULL) == 0.0 and odor_gate(5.0) == 0.0
+    assert odor_gate(0.2 * 1.0) == 0.0                   # the cursor's own lure at full hunger: silenced
+    assert 0.0 < odor_gate(0.15 * 0.35) < 1.0            # the plume edge at the default start hunger: partly reactive
+
+
+def test_food_odor_weakens_the_looming_input_in_proportion_to_its_strength():
+    import pytest
+
+    from neuropest.brain import Brain, odor_gate
+    from neuropest.toy_circuit import build
+
+    brain = Brain(build(146, seed=42))
+    brain.set_stimulus(dist=100.0, closing_speed=400.0)                       # 4 /s, no odor
+    assert brain._loom_in == pytest.approx(4.0)
+    for phero, hunger in ((0.05, 1.0), (0.1, 1.0), (0.2, 0.5), (0.3, 0.35)):
+        brain.set_stimulus(dist=100.0, closing_speed=400.0, phero_drive=phero, hunger=hunger)
+        assert brain._loom_in == pytest.approx(4.0 * odor_gate(phero * hunger))
+    brain.set_stimulus(dist=100.0, closing_speed=400.0, phero_drive=0.5, hunger=1.0)   # strong odor: fully calm
+    assert brain._loom_in == 0.0
+
+    # the looming drive on the cells follows the same factor (toy: loom_gain Hz per 1/s)
+    brain.set_stimulus(dist=100.0, closing_speed=400.0, phero_drive=0.1, hunger=1.0)
+    assert 0.0 < odor_gate(0.1) < 1.0
+    loom_cells = brain._cursor_fr[brain._cursor_slices[0]]
+    assert len(loom_cells) and loom_cells == pytest.approx(brain.spec.loom_gain * 4.0 * odor_gate(0.1))
+
+
+def test_a_satiated_fly_keeps_the_full_startle_whatever_it_smells():
+    import pytest
+
+    from neuropest.brain import Brain
+    from neuropest.toy_circuit import build
+
+    brain = Brain(build(146, seed=42))
+    brain.set_stimulus(dist=100.0, closing_speed=400.0, phero_drive=0.9, hunger=0.0)
+    assert brain._loom_in == pytest.approx(4.0)
+
+
+def test_a_startle_under_food_odor_does_not_teach_fear():
+    """The reflex is only weakened under a faint odor, but an escape that happens next to food is still not read as
+    punishment (the learning gate keeps its hard threshold)."""
+    from neuropest.brain import Brain, ODOR_LEARN_GATE
+    from neuropest.toy_circuit import build
+
+    brain = Brain(build(146, seed=42))
+    brain.set_stimulus(dist=900.0, closing_speed=0.0, phero_drive=0.3, hunger=0.4)     # 0.12 > ODOR_LEARN_GATE
+    assert 0.3 * 0.4 > ODOR_LEARN_GATE
+    brain.rates["GF"] = 120.0                                                          # a strong escape
+    for _ in range(20):
+        brain._learn(50.0)
+    assert brain._punish == 0.0

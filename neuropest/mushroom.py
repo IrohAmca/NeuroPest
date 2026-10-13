@@ -244,6 +244,27 @@ def load_wiring(path: str | Path) -> dict[str, np.ndarray]:
         return {k: z[k] for k in z.files}
 
 
+_USABLE: dict[tuple, bool] = {}
+
+
+def wiring_usable(path: str | Path | None = None) -> bool:
+    """The real wiring file exists and loads. A truncated or damaged file would otherwise be offered in the GUI while the
+    worker silently falls back to the random model (and its memory file). Cached per file version (mtime, size)."""
+    p = Path(path) if path is not None else MUSHROOM
+    try:
+        st = p.stat()
+    except OSError:
+        return False
+    key = (str(p), st.st_mtime_ns, st.st_size)
+    if key not in _USABLE:
+        try:
+            w = load_wiring(p)
+            _USABLE[key] = all(k in w for k in ("kc_id", "mbon_id", "pn_id", "kc_mbon_kc", "kc_mbon_mbon", "kc_mbon_n"))
+        except Exception:
+            _USABLE[key] = False
+    return _USABLE[key]
+
+
 class FlywireMushroomBody(MushroomBody):
     kind = "flywire"
 

@@ -1,5 +1,6 @@
 import time
 
+import numpy as np
 import pytest
 
 from neuropest.paths import CACHE, EYE, FIELD
@@ -230,3 +231,155 @@ def test_runner_optogenetic_injection_slots():
 
     r.inject_optogenetic("punish", 0.4)
     assert r.inp[I_INJECT_PUNISH] == 0.4
+
+
+# ------------------------------------------------------------------------- mushroom-body wiring choice and buffer
+def test_wiring_env_var_wins_over_the_preference_and_the_real_cells_need_their_file(monkeypatch, tmp_path):
+    from neuropest import paths, runner
+
+    from neuropest import mushroom
+
+    built = tmp_path / "mushroom_flywire.npz"
+    built.write_text("x", encoding="utf-8")
+    monkeypatch.setattr(paths, "MUSHROOM", built)
+    monkeypatch.setattr(mushroom, "wiring_usable", lambda path=None: path.exists())   # "built" stands for usable here
+    monkeypatch.delenv("NEUROPEST_MB", raising=False)
+    assert runner.effective_mb_wiring("random") == "random"
+    assert runner.effective_mb_wiring("flywire") == "flywire"
+    assert runner.effective_mb_wiring("nonsense") == "random"
+
+    monkeypatch.setenv("NEUROPEST_MB", "random")                    # forced both ways
+    assert runner.effective_mb_wiring("flywire") == "random"
+    monkeypatch.setenv("NEUROPEST_MB", "FlyWire")
+    assert runner.effective_mb_wiring("random") == "flywire"
+    if CACHE.exists():                                              # without the cache default_config() is the toy circuit
+        assert runner.default_config().mb_wiring == "flywire"
+
+    monkeypatch.setattr(paths, "MUSHROOM", tmp_path / "missing.npz")
+    assert runner.effective_mb_wiring("flywire") == "random"        # no file, no real cells (the worker would fall back)
+
+
+def test_weight_buffer_holds_every_kenyon_cell_of_the_real_model():
+    from types import SimpleNamespace
+
+    from neuropest import runner
+
+    assert runner.MB_WEIGHTS_LEN >= 5177                            # the real wiring has 5,177 KCs
+    zeros = runner.Runner.get_mb_weights(SimpleNamespace(mb_weights=None))
+    assert len(zeros) == runner.MB_WEIGHTS_LEN and not zeros.any()
+
+
+def test_runner_reports_the_firing_kenyon_cells_of_the_running_model():
+    import ctypes
+    from types import SimpleNamespace
+
+    import numpy as np
+
+    from neuropest import runner as rn
+
+    out = np.zeros(rn.OUT_LEN)
+    buf = (ctypes.c_byte * 8)(0, 1, 0, 1, 1, 0, 0, 0)
+    fake = SimpleNamespace(mb_active=buf, out=out)
+    assert rn.Runner.get_kc_active(fake) is None             # nothing published yet
+    out[rn.O_KC_N] = 5
+    got = rn.Runner.get_kc_active(fake)
+    assert got.dtype == bool and got.tolist() == [False, True, False, True, True]
+    assert rn.Runner.get_kc_active(SimpleNamespace(mb_active=None, out=out)) is None
+
+
+def test_worker_publishes_which_kenyon_cells_fire_for_which_cue():
+    r = Runner(EngineConfig(n=2_000, dt=0.5))                  # the designed model: 2,000 cells, 5% active
+    try:
+        assert _wait(lambda: r.ready, 90), "worker did not become ready"
+        from neuropest.runner import MB_WEIGHTS_LEN
+
+        assert len(np.frombuffer(r.mb_weights, np.float32)) == MB_WEIGHTS_LEN    # the buffers start() really allocates
+        assert len(np.frombuffer(r.mb_active, np.int8)) == MB_WEIGHTS_LEN
+        r.bias = 0.0
+        r.send(120, 0)                                        # the cursor close: the cursor cue is on
+        assert _wait(lambda: r.get_kc_active() is not None and r.get_kc_active().any(), 8.0)
+        near = r.get_kc_active()
+        assert len(near) == 2000 and 0 < near.sum() <= 200
+        r.inject_cue_food(1.0)                                # a food cue: a different pattern separates from it
+        r.send(120, 0)
+        assert _wait(lambda: r.get_kc_active() is not None and not np.array_equal(r.get_kc_active(), near), 8.0)
+    finally:
+        r.stop()
+
+
+def test_real_cells_beyond_the_first_2000_reach_the_3d_view():
+    """The shared valence buffer was 2,000 floats: the real model's Kenyon cells 2000..5176 never reached the view."""
+    from neuropest.paths import MUSHROOM
+
+    if not MUSHROOM.exists():
+        pytest.skip("data/circuits/mushroom_flywire.npz not built here")
+    r = Runner(EngineConfig(n=2_000, dt=0.5, mb_wiring="flywire"))
+    try:
+        assert _wait(lambda: r.ready, 90), "worker did not become ready"
+        assert _wait(lambda: r.get_kc_active() is not None, 10.0)
+        assert len(r.get_kc_active()) == 5177                 # the real model's cell count is published
+        r.send(900, 0)
+        for _ in range(6):                                     # food cue + reward: the real cells learn appetitive valence
+            r.inject_cue_food(1.0)
+            r.inject_reward(1.0)
+            time.sleep(0.3)
+        assert _wait(lambda: np.abs(r.get_mb_weights()[2000:5177]).max() > 0.0, 10.0)
+    finally:
+        r.stop()
+
+
+def test_stats_report_the_heading_the_gui_sent():
+    """The 3D compass reads stats()['heading']; without it the bump silently falls back to the steering integral."""
+    import math
+
+    from neuropest.runner import INP_LEN, O_READY, OUT_LEN, Runner
+
+    r = Runner.__new__(Runner)
+    r.inp = [0.0] * INP_LEN
+    r.out = [0.0] * OUT_LEN
+    r.out[O_READY] = 1.0
+    r.vision, r.preview, r.eye_height, r.bias, r.skittish = False, False, 100.0, 0.65, 1.0
+    r.capture = None
+    r.send(500.0, 0.0, pose=(10.0, 20.0, 1.25))
+    assert r.stats()["heading"] == 1.25
+    r.send(500.0, 0.0, pose=(10.0, 20.0, -math.pi / 2))
+    assert r.stats()["heading"] == -math.pi / 2
+
+
+def test_worker_passes_the_raw_closing_speed_and_the_brain_gates_it_by_odor():
+    """The worker used to zero the closing speed itself whenever odor x hunger > 0.05 (a second copy of the old cliff)."""
+    import numpy as np
+
+    from neuropest.brain import Brain, odor_gate
+    from neuropest.runner import (I_CLOSING, I_DIST, I_HUNGER, I_PHERO_DRIVE, I_SKITTISH, INP_LEN, OUT_LEN,
+                                  EngineConfig, _loop)
+    from neuropest.toy_circuit import build
+
+    class StopAfter:
+        def __init__(self, n):
+            self.n = n
+
+        def is_set(self):
+            self.n -= 1
+            return self.n < 0
+
+    net = build(146, 1)
+    brain = Brain(net, learning=False)
+    inp, out = np.zeros(INP_LEN), np.zeros(OUT_LEN)
+    inp[I_DIST], inp[I_CLOSING], inp[I_SKITTISH] = 100.0, 400.0, 1.0       # no stamp: the GUI number is used as given
+    inp[I_PHERO_DRIVE], inp[I_HUNGER] = 0.1, 1.0
+    _loop(EngineConfig("toy", 146, 0.5), brain, net, inp, out, StopAfter(3))
+    assert brain._stim[1] == 400.0
+    arousal = 1.0 + 0.5 * brain.arousal                                    # a startle may raise arousal meanwhile
+    assert brain._loom_in == pytest.approx(4.0 * arousal * odor_gate(0.1))
+    assert 0.0 < odor_gate(0.1) < 1.0
+
+
+def test_a_damaged_wiring_file_runs_the_designed_model(monkeypatch, tmp_path):
+    from neuropest import paths, runner
+
+    bad = tmp_path / "mushroom_flywire.npz"
+    bad.write_bytes(b"")
+    monkeypatch.setattr(paths, "MUSHROOM", bad)
+    monkeypatch.delenv("NEUROPEST_MB", raising=False)
+    assert runner.effective_mb_wiring("flywire") == "random"

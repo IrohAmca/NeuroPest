@@ -28,6 +28,7 @@ class Preferences:
     dt: float = 0.5                # time step in ms
     symmetry: str = "individual"   # "individual" or "symmetric"
     learning: bool = True          # mushroom body learning enabled
+    mb_wiring: str = "random"      # "random" (designed, 2,000 KCs) or "flywire" (real cells, 5,177 KCs; needs the npz)
 
     # Compute Hardware & GPU
     hardware: str = "auto"         # "auto", "cpu", "gpu"
@@ -109,6 +110,8 @@ class Preferences:
             self.symmetry = "individual"
         if self.hardware not in ("auto", "cpu", "gpu"):
             self.hardware = "auto"
+        if self.mb_wiring not in ("random", "flywire"):
+            self.mb_wiring = "random"
         if self.cursor_phero_mode not in ("attract", "repel", "none"):
             self.cursor_phero_mode = "attract"
 

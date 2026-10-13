@@ -32,10 +32,11 @@ from PySide6.QtGui import QColor, QFont, QIcon, QImage, QPainter
 
 from . import eyeview
 from .mb_view3d import MushroomBody3DView
-from .paths import CACHE, EYE, FIELD, SKIN_THUMBNAILS, TIERS
+from .mushroom import wiring_usable
+from .paths import CACHE, EYE, FIELD, MUSHROOM, SKIN_THUMBNAILS, TIERS
 from .preferences import Preferences
 from .render import AVAILABLE_SKINS, SKIN_METADATA
-from .runner import GPU_AUTO_MIN_NEURONS, EngineConfig, list_gpus, pick_gpu
+from .runner import GPU_AUTO_MIN_NEURONS, EngineConfig, list_gpus, mb_wiring_from_env, pick_gpu
 
 from .theme import ACCENT, BORDER, ERROR, FAINT, MUTED, STATE_STYLE
 
@@ -732,7 +733,11 @@ class Control(QWidget):
             "• Boundary Repulsion: A subtle invisible repellent field at the outer 18 px screen margin "
             "prevents the fly from leaving or getting lost outside the display bounds.\n\n"
             "• Cursor Attraction/Repulsion: Set to attractive to make the fly chase and land on your cursor; "
-            "set to repellent to make it run away from the cursor."
+            "set to repellent to make it run away from the cursor.\n\n"
+            "• Smell and Startle: a hungry fly that smells food reacts less to something approaching fast, in "
+            "proportion to the odor strength. While it approaches an attractive cursor or sits in the middle of a "
+            "plume it chases instead of fleeing; once it has eaten (right after a bite) it startles normally. A disabled "
+            "or repellent cursor carries no food scent, so only the food plumes still soften a hungry fly's startle."
         )
         desc_card.body.addWidget(_label(info_text, "Faint", wrap=True))
         lay.addWidget(desc_card)
@@ -857,7 +862,6 @@ class Control(QWidget):
         self.learn_enable = QCheckBox("Enable Learning")
         self.learn_enable.setToolTip("When disabled, the fly ceases updating synaptic weights; engine reloads.")
         self.learn_enable.setChecked(getattr(self.runner.cfg, "learning", True))
-        self.learn_enable.toggled.connect(lambda _: self._apply())
         ctrl_row.addWidget(self.learn_enable)
 
         ctrl_row.addStretch(1)
@@ -868,6 +872,24 @@ class Control(QWidget):
         ctrl_row.addWidget(self.forget_btn)
 
         card_sim.body.addLayout(ctrl_row)
+
+        # Which mushroom body learns: the designed 2,000-cell layer or the connectome's real cells
+        self.mb_wiring_options = [
+            ("random", "Designed model (2,000 Kenyon cells)"),
+            ("flywire", "Real FlyWire cells (5,177 Kenyon cells)"),
+        ]
+        self.mb_wiring_combo = QComboBox()
+        self.mb_wiring_combo.addItems([label for _, label in self.mb_wiring_options])
+        cur_wiring = getattr(self.runner.cfg, "mb_wiring", "random")
+        self.mb_wiring_combo.setCurrentIndex(1 if cur_wiring == "flywire" else 0)
+        self._sync_mb_wiring_enabled()
+        self.mb_wiring_combo.currentIndexChanged.connect(self._on_mb_wiring_changed)
+        self.learn_enable.toggled.connect(self._on_learning_toggled)
+        labeled(card_sim, "Mushroom Body Model", self.mb_wiring_combo)
+        card_sim.body.addWidget(_label(
+            "The engine reloads when this changes and each model keeps its own memory file. The real cells learn the "
+            "cursor cue more weakly; the cue-to-projection-neuron mapping is assumed (experimental).",
+            "Faint", wrap=True))
         lay.addWidget(card_sim)
 
         # 3. Scientific Anatomy & Function Card
@@ -890,6 +912,42 @@ class Control(QWidget):
         )
         desc_card.body.addWidget(_label(bio_text, "Faint", wrap=True))
         lay.addWidget(desc_card)
+
+    def _mb_wiring(self) -> str:
+        i = self.mb_wiring_combo.currentIndex()
+        return self.mb_wiring_options[i][0] if 0 <= i < len(self.mb_wiring_options) else "random"
+
+    def _sync_mb_wiring_enabled(self) -> None:
+        """The model can be chosen only while learning is on, the real cells are built, and no env var decides."""
+        forced = mb_wiring_from_env()
+        usable = wiring_usable(MUSHROOM)
+        state = "missing" if not MUSHROOM.exists() else "damaged"
+        if forced == "flywire" and not usable:
+            ok, why = False, (f"NEUROPEST_MB asks for the real cells, but data/circuits/mushroom_flywire.npz is {state}: "
+                              "the designed model runs (build it with tools/build_mushroom.py).")
+        elif forced is not None:
+            ok, why = False, f"Set by the NEUROPEST_MB environment variable ({forced})."
+        elif not usable:
+            ok, why = False, (f"The real cells need data/circuits/mushroom_flywire.npz, which is {state} "
+                              "(run tools/build_mushroom.py).")
+        elif not self.learn_enable.isChecked():
+            ok, why = False, "Learning is off."
+        else:
+            ok, why = True, ""
+        self.mb_wiring_combo.setEnabled(ok)
+        tip = ("Designed: 2,000 Kenyon cells with random calyx wiring (default). Real FlyWire cells: the Kenyon cells, "
+               "output, dopamine and projection neurons of the connectome (experimental).")
+        self.mb_wiring_combo.setToolTip(f"{tip}\n{why}" if why else tip)
+
+    def _on_learning_toggled(self, _checked: bool) -> None:
+        self._sync_mb_wiring_enabled()
+        self._apply()
+
+    def _on_mb_wiring_changed(self, _idx: int) -> None:
+        # saved here only: the user picked it. _apply() runs for every other change too and must not overwrite a saved
+        # choice with what happens to run now (the designed model while the real cells are missing, or an env override)
+        self.prefs.mb_wiring = self._mb_wiring()
+        self._apply()
 
     def _toggle_3d_view(self, visible: bool | None = None):
         """Toggle 3D neural network visualization on/off on demand to save resources."""
@@ -981,6 +1039,7 @@ class Control(QWidget):
                     self.circ.setCurrentIndex(0)
                     self.circ.blockSignals(False)
                     self._circuit_changed(0)
+                    self._sync_mb_wiring_enabled()          # the download also built the real mushroom-body cells
                     download_btn.setVisible(False)
 
             download_btn.clicked.connect(_trigger_download)
@@ -1355,7 +1414,7 @@ class Control(QWidget):
         sym = self.sym_options[self.sym_combo.currentIndex()][0]
         cfg = EngineConfig(self._kind(), n, DTS[self.dt.currentIndex()][1], backend=backend, adapter=adapter,
                            symmetry=sym, memory_path=self.runner.cfg.memory_path,
-                           learning=self.learn_enable.isChecked(), mb_wiring=self.runner.cfg.mb_wiring)
+                           learning=self.learn_enable.isChecked(), mb_wiring=self._mb_wiring())
         self.prefs.circuit = cfg.circuit
         self.prefs.neurons = cfg.n
         self.prefs.dt = cfg.dt

@@ -130,6 +130,18 @@ def download_all_raw(
         overall_downloaded = file_offset + p.stat().st_size
 
 
+def build_mushroom_wiring(raw_dir: Path, out: Path) -> bool:
+    """Step 3 of build_all_circuits: the real mushroom-body wiring (neuropest/mbbuild.py). False if it failed."""
+    try:
+        from .mbbuild import build
+
+        build(raw_dir=raw_dir, out=out)
+        return True
+    except Exception as exc:
+        _log.warning("Could not build biological mushroom body wiring: %s", exc)
+        return False
+
+
 def build_all_circuits(progress_cb: Callable[[float, str], None] | None = None) -> None:
     """Build FlyWire circuit tiers, eye optics, and mushroom body models."""
     from . import flywire
@@ -167,15 +179,8 @@ def build_all_circuits(progress_cb: Callable[[float, str], None] | None = None) 
     # 3. Mushroom Body Wiring
     if progress_cb:
         progress_cb(80.0, "Building real Mushroom Body associative wiring...")
-    try:
-        import sys
-        tools_path = Path(__file__).resolve().parents[1] / "tools"
-        if str(tools_path) not in sys.path:
-            sys.path.insert(0, str(tools_path))
-        import build_mushroom
-        build_mushroom.build(raw_dir=RAW_DIR, out=MUSHROOM)
-    except Exception as exc:
-        _log.warning("Could not build biological mushroom body wiring: %s", exc)
+    if not build_mushroom_wiring(RAW_DIR, MUSHROOM) and progress_cb:
+        progress_cb(85.0, "Real mushroom-body wiring could not be built (see the log); the designed model is used.")
 
     # 4. 3D Anatomical Geometry
     if progress_cb:

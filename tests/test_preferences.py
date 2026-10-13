@@ -64,6 +64,7 @@ def test_preferences_defaults():
     assert p.dt == 0.5
     assert p.symmetry == "individual"
     assert p.learning is True
+    assert p.mb_wiring == "random"
     assert p.hardware == "auto"
     assert p.scale == 1.0
     assert p.skin == "classic"
@@ -87,6 +88,7 @@ def test_preferences_save_and_load(tmp_path):
         dt=0.1,
         symmetry="symmetric",
         learning=False,
+        mb_wiring="flywire",
         hardware="gpu",
         gpu_name="RTX 4090",
         gpu_backend="Vulkan",
@@ -113,6 +115,7 @@ def test_preferences_save_and_load(tmp_path):
     assert loaded.dt == 0.1
     assert loaded.symmetry == "symmetric"
     assert loaded.learning is False
+    assert loaded.mb_wiring == "flywire"
     assert loaded.hardware == "gpu"
     assert loaded.gpu_name == "RTX 4090"
     assert loaded.gpu_backend == "Vulkan"
@@ -230,3 +233,11 @@ def test_preferences_save_when_file_locked(tmp_path):
     reloaded = Preferences.load(pref_file)
     assert reloaded.skin == "cyborg"
 
+
+
+def test_preferences_unknown_mb_wiring_falls_back_to_the_designed_model(tmp_path):
+    f = tmp_path / "wiring.json"
+    f.write_text(json.dumps({"mb_wiring": "quantum"}), encoding="utf-8")
+    assert Preferences.load(f).mb_wiring == "random"
+    f.write_text(json.dumps({"learning": True}), encoding="utf-8")        # a file from before the option existed
+    assert Preferences.load(f).mb_wiring == "random"
