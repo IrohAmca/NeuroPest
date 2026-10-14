@@ -6,11 +6,12 @@ from __future__ import annotations
 
 import numpy as np
 
+from .hostdrive import HostDrive
 from .network import Network
 from .params import LIFParams
 
 
-class ReferenceEngine:
+class ReferenceEngine(HostDrive):
     def __init__(self, net: Network, params: LIFParams = LIFParams(), dt: float = 0.5,
                  seed: int = 0, eps: float = 0.0):
         self.net, self.p, self.dt = net, params, float(dt)
@@ -27,36 +28,10 @@ class ReferenceEngine:
         self.b = f32(np.exp(-dt / params.tau_syn))
         self.c = f32(params.tau_syn / (params.tau_m - params.tau_syn))
         self.rng = np.random.default_rng(seed)
-        self.f_idx = np.zeros(0, np.int32)
-        self.f_p = np.zeros(0, f32)
-        self.c_idx = np.zeros(0, np.int32)
-        self.c_p = np.zeros(0, f32)
-        self.c_w = np.zeros(0, f32)
         self._rem = 0.0
         self.steps = 0
         self.total_spikes = 0
-
-    def set_drive(self, idx, rate_hz):
-        idx = np.asarray(idx, np.int32)
-        rate = np.broadcast_to(np.asarray(rate_hz, np.float32), idx.shape)
-        keep = rate > 0
-        self.f_idx = idx[keep]
-        self.f_p = (1.0 - np.exp(-rate[keep] * self.dt / 1000.0)).astype(np.float32)
-
-    def add_drive(self, idx, rate_hz):
-        prev_i, prev_p = self.f_idx, self.f_p
-        self.set_drive(idx, rate_hz)
-        self.f_idx = np.concatenate([prev_i, self.f_idx])
-        self.f_p = np.concatenate([prev_p, self.f_p])
-
-    def set_current_drive(self, idx, rate_hz, w_mv):
-        idx = np.asarray(idx, np.int32)
-        rate = np.broadcast_to(np.asarray(rate_hz, np.float32), idx.shape)
-        w = np.broadcast_to(np.asarray(w_mv, np.float32), idx.shape)
-        keep = rate > 0
-        self.c_idx = idx[keep]
-        self.c_p = (1.0 - np.exp(-rate[keep] * self.dt / 1000.0)).astype(np.float32)
-        self.c_w = np.ascontiguousarray(w[keep])
+        self._init_drive()
 
     def _emit(self, spk: np.ndarray, slot: int) -> None:
         net = self.net

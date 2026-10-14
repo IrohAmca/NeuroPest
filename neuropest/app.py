@@ -20,8 +20,9 @@ from PySide6.QtWidgets import QApplication, QWidget
 
 from .control import Control
 from .fly import FLY_MARGIN_PX, Fly, PlayArea, _wrap
+from .states import FLY
 from .metabolism import MetabolicState
-from .pheromone import PheromoneField
+from .pheromone import GoalTracker, PheromoneField
 from .preferences import Preferences
 from .render import RewardEffect, draw_fly, draw_reward_plus
 from .runner import EngineConfig, Runner, default_config, effective_mb_wiring
@@ -76,6 +77,7 @@ class Overlay(QWidget):
         self.pheromone.spawn_random_sources(self.play_area().screens, count=7)
         self.pheromone_enabled = bool(self.prefs.pheromone_enabled)
         self.cursor_phero_mode = self.prefs.cursor_phero_mode
+        self.goal = GoalTracker()  # the food source the fly would fly to (fixed during the flight)
         self.feed_effects: list[RewardEffect] = []
         self.feed_glow: float = 0.0
         self._last_cursor_reward: float = 0.0
@@ -139,7 +141,7 @@ class Overlay(QWidget):
         self._update_geometry()
         self.fly.clamp(self.play_area())
         if not self.pheromone.sources:
-            self.pheromone.spawn_random_sources(self.play_area().screens, count=7, attract_ratio=0.75)
+            self.pheromone.spawn_random_sources(self.play_area().screens, count=7)
 
     def _get_fly_rect(self, g) -> QRect:
         lx = int(self.fly.x - g.left())
@@ -210,24 +212,24 @@ class Overlay(QWidget):
         # Physical bearing of cursor relative to fly heading
         bearing = _wrap(math.atan2(pdy, pdx) - self.fly.heading)
 
+        # state and gear read once: the worker may change them between two reads (it writes the gear first)
+        state, gear = self.runner.state, self.runner.gear
+        long_flight = state == FLY and gear == "fly_long"
+
         # Update pheromone field, cursor attractant and sample bilateral antennae
         area = self.play_area()
+        target_radius = 28.0 * self.scale
         if self.pheromone_enabled:
             self.pheromone.update(dt)
             cursor_enabled = (self.cursor_phero_mode != "none")
             cursor_kind = self.cursor_phero_mode if cursor_enabled else "attract"
             self.pheromone.update_cursor(cur_x, cur_y, kind=cursor_kind, enabled=cursor_enabled)
-            ant = self.pheromone.sample_antennae(self.fly.x, self.fly.y, self.fly.heading, area,
-                                                 antenna_dist=12.0 * self.scale)
-
-            # Tropotaxis steering bias (Hz): attract delta (+) turns right, repel delta (+) turns left
-            phero_steer = ant["delta_attr"] * 180.0 - ant["delta_rep"] * 220.0
-            phero_drive = ant["total_attr"]
-            phero_repel = ant["total_rep"]
+            # bilateral antennae: tropotaxis steering bias (Hz), attractant and repellent intensity
+            phero_steer, phero_drive, phero_repel = self.pheromone.smell(self.fly.x, self.fly.y, self.fly.heading,
+                                                                         area, self.scale)
 
             # Check if arrived at any attractive source/nectar
             at_target = False
-            target_radius = 28.0 * self.scale
             for src in self.pheromone.sources:
                 if math.hypot(src.x - self.fly.x, src.y - self.fly.y) < target_radius:
                     at_target = True
@@ -242,28 +244,37 @@ class Overlay(QWidget):
                                                      screen_boxes=area.screens if hasattr(area, "screens") else None)
                 if consumed:
                     self.metabolism.feed()
+                    self.runner.note_fed()
                     self.feed_effects.append(RewardEffect(self.fly.x, self.fly.y))
                     self.feed_glow = 1.0
                 elif at_cursor and (now - self._last_cursor_reward > 3.0):
                     self._last_cursor_reward = now
                     self.metabolism.feed()
+                    self.runner.note_fed()
                     self.feed_effects.append(RewardEffect(self.fly.x, self.fly.y))
                     self.feed_glow = 1.0
+
+            # the food the fly would fly to: the brain decides whether to; during the flight it stays the same source
+            self.goal.update(self.pheromone, self.fly.x, self.fly.y, area, flying_to_it=long_flight)
         else:
             phero_steer = 0.0
             phero_drive = 0.0
             phero_repel = 0.0
             at_target = False
+            self.goal.source = None
 
         # Update metabolic energy depletion based on active state (fly burns ~16x rest)
-        self.metabolism.update(dt, self.runner.state)
+        self.metabolism.update(dt, state)
 
         # pose and cursor in screen px feed visual input; pheromone feeds antennae. The worker measures the cursor's
         # closing speed itself from the stamped samples (`closing` is only its fallback), and a food odor weakens the
         # startle reflexes there in proportion to its strength (brain.odor_gate): the attractive cursor is a lure only
         # while its own scent is strong at the fly, not at every distance.
         effective_cursor = (cur_x, cur_y)
-        self.fly.update(dt, self.runner.state, effective_cursor, area, self.runner.steer)
+        self.fly.update(dt, state, effective_cursor, area, self.runner.steer,
+                        mode="long" if long_flight else "", goal=self.goal.target(target_radius))
+        # the goal as the fly has it after this step
+        goal_gap, goal_bearing, goal_odor = self.goal.reading(self.fly.x, self.fly.y, self.fly.heading, target_radius)
 
         self.runner.send(dist, closing, bearing, touch,
                          (self.fly.x, self.fly.y, self.fly.heading), (cur_x, cur_y), stamp=now,
@@ -271,7 +282,8 @@ class Overlay(QWidget):
                          phero_steer=phero_steer, phero_drive=phero_drive,
                          phero_repel=phero_repel, at_target=at_target,
                          hunger=self.metabolism.hunger,
-                         wall_bump=self.fly.hit_wall)
+                         wall_bump=self.fly.hit_wall,
+                         goal_gap=goal_gap, goal_bearing=goal_bearing, goal_odor=goal_odor)
 
         # Update feeding animation and floating reward effects
         if self.feed_glow > 0.0:

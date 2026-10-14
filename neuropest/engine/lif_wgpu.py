@@ -23,7 +23,7 @@ import struct
 import numpy as np
 
 from .network import Network
-from .params import LIFParams
+from .params import REF_CLAMP, LIFParams
 
 FIX = 4096.0               # fixed-point scale of synaptic input (mV)
 MAX_STEPS = 128            # steps encoded per submission
@@ -142,6 +142,21 @@ fn gather(@builtin(global_invocation_id) gid: vec3<u32>) {
 }
 """
 
+_SETSTATE = """
+@group(0) @binding(0) var<storage, read_write> vg: array<vec2<f32>>;
+@group(0) @binding(1) var<storage, read_write> rft: array<f32>;
+@group(0) @binding(2) var<storage, read> uidx: array<u32>;
+@group(0) @binding(3) var<storage, read> uval: array<vec4<f32>>;
+@compute @workgroup_size(64)
+fn setstate(@builtin(global_invocation_id) gid: vec3<u32>) {
+    let q = gid.x;
+    if (q >= arrayLength(&uidx)) { return; }
+    let i = uidx[q];
+    vg[i] = uval[q].xy;
+    rft[i] = uval[q].z;
+}
+"""
+
 _APPLY = """
 @group(0) @binding(0) var<storage, read_write> drive: array<vec4<f32>>;
 @group(0) @binding(1) var<storage, read> uidx: array<u32>;
@@ -222,8 +237,11 @@ class WGPUEngine:
         self._wg_update = (n + 63) // 64
         self._W = int(min(scatter_groups, max(1, self._wg_update)))
         self._drive_idx = np.zeros(0, np.int64)          # neurons whose drive entry is nonzero on the device
-        self._f = (np.zeros(0, np.int64), np.zeros(0, np.float32))
-        self._c = (np.zeros(0, np.int64), np.zeros(0, np.float32), np.zeros(0, np.float32))
+        # the drive as set (raw) and as run (silenced neurons dropped: a forced spike would end their clamp)
+        self._f_raw = self._f = (np.zeros(0, np.int64), np.zeros(0, np.float32))
+        self._c_raw = self._c = (np.zeros(0, np.int64), np.zeros(0, np.float32), np.zeros(0, np.float32))
+        self._sil = np.zeros(n, np.bool_)
+        self._n_sil = 0
         self._gather_cache: dict = {}
         self._build(params)
 
@@ -313,6 +331,11 @@ class WGPUEngine:
         self.p_apply = dev.create_compute_pipeline(
             layout=dev.create_pipeline_layout(bind_group_layouts=[al]),
             compute={"module": dev.create_shader_module(code=_APPLY), "entry_point": "apply"})
+        sl = dev.create_bind_group_layout(entries=[entry(0, RW), entry(1, RW), entry(2, RO), entry(3, RO)])
+        self._setstate_layout = sl
+        self.p_setstate = dev.create_compute_pipeline(
+            layout=dev.create_pipeline_layout(bind_group_layouts=[sl]),
+            compute={"module": dev.create_shader_module(code=_SETSTATE), "entry_point": "setstate"})
 
     # ------------------------------------------------------------------ input
     @staticmethod
@@ -322,28 +345,79 @@ class WGPUEngine:
 
     def set_drive(self, idx, rate_hz) -> None:
         """Neurons `idx` emit Poisson spikes at `rate_hz` (forced, like Shiu's PoissonInput)."""
-        idx = np.asarray(idx, np.int64)
+        idx = np.array(idx, np.int64)
         rate, p = self._p_of(rate_hz, self.dt, idx)
         keep = rate > 0
-        self._f = (idx[keep], p[keep])
+        self._f_raw = (idx[keep], p[keep])
+        self._refilter()
         self._push_drive()
 
     def add_drive(self, idx, rate_hz) -> None:
-        prev_i, prev_p = self._f
-        idx = np.asarray(idx, np.int64)
+        prev_i, prev_p = self._f_raw
+        idx = np.array(idx, np.int64)
         rate, p = self._p_of(rate_hz, self.dt, idx)
         keep = rate > 0
-        self._f = (np.concatenate([prev_i, idx[keep]]), np.concatenate([prev_p, p[keep]]))
+        self._f_raw = (np.concatenate([prev_i, idx[keep]]), np.concatenate([prev_p, p[keep]]))
+        self._refilter()
         self._push_drive()
 
     def set_current_drive(self, idx, rate_hz, w_mv) -> None:
         """Poisson synaptic input: events at `rate_hz`, each adding `w_mv` to g of neurons `idx`."""
-        idx = np.asarray(idx, np.int64)
+        idx = np.array(idx, np.int64)
         rate, p = self._p_of(rate_hz, self.dt, idx)
         w = np.broadcast_to(np.asarray(w_mv, np.float32), idx.shape)
         keep = rate > 0
-        self._c = (idx[keep], p[keep], np.ascontiguousarray(w[keep]))
+        self._c_raw = (idx[keep], p[keep], np.array(w[keep]))
+        self._refilter()
         self._push_drive()
+
+    def _refilter(self) -> None:
+        """The drive the device runs: the raw drive minus the silenced neurons."""
+        fi, fp = self._f_raw
+        ci, cp, cw = self._c_raw
+        if self._n_sil:
+            kf, kc = ~self._sil[fi], ~self._sil[ci]
+            self._f = (fi[kf], fp[kf])
+            self._c = (ci[kc], cp[kc], cw[kc])
+        else:
+            self._f, self._c = self._f_raw, self._c_raw
+
+    def set_silenced(self, idx) -> None:
+        """Silence exactly the neurons `idx` (replaces the previous set; empty releases all): clamped refractory
+        (REF_CLAMP), their drive dropped; on release v and g go back to rest (see engine/hostdrive.py)."""
+        new = np.zeros(self.n, np.bool_)
+        new[np.asarray(idx, np.int64)] = True
+        on = np.flatnonzero(new & ~self._sil)
+        off = np.flatnonzero(self._sil & ~new)
+        self._sil = new
+        self._n_sil = int(new.sum())
+        changed = np.concatenate([on, off])
+        if len(changed):
+            vals = np.zeros((len(changed), 4), np.float32)
+            vals[:, 0] = self.p.v_rest
+            vals[:len(on), 2] = REF_CLAMP                   # g = 0 for both; refractory clamp for the new ones only
+            dev, U = self.dev, self._wgpu.BufferUsage
+            ibuf = dev.create_buffer_with_data(data=changed.astype(np.uint32), usage=U.STORAGE)
+            vbuf = dev.create_buffer_with_data(data=vals, usage=U.STORAGE)
+            bg = dev.create_bind_group(layout=self._setstate_layout, entries=[
+                {"binding": 0, "resource": {"buffer": self.vg}}, {"binding": 1, "resource": {"buffer": self.rft}},
+                {"binding": 2, "resource": {"buffer": ibuf}}, {"binding": 3, "resource": {"buffer": vbuf}}])
+            enc = dev.create_command_encoder()
+            cpass = enc.begin_compute_pass()
+            cpass.set_pipeline(self.p_setstate)
+            cpass.set_bind_group(0, bg)
+            cpass.dispatch_workgroups((len(changed) + 63) // 64)
+            cpass.end()
+            dev.queue.submit([enc.finish()])            # in queue order: between the chunks before and after
+            ibuf.destroy()
+            vbuf.destroy()
+        self._refilter()
+        self._push_drive()
+
+    @property
+    def silenced(self) -> np.ndarray:
+        """Indices of the silenced neurons."""
+        return np.flatnonzero(self._sil)
 
     def _push_drive(self) -> None:
         """Send only the drive entries that changed (a few KB) plus the bit mask of driven neurons."""

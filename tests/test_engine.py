@@ -110,3 +110,69 @@ def test_save_load_roundtrip(tmp_path):
     back = Network.load(tmp_path / "n.npz")
     assert np.array_equal(back.data, net.data) and np.array_equal(back.ids, net.ids)
     assert list(back.groups["x"]) == [1, 2]
+
+
+# ------------------------------------------------------------------ silencing (the lab's lesions)
+def _both(net, dt=0.1):
+    return [LIFEngine(net, dt=dt, eps=0.0), ReferenceEngine(net, dt=dt)]
+
+
+def test_a_silenced_neuron_does_not_spike_under_any_drive():
+    net = Network.from_coo([0], [1], [400.0], 3)            # 0 -> 1 with a kick far above threshold
+    for e in _both(net):
+        e.set_silenced([1, 2])
+        e.set_drive([0, 1], 1e9)                            # forced spikes, p == 1 every step (1 is silenced)
+        e.set_current_drive([2], 1e9, 60.0)                 # and a strong synaptic input on 2
+        e.advance(20.0)
+        assert e.counts[0] > 100, type(e).__name__          # the unsilenced driver fires every step
+        assert e.counts[1] == 0 and e.counts[2] == 0, type(e).__name__
+        assert e.silenced.tolist() == [1, 2]
+
+
+def test_release_restores_the_drive_without_a_burst():
+    net = Network.from_coo([0], [1], [80.0], 2)
+    for e in _both(net):
+        e.set_silenced([1])
+        e.set_drive([0], 1e9)
+        e.advance(20.0)                                     # input piles up on the clamped neuron's conductance
+        e.set_drive([0], 0.0)
+        e.advance(5.0)                                      # nothing in flight any more
+        e.set_silenced([])
+        assert e.g[1] == 0.0 and e.v[1] == np.float32(e.p.v_rest)
+        e.advance(30.0)
+        assert e.counts[1] == 0, type(e).__name__           # no burst from what it collected while clamped
+        e.set_silenced([0])
+        e.set_drive([0], 1e9)                               # set while silenced: kept for later, not run
+        e.advance(2.0)
+        before = int(e.counts[0])
+        e.set_silenced([])                                  # released: that drive is back without a new set_drive
+        e.advance(2.0)
+        assert e.counts[0] > before, type(e).__name__
+
+
+def test_drive_and_silencing_commute():
+    net = Network.random(50, seed=1)
+    a, b = LIFEngine(net), LIFEngine(net)
+    a.set_drive([1, 2, 3], 50.0)
+    a.add_drive([4, 5], 80.0)
+    a.set_current_drive([6, 2], 30.0, 2.0)
+    a.set_silenced([2, 5])
+    b.set_silenced([2, 5])
+    b.set_drive([1, 2, 3], 50.0)
+    b.add_drive([4, 5], 80.0)
+    b.set_current_drive([6, 2], 30.0, 2.0)
+    assert a.f_idx.tolist() == b.f_idx.tolist() == [1, 3, 4] and np.array_equal(a.f_p, b.f_p)
+    assert a.c_idx.tolist() == b.c_idx.tolist() == [6]
+
+
+def test_silencing_matches_reference():
+    net = Network.random(300, mean_deg=15, seed=3, gain=1.4)
+    drive, sil = np.arange(0, 300, 12), np.arange(5, 300, 9)
+    fast, ref = LIFEngine(net, dt=0.5, eps=0.0), ReferenceEngine(net, dt=0.5)
+    for e in (fast, ref):
+        e.set_silenced(sil)
+        _run_schedule(e, drive, 300, every=12)
+    assert ref.total_spikes > 300, "test network should actually propagate activity"
+    assert fast.counts[sil].sum() == 0 and ref.counts[sil].sum() == 0
+    assert abs(fast.total_spikes - ref.total_spikes) <= 0.02 * ref.total_spikes
+    assert np.corrcoef(fast.counts, ref.counts)[0, 1] > 0.98

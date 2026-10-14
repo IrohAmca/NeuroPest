@@ -572,123 +572,227 @@ def test_sensorimotor_signal_flow_and_rates(app):
     view._on_tick()
     assert view._pulse_phase > 0.1
 
-def test_virtual_optogenetics_targets_and_triggers(app):
-    """Test optogenetic ChR2 stimulation hubs, runner triggers, and visual ripple animation."""
-    data = load_mushroom_3d()
-    view = MushroomBody3DView(data=data)
-    view.resize(640, 480)
+class _Click:
+    def __init__(self, pos, btn=Qt.LeftButton, mod=Qt.NoModifier):
+        self._pos, self._btn, self._mod = pos, btn, mod
 
-    class MockRunner:
-        def __init__(self):
-            self.ready = True
-            self.calls = []
+    def pos(self):
+        return self._pos
 
-        def inject_gf(self, amt):
-            self.calls.append(("gf", amt))
+    def button(self):
+        return self._btn
 
-        def inject_mdn(self, amt):
-            self.calls.append(("mdn", amt))
-
-        def inject_walk(self, amt):
-            self.calls.append(("walk", amt))
-
-        def inject_reward(self, amt):
-            self.calls.append(("reward", amt))
-
-        def inject_punish(self, amt):
-            self.calls.append(("punish", amt))
-
-        def inject_cue_food(self, amt):
-            self.calls.append(("food", amt))
-
-        def inject_cue_near(self, amt):
-            self.calls.append(("near", amt))
-
-        def inject_optogenetic(self, tgt, amt):
-            self.calls.append((tgt, amt))
-
-    mock = MockRunner()
-    view.runner = mock
-
-    # 1. Inspect optogenetic targets
-    targets = view._get_opto_targets()
-    target_ids = {t["id"] for t in targets}
-    assert {"gf", "mdn", "walk", "steer", "pam", "ppl1", "alpn", "vpn", "eb"}.issubset(target_ids)
-
-    # 2. Trigger stimulation across major hubs
-    view.trigger_opto_stimulus("gf", intensity=1.0)
-    assert ("gf", 1.0) in mock.calls
-    assert len(view._opto_flashes) == 1
-    assert "Giant Fiber" in view._opto_status
-
-    view.trigger_opto_stimulus("mdn", intensity=0.8)
-    assert ("mdn", 0.8) in mock.calls
-    assert len(view._opto_flashes) == 2
-
-    view.trigger_opto_stimulus("walk", intensity=1.0)
-    assert ("walk", 1.0) in mock.calls
-
-    view.trigger_opto_stimulus("pam", intensity=1.0)
-    assert ("reward", 1.0) in mock.calls
-
-    view.trigger_opto_stimulus("ppl1", intensity=1.0)
-    assert ("punish", 1.0) in mock.calls
-
-    # 3. Render offscreen with active laser ripple flashes
-    img = QImage(640, 480, QImage.Format_ARGB32)
-    p = QPainter(img)
-    view.paintEvent(None)
-    p.end()
-    assert not img.isNull()
+    def modifiers(self):
+        return self._mod
 
 
-def test_virtual_optogenetics_tool_mode_and_mouse_click(app):
-    """Test tool mode selection and canvas click-to-stimulate interaction."""
-    view = MushroomBody3DView()
-    view.resize(640, 480)
+class _LabRunner:
+    """Runner double with the lab API: records the calls, reports what it was asked as applied."""
+    ready = True
 
-    class MockRunner:
-        def __init__(self):
-            self.ready = True
-            self.gf_called = False
+    def __init__(self):
+        self.calls = []
+        self.silenced = set()
+        self.stimulated = ()
 
-        def inject_gf(self, amt):
-            self.gf_called = True
+    def stats(self):
+        return dict(ready=True, valence=0.0, pam=0.0, ppl1=0.0, mbon_app=1.0, mbon_av=1.0, kc_active=0, gf=0.0,
+                    walk=0.0, mdn=0.0, steer=0.0, groom=0.0, cue_food=0.0, cue_near=0.0, weights_dirty=0,
+                    heading=0.0, state="stand")
 
-    mock = MockRunner()
-    view.runner = mock
+    def get_mb_weights(self):
+        return np.zeros(0, dtype=np.float32)
 
-    class FakeClick:
-        def __init__(self, pos, btn=Qt.LeftButton, mod=Qt.NoModifier):
-            self._pos = pos
-            self._btn = btn
-            self._mod = mod
-        def pos(self):
-            return self._pos
-        def button(self):
-            return self._btn
-        def modifiers(self):
-            return self._mod
+    def stimulate(self, group, intensity=1.0, ms=300.0):
+        self.calls.append(("stimulate", group, ms))
+        self.stimulated = (group,)
+        return True
 
-    # Default tool mode is camera
-    assert view.tool_mode == "camera"
+    def stop_stimulation(self):
+        self.calls.append(("stop",))
+        self.stimulated = ()
 
-    # Switch to opto tool mode
+    def silence(self, group, on=True):
+        self.calls.append(("silence", group, on))
+        (self.silenced.add if on else self.silenced.discard)(group)
+
+    def clear_lab(self):
+        self.calls.append(("clear",))
+        self.silenced.clear()
+
+    def inject_reward(self, amount=1.0):
+        self.calls.append(("reward", amount))
+
+    def lab_status(self):
+        from neuropest.states import LAB_GROUPS
+
+        sil = tuple(g for g in LAB_GROUPS if g in self.silenced)
+        return dict(available=LAB_GROUPS, silenced=sil, stimulated=self.stimulated, left_ms=0.0, gate=bool(sil),
+                    acked=True, asked_silenced=sil)
+
+    def lab_rates(self):
+        return {"LC4": 12.5}
+
+
+def _soma_pos(view, group):
+    x, y, _ = view._members_xy(group)
+    return QPoint(int(round(float(x[0]))), int(round(float(y[0]))))
+
+
+def _lab_view(runner=None):
+    view = MushroomBody3DView(data=load_mushroom_3d(), runner=runner or _LabRunner())
+    view.resize(900, 600)
+    view.layer_mb = view.layer_cx = view.layer_olfactory = False   # only the lab's neurons can be picked
+    return view
+
+
+def test_lab_targets_are_the_circuit_groups_with_their_drawn_neurons(app):
+    view = _lab_view()
+    assert {"GF", "MDN", "WALK", "DNa02_L", "DNa02_R", "GROOM", "LC4", "LPLC2", "LPC1", "LC10_L", "LC10_R"} <= set(
+        view._lab_members)
+    for group, (system, idx) in view._lab_members.items():
+        assert len(idx) and system in ("dn", "vpn")
+        assert view._target_at(_soma_pos(view, group), threshold_px=3.0)[0] == group
+
+
+def test_a_press_on_a_target_lights_it_while_held_and_a_miss_never_stimulates(app):
+    runner = _LabRunner()
+    view = _lab_view(runner)
     view.set_tool_mode("opto")
-    assert view.tool_mode == "opto"
+    view.mousePressEvent(_Click(QPoint(5, view.height() - 5)))      # empty space (no HUD there)
+    view.mouseReleaseEvent(_Click(QPoint(5, view.height() - 5)))
+    assert runner.calls == []                                        # a miss does nothing (it used to fire the GF)
+    pos = _soma_pos(view, "GF")
+    view.mousePressEvent(_Click(pos))
+    assert runner.calls == [("stimulate", "GF", 10_000.0)] and view._held[0] == "GF"
+    view._held = ("GF", view._held[1] - 1.0)                        # held for a second
+    view.mouseReleaseEvent(_Click(pos))
+    assert runner.calls[-1] == ("stop",) and view._held is None
+    assert "Giant Fiber" in view._status[0]
 
-    # Find screen coordinate for Giant Fiber target
-    gf_target = next(t for t in view._get_opto_targets() if t["id"] == "gf")
-    sx, sy, _, valid = view._project_points(np.array([gf_target["pos"]], dtype=np.float32))
-    assert valid[0]
 
-    # Click on the GF target location
-    click_pos = QPoint(int(sx[0]), int(sy[0]))
-    view.mousePressEvent(FakeClick(click_pos))
+def test_stimulation_and_silencing_are_sent_only_for_real_targets_of_a_running_engine(app):
+    runner = _LabRunner()
+    view = _lab_view(runner)
+    assert view.stimulate_target("MDN") and runner.calls[-1] == ("stimulate", "MDN", 300.0)
+    assert not view.stimulate_target("EB") and not view.stimulate_target("nope")
+    assert view.toggle_silence("LC4") and runner.calls[-1] == ("silence", "LC4", True)
+    view._fetch_telemetry()
+    assert view._lab["silenced"] == ("LC4",)
+    assert not view.stimulate_target("LC4")                         # silenced: light cannot make it spike
+    assert "silenced" in view._status[0]
+    assert view.toggle_silence("LC4") and runner.calls[-1] == ("silence", "LC4", False)
+    assert view.stimulate_target("reward") and runner.calls[-1] == ("reward", 1.0)   # a sandbox signal
+    n = len(runner.calls)
+    runner.ready = False
+    assert not view.stimulate_target("GF") and len(runner.calls) == n and view._status[2]   # warned, nothing sent
 
-    # Verification: GF stimulation triggered and flash registered
-    assert mock.gf_called
-    assert len(view._opto_flashes) >= 1
+
+def test_the_silence_tool_toggles_and_the_chips_release(app):
+    runner = _LabRunner()
+    view = _lab_view(runner)
+    view.set_tool_mode("silence")
+    pos = _soma_pos(view, "LPLC2")
+    view.mousePressEvent(_Click(pos))
+    view.mouseReleaseEvent(_Click(pos))
+    assert runner.calls[-1] == ("silence", "LPLC2", True)
+    view._fetch_telemetry()
+    view.grab()
+    assert "chip_LPLC2" in view._btn_rects and "release_all" in view._btn_rects
+    view.mousePressEvent(_Click(view._btn_rects["release_all"].center()))
+    assert runner.calls[-1] == ("clear",)
+
+
+def test_right_drag_pans_and_left_drag_orbits_in_every_tool_without_touching_the_lab(app):
+    for tool in ("camera", "opto", "silence"):
+        runner = _LabRunner()
+        view = _lab_view(runner)
+        view.set_tool_mode(tool)
+        start = QPoint(30, view.height() - 30)
+        view.mousePressEvent(_Click(start, Qt.RightButton))
+        view.mouseMoveEvent(_Click(QPoint(start.x() + 30, start.y() - 20)))
+        view.mouseReleaseEvent(_Click(QPoint(start.x() + 30, start.y() - 20), Qt.RightButton))
+        assert (view.pan_x, view.pan_y) == (30.0, -20.0), tool
+        yaw = view.yaw
+        view.mousePressEvent(_Click(start))
+        view.mouseMoveEvent(_Click(QPoint(start.x() + 40, start.y())))
+        view.mouseReleaseEvent(_Click(QPoint(start.x() + 40, start.y())))
+        assert view.yaw != yaw and runner.calls == [], tool
+
+
+def test_hovering_a_target_rings_its_group_and_says_what_a_press_does(app):
+    view = _lab_view()
+    view.set_tool_mode("opto")
+    view._fetch_telemetry()
+    view._check_hover(_soma_pos(view, "LC4"))
+    assert view._hover_target == "LC4" and "LC4" in view._hover_text and "12.5 Hz" in view._hover_text
+    view.grab()                                                      # the overlay draws the ring and the markers
+
+
+def test_hud_controls_never_overlap_at_any_width(app):
+    for w in range(480, 1141, 60):
+        view = MushroomBody3DView(data=load_mushroom_3d())
+        view.resize(w, 410)
+        view._lab["silenced"] = view._lab["asked_silenced"] = ("GF", "LC4")
+        view.grab()
+        rects = list(view._btn_rects.items())
+        for i, (a, ra) in enumerate(rects):
+            assert ra.right() < w and ra.bottom() < 410, (w, a)
+            for b, rb in rects[i + 1:]:
+                assert not ra.intersects(rb), (w, a, b)
+
+
+def test_vectorised_picking_matches_a_brute_force_search(app):
+    import math as _m
+
+    view = MushroomBody3DView(data=load_mushroom_3d())
+    view.resize(800, 520)
+    rng = np.random.default_rng(5)
+    for yaw in (-0.45, 0.8, 2.2):
+        view.yaw = yaw
+        systems = [(s, pts) for s, pts, vis in view._pick_sources() if vis and len(pts)]
+        for x, y in rng.uniform([0, 0], [800, 520], (60, 2)):
+            best = None
+            for system, pts in systems:
+                sx, sy, _, _ = view._project_points(pts)
+                for i in range(len(pts)):
+                    d = _m.hypot(x - sx[i], y - sy[i])
+                    if d <= 20.0 and (best is None or d < best[0]):
+                        best = (d, system, i)
+            got = view._pick(QPoint(int(x), int(y)), 20.0)
+            want = None if best is None else (best[1], best[2])
+            if want != got:                                         # only a tie in distance may differ
+                assert got is not None and want is not None
+            else:
+                assert got == want
+
+
+def test_the_scene_at_rest_is_rendered_once_per_camera_pose(app):
+    view = MushroomBody3DView(data=load_mushroom_3d())
+    view.resize(700, 420)
+    calls = []
+    real = view._paint_base
+    view._paint_base = lambda p: (calls.append(1), real(p))
+    view.grab()
+    view.grab()
+    assert len(calls) == 1                                          # the camera stood still
+    view.yaw += 0.2
+    view.grab()
+    assert len(calls) == 2
+
+
+def test_frame_pacing_backs_off_when_a_frame_is_expensive(app):
+    view = MushroomBody3DView()
+    view.resize(600, 400)
+    view.show()
+    app.processEvents()
+    view.pam = 0.75                                                  # something lives: fast frames ...
+    view._paint_ms = 5.0
+    view._on_tick()
+    assert view._timer.interval() == 33
+    view._paint_ms = 60.0                                            # ... unless a frame costs this much
+    view._on_tick()
+    assert view._timer.interval() >= 180
 
 
 def test_neuron_connectome_inspector_search_and_reticle(app):
@@ -724,12 +828,13 @@ def test_neuron_connectome_inspector_search_and_reticle(app):
     assert "Motor Descending" in found_neuron["system"]
     assert "partners" in found_neuron
 
-    # 2. Test tool mode switch to inspect
+    # 2. "inspect" is Explore: a click pins the card
     view.set_tool_mode("inspect")
-    assert view.tool_mode == "inspect"
+    assert view.tool_mode == "camera"
 
     # Click on the neuron position -> pins it
     view.mousePressEvent(FakeClick(QPoint(int(sx[0]), int(sy[0]))))
+    view.mouseReleaseEvent(FakeClick(QPoint(int(sx[0]), int(sy[0]))))
     assert view._inspected_pinned
     assert view._inspected_neuron is not None
 
@@ -869,23 +974,6 @@ def test_a_real_heading_stops_the_steering_integral(app):
     assert view.rate_steer == 20.0                 # steering is on: without the real heading this would integrate
     assert view.heading_angle == h0
     assert abs(view._compass_phase() - 2.5) < 1e-9
-
-
-def test_eb_kick_shifts_the_bump_for_a_moment_and_relaxes_back(app):
-    import time as _time
-
-    view = MushroomBody3DView(data=load_mushroom_3d(), runner=_HeadingRunner(2.0))
-    view.setVisible(True)
-    view._fetch_telemetry()
-    base = view._compass_phase()
-    view.trigger_opto_stimulus("eb")
-    shift = (view._compass_phase() - base + math.pi) % (2 * math.pi) - math.pi
-    assert abs(shift - 0.4 * math.pi) < 1e-9
-    for _ in range(100):                           # 10 s of 0.1 s ticks
-        view._last_tick = _time.perf_counter() - 0.1
-        view._on_tick()
-    assert view._compass_kick == 0.0
-    assert abs(view._compass_phase() - base) < 1e-9
 
 
 def test_eb_nodes_are_ordered_around_the_ring_whatever_the_table_order(app):
@@ -1148,3 +1236,16 @@ def test_hover_compares_inspector_cards_without_numpy_ambiguity(app):
     a["name"] = b["name"] = "Kenyon Cell (same type)"
     assert view._same_card(a, dict(a)) and not view._same_card(a, b)
     assert view._same_card(None, None) and not view._same_card(a, None) and not view._same_card(None, b)
+
+
+def test_keyboard_switches_tools_and_home_resets_the_camera(app):
+    from PySide6.QtCore import QEvent
+    from PySide6.QtGui import QKeyEvent
+
+    view = MushroomBody3DView(data=load_mushroom_3d())
+    for key, tool in ((Qt.Key_2, "opto"), (Qt.Key_3, "silence"), (Qt.Key_1, "camera")):
+        view.keyPressEvent(QKeyEvent(QEvent.KeyPress, key, Qt.NoModifier))
+        assert view.tool_mode == tool
+    view.yaw += 1.0
+    view.keyPressEvent(QKeyEvent(QEvent.KeyPress, Qt.Key_Home, Qt.NoModifier))
+    assert view.yaw == PRESET_ISOMETRIC[0]

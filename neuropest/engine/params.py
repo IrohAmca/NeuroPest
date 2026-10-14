@@ -2,6 +2,12 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+import numpy as np
+
+# Refractory time (ms) a silenced neuron is held at: while refractory a neuron integrates nothing and cannot cross the
+# threshold, on every engine. Finite, because WGSL may assume no inf / NaN; in float32 1e30 - dt == 1e30, so it never ends.
+REF_CLAMP = np.float32(1e30)
+
 
 @dataclass(frozen=True)
 class LIFParams:

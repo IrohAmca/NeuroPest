@@ -16,19 +16,22 @@ import time
 from typing import TYPE_CHECKING
 
 import numpy as np
-from PySide6.QtCore import QLineF, QPoint, QPointF, QRect, QRectF, QSize, Qt, QTimer
+from PySide6.QtCore import QLineF, QPoint, QPointF, QRect, QSize, Qt, QTimer
 from PySide6.QtGui import (
     QBrush,
     QColor,
     QFont,
+    QFontMetrics,
     QLinearGradient,
     QPainter,
     QPainterPath,
     QPen,
+    QPixmap,
     QPolygonF,
     QRadialGradient,
+    QTransform,
 )
-from PySide6.QtWidgets import QToolTip, QWidget
+from PySide6.QtWidgets import QMenu, QWidget
 
 from .fly import TURN_GAIN
 from .mb_geometry import (
@@ -41,14 +44,119 @@ from .mb_geometry import (
     load_mushroom_3d,
 )
 
+from .states import LAB_FULL_HZ
+
 if TYPE_CHECKING:
     from .runner import Runner
+
+# The lab's targets (Runner.stimulate / Runner.silence act on these spiking groups of the circuit): label, and what the
+# circuit is known to do when the group is driven (the effect itself comes from the simulation, not from this table)
+LAB_TARGETS = {
+    "GF": ("Giant Fiber (DNp01)", "escape take-off"),
+    "MDN": ("Moonwalker DNs (MDN)", "backward walking"),
+    "WALK": ("Walking DNs (DNp09)", "forward walking"),
+    "DNa02_L": ("DNa02, left", "a turn to the left"),
+    "DNa02_R": ("DNa02, right", "a turn to the right"),
+    "GROOM": ("Grooming DNs (aDN1/2)", "grooming"),
+    "LC4": ("LC4 looming cells", "Giant Fiber, take-off"),
+    "LPLC2": ("LPLC2 looming cells", "Giant Fiber, take-off"),
+    "LPC1": ("LPC1 retreat input", "MDN, backing away"),
+    "LC10_L": ("LC10, left", "DNa02 left, a turn"),
+    "LC10_R": ("LC10, right", "DNa02 right, a turn"),
+}
+# Designed signals of the learning sandbox, not neurons of the spiking circuit: they teach the mushroom body
+SANDBOX_TARGETS = {"reward": "PAM reward signal (designed)", "punish": "PPL1 punishment signal (designed)",
+                   "food": "food odor cue (designed)"}
+TOOLS = (("camera", "Explore"), ("opto", "Stimulate"), ("silence", "Silence"))
+LAB_PULSE_S = 0.3           # a click's light pulse; holding the button keeps the light on (the worker ends it at 10 s)
 
 # Visualization Modes
 MODE_VALENCE = "valence"        # Learned mental map (Valence: Red=Aversive, Green=Appetitive, Slate=Naive)
 MODE_PLASTICITY = "plasticity"  # Synaptic depression magnitude |Δw|
 MODE_ANATOMY = "anatomy"        # FlyWire biological lobe compartments & cell classes
 MODE_ACTIVITY = "activity"      # Live neural spikes & dopamine bursts
+
+# Drawing cost in Qt's raster engine (measured offscreen, dpr 1-1.5): a small antialiased dot costs 7-10 us as its own
+# drawEllipse, ~20 us inside one path that holds them all, and ~1 us as a pre-rendered sprite blitted at a whole device
+# pixel; a curve stroked thicker than 1 px leaves the fast cosmetic stroker and costs ~10x more. So dots are sprites and
+# curves use 1 px pens, many per path.
+_SPRITES: dict[tuple, tuple[QPixmap, int]] = {}
+
+
+def _dot_sprite(rgba: int, pen_rgba: int, pen_w: float, r: float, fx: float, fy: float) -> tuple[QPixmap, int]:
+    """An antialiased dot of radius r (device px) centred at (pad + fx, pad + fy) of a transparent pixmap, and pad."""
+    key = (rgba, pen_rgba, pen_w, r, fx, fy)
+    hit = _SPRITES.get(key)
+    if hit is None:
+        if len(_SPRITES) > 4096:                  # colours follow the learned weights: keep the cache bounded
+            _SPRITES.clear()
+        pad = math.ceil(r + pen_w + 1)
+        pm = QPixmap(2 * pad + 1, 2 * pad + 1)
+        pm.fill(Qt.transparent)
+        sp = QPainter(pm)
+        sp.setRenderHint(QPainter.Antialiasing)
+        sp.setBrush(QColor.fromRgba(rgba) if rgba else Qt.NoBrush)
+        sp.setPen(QPen(QColor.fromRgba(pen_rgba), pen_w) if pen_w > 0 else Qt.NoPen)
+        sp.drawEllipse(QPointF(pad + fx, pad + fy), r, r)
+        sp.end()
+        hit = _SPRITES[key] = (pm, pad)
+    return hit
+
+
+def _draw_dots(p: QPainter, xs, ys, rs) -> None:
+    """Circles in the painter's current brush (and pen, if any) at (xs, ys) with radii rs, in logical coordinates of a
+    painter without a world transform. Blitted from sprites at whole device pixels: centres snap to half a device pixel
+    and radii to a quarter, which the eye does not see at these sizes."""
+    xs = np.asarray(xs, dtype=np.float64)
+    if xs.size == 0:
+        return
+    dev = p.device()
+    dpr = dev.devicePixelRatioF() if dev is not None else 1.0
+    brush, pen = p.brush(), p.pen()
+    rgba = brush.color().rgba() if brush.style() != Qt.NoBrush else 0
+    pen_w = round(pen.widthF() * dpr * 4) / 4 if pen.style() != Qt.NoPen else 0.0
+    pen_rgba = pen.color().rgba() if pen_w > 0 else 0
+    if not rgba and not pen_rgba:
+        return
+    X = np.round(xs * dpr * 2) / 2
+    Y = np.round(np.asarray(ys, dtype=np.float64) * dpr * 2) / 2
+    ix, iy = np.floor(X), np.floor(Y)
+    R = np.round(np.broadcast_to(np.asarray(rs, dtype=np.float64), xs.shape) * dpr * 4) / 4
+    p.save()
+    p.setWorldTransform(QTransform.fromScale(1.0 / dpr, 1.0 / dpr))     # device pixels: the blit stays 1:1
+    for x, y, fx, fy, r in zip(ix.tolist(), iy.tolist(), (X - ix).tolist(), (Y - iy).tolist(), R.tolist()):
+        if r >= 0.25:
+            pm, pad = _dot_sprite(rgba, pen_rgba, pen_w, r, fx, fy)
+            p.drawPixmap(int(x) - pad, int(y) - pad, pm)
+    p.restore()
+
+
+def _curve_path(x0, y0, cx, cy, x1, y1) -> QPainterPath:
+    """One path with a quadratic curve (x0, y0) -> (x1, y1) through the control point (cx, cy) per element."""
+    path = QPainterPath()
+    cols = [np.asarray(a, dtype=np.float64).tolist() for a in (x0, y0, cx, cy, x1, y1)]
+    for a, b, c, d, e, f in zip(*cols):
+        path.moveTo(a, b)
+        path.quadTo(c, d, e, f)
+    return path
+
+
+def _rgba_groups(rgba: np.ndarray) -> list[tuple[QColor, np.ndarray]]:
+    """(colour, indices) for every distinct packed 0xAARRGGBB value in rgba."""
+    if len(rgba) == 0:
+        return []
+    uniq, inv = np.unique(rgba, return_inverse=True)
+    order = np.argsort(inv, kind="stable")
+    bounds = np.cumsum(np.bincount(inv, minlength=len(uniq)))[:-1]
+    return [(QColor.fromRgba(int(c)), idx) for c, idx in zip(uniq.tolist(), np.split(order, bounds))]
+
+
+def _pack_rgba(r, g, b, a) -> np.ndarray:
+    """Pack float channel arrays (truncated like int()) into 0xAARRGGBB."""
+    def ch(x):
+        return np.clip(np.asarray(x, dtype=np.float64), 0, 255).astype(np.uint32)
+    return (ch(a) << 24) | (ch(r) << 16) | (ch(g) << 8) | ch(b)
+
 
 # Camera Presets (yaw, pitch in radians)
 PRESET_ISOMETRIC = (-0.45, 0.35)
@@ -78,6 +186,14 @@ class MushroomBody3DView(QWidget):
         self.pan_y = 0.0
         self.auto_rotate = False
         self._cam_R: np.ndarray | None = None
+        self._cam_R_for: tuple[float, float] | None = None   # the (yaw, pitch) _cam_R was computed for
+
+        # Render caches: the scene that only moves with the camera is drawn once into a pixmap (the base layer) and the
+        # screen positions of the fixed point sets are kept per camera pose (the hit-test and the live layer reuse them)
+        self._base_cache: QPixmap | None = None
+        self._base_cache_key: tuple | None = None
+        self._proj_memo: dict[tuple, tuple] = {}
+        self._proj_key: tuple | None = None
 
 
         # Visual mode
@@ -111,7 +227,7 @@ class MushroomBody3DView(QWidget):
         self.cue_near = 0.0
         self.heading_angle = 0.0    # steering integral: the compass only falls back to it without a runner heading
         self._fly_heading = None    # the fly's real on-screen heading (rad) from the runner, None until it reports one
-        self._compass_kick = 0.0    # optogenetic offset of the compass bump (rad), relaxes back to the real heading
+        self.fly_state = ""         # the behavior state the runner reports (the status line shows what a pulse evoked)
 
         # Memory buffer (per KC valence delta)
         self.kc_weights = np.zeros(self.data.n_kc, dtype=np.float32)
@@ -178,19 +294,34 @@ class MushroomBody3DView(QWidget):
         self._pulse_phase = 0.0
         self._last_tick = time.perf_counter()
 
-        # Render timer (adaptive: 33ms active, 200ms idle)
+        # Render timer (adaptive, see _on_tick: 33 ms while something moves, slower when only the telemetry changes or
+        # a frame is expensive, 200 ms idle)
         self._timer = QTimer(self)
         self._timer.setInterval(33)
         self._timer.timeout.connect(self._on_tick)
+        self._paint_ms = 0.0                # smoothed cost of a frame
 
         # Interactive UI buttons on canvas (rectangles in screen coordinates)
         self._btn_rects: dict[str, QRect] = {}
+        self._fonts_cache: dict[str, QFont] | None = None
 
-        # Interactive Tools & Virtual Optogenetics
-        self.tool_mode = "camera"   # "camera", "opto", "inspect"
-        self._opto_flashes: list[dict] = []
-        self._opto_status = ""
-        self._opto_status_time = 0.0
+        # Tools: "camera" (Explore: orbit, hover, click to inspect), "opto" (Stimulate: press a target, the light stays on
+        # while the button is held), "silence" (click a target to silence or release it)
+        self.tool_mode = "camera"
+        self._press: tuple[QPoint, object, float] | None = None     # where / which button / when the mouse went down
+        self._dragging = False
+        self._held: tuple[str, float] | None = None   # the lab group lit by a held button, and since when
+        self._hover_pos: QPoint | None = None
+        self._hover_target: str | None = None         # lab group or sandbox action under the cursor
+        self._hover_card: dict | None = None
+        self._hover_scheduled = False
+        self._ripples: list[tuple[str, float, QColor]] = []   # (group, start, colour): one ring per action
+        self._status = ("", 0.0, False)               # status line: text, when, warning
+        self._pending: tuple[str, str, float, float] | None = None   # (group, action, when, fly state then)
+        self._lab = dict(available=(), silenced=(), stimulated=(), left_ms=0.0, gate=False, acked=True,
+                         asked_silenced=())
+        self._lab_rates: dict[str, float] = {}
+        self._lab_members = self._build_lab_members()
 
         # Neuron & Connectome Inspector
         self._inspected_neuron: dict | None = None
@@ -201,7 +332,8 @@ class MushroomBody3DView(QWidget):
         self._build_neuropil_volumes()
 
     def _build_neuropil_volumes(self):
-        """Construct 3D volumetric polygonal envelopes for key brain neuropils."""
+        """Ellipsoid envelopes for the key neuropils. Each keeps its centre and semi-axes, which is all the renderer
+        needs (an ellipsoid's outline on screen is an ellipse), and a coarse mesh for anything that wants the surface."""
         self._neuropil_volumes = []
 
         def build_ellipsoid(center, rx, ry, rz, n_lat=8, n_lon=10):
@@ -230,191 +362,219 @@ class MushroomBody3DView(QWidget):
             faces = np.array(faces, dtype=np.int32)
             return verts, faces
 
-        # 1. Antennal Lobes (AL-L & AL-R)
-        al_l_center = np.mean(self._alpn_soma[self._alpn_side == -1], axis=0) if np.any(self._alpn_side == -1) else np.array([-0.20, -0.15, -0.28], dtype=np.float32)
-        v, f = build_ellipsoid(al_l_center, 0.11, 0.11, 0.11)
-        self._neuropil_volumes.append({"id": "al_l", "name": "Left Antennal Lobe", "color": QColor(16, 185, 129), "vertices": v, "faces": f})
+        def add(vid, name, color, center, rx, ry, rz):
+            center = np.asarray(center, dtype=np.float64)
+            v, f = build_ellipsoid(center, rx, ry, rz)
+            self._neuropil_volumes.append({"id": vid, "name": name, "color": color, "vertices": v, "faces": f,
+                                           "center": center, "radii": np.array([rx, ry, rz], dtype=np.float64)})
 
-        al_r_center = np.mean(self._alpn_soma[self._alpn_side == 1], axis=0) if np.any(self._alpn_side == 1) else np.array([0.20, -0.15, -0.28], dtype=np.float32)
-        v, f = build_ellipsoid(al_r_center, 0.11, 0.11, 0.11)
-        self._neuropil_volumes.append({"id": "al_r", "name": "Right Antennal Lobe", "color": QColor(16, 185, 129), "vertices": v, "faces": f})
+        def side_mean(pts, side, which, fallback):
+            sel = pts[side == which] if len(side) == len(pts) else pts[:0]
+            return np.mean(sel, axis=0) if len(sel) else np.array(fallback, dtype=np.float32)
+
+        # 1. Antennal Lobes (AL-L & AL-R)
+        add("al_l", "Left Antennal Lobe", QColor(16, 185, 129),
+            side_mean(self._alpn_soma, self._alpn_side, -1, (-0.20, -0.15, -0.28)), 0.11, 0.11, 0.11)
+        add("al_r", "Right Antennal Lobe", QColor(16, 185, 129),
+            side_mean(self._alpn_soma, self._alpn_side, 1, (0.20, -0.15, -0.28)), 0.11, 0.11, 0.11)
 
         # 2. Mushroom Body Calyces (MB-CA-L & MB-CA-R)
-        ca_l_center = np.array(self.data.lobe_centers.get("calyx_left", (-0.25, -0.10, 0.28)), dtype=np.float32)
-        v, f = build_ellipsoid(ca_l_center, 0.13, 0.12, 0.11)
-        self._neuropil_volumes.append({"id": "ca_l", "name": "Left MB Calyx", "color": QColor(245, 158, 11), "vertices": v, "faces": f})
-
-        ca_r_center = np.array(self.data.lobe_centers.get("calyx_right", (0.25, -0.10, 0.28)), dtype=np.float32)
-        v, f = build_ellipsoid(ca_r_center, 0.13, 0.12, 0.11)
-        self._neuropil_volumes.append({"id": "ca_r", "name": "Right MB Calyx", "color": QColor(245, 158, 11), "vertices": v, "faces": f})
+        add("ca_l", "Left MB Calyx", QColor(245, 158, 11),
+            self.data.lobe_centers.get("calyx_left", (-0.25, -0.10, 0.28)), 0.13, 0.12, 0.11)
+        add("ca_r", "Right MB Calyx", QColor(245, 158, 11),
+            self.data.lobe_centers.get("calyx_right", (0.25, -0.10, 0.28)), 0.13, 0.12, 0.11)
 
         # 3. Mushroom Body Vertical & Medial Lobes
-        gamma_l_center = np.array(self.data.lobe_centers.get("gamma_left", (-0.10, 0.12, 0.05)), dtype=np.float32)
-        v, f = build_ellipsoid(gamma_l_center, 0.11, 0.14, 0.10)
-        self._neuropil_volumes.append({"id": "mb_lobe_l", "name": "Left MB Lobes", "color": QColor(6, 182, 212), "vertices": v, "faces": f})
-
-        gamma_r_center = np.array(self.data.lobe_centers.get("gamma_right", (0.10, 0.12, 0.05)), dtype=np.float32)
-        v, f = build_ellipsoid(gamma_r_center, 0.11, 0.14, 0.10)
-        self._neuropil_volumes.append({"id": "mb_lobe_r", "name": "Right MB Lobes", "color": QColor(6, 182, 212), "vertices": v, "faces": f})
+        add("mb_lobe_l", "Left MB Lobes", QColor(6, 182, 212),
+            self.data.lobe_centers.get("gamma_left", (-0.10, 0.12, 0.05)), 0.11, 0.14, 0.10)
+        add("mb_lobe_r", "Right MB Lobes", QColor(6, 182, 212),
+            self.data.lobe_centers.get("gamma_right", (0.10, 0.12, 0.05)), 0.11, 0.14, 0.10)
 
         # 4. Central Complex: Ellipsoid Body (EB)
         cx_eb = self._cx_pts[self._cx_sub == 0] if len(self._cx_sub) == len(self._cx_pts) else self._cx_pts
         eb_center = np.mean(cx_eb, axis=0) if len(cx_eb) > 0 else np.array([0.0, 0.05, 0.15], dtype=np.float32)
-        v, f = build_ellipsoid(eb_center, 0.10, 0.05, 0.10)
-        self._neuropil_volumes.append({"id": "eb", "name": "Ellipsoid Body", "color": QColor(56, 189, 248), "vertices": v, "faces": f})
+        add("eb", "Ellipsoid Body", QColor(56, 189, 248), eb_center, 0.10, 0.05, 0.10)
 
         # 5. Optic Lobes (Left & Right)
-        ol_l_center = np.mean(self._vpn_soma[self._vpn_side == -1], axis=0) if np.any(self._vpn_side == -1) else np.array([-0.52, 0.05, 0.0], dtype=np.float32)
-        v, f = build_ellipsoid(ol_l_center, 0.16, 0.22, 0.17)
-        self._neuropil_volumes.append({"id": "ol_l", "name": "Left Optic Lobe", "color": QColor(168, 85, 247), "vertices": v, "faces": f})
-
-        ol_r_center = np.mean(self._vpn_soma[self._vpn_side == 1], axis=0) if np.any(self._vpn_side == 1) else np.array([0.52, 0.05, 0.0], dtype=np.float32)
-        v, f = build_ellipsoid(ol_r_center, 0.16, 0.22, 0.17)
-        self._neuropil_volumes.append({"id": "ol_r", "name": "Right Optic Lobe", "color": QColor(168, 85, 247), "vertices": v, "faces": f})
+        add("ol_l", "Left Optic Lobe", QColor(168, 85, 247),
+            side_mean(self._vpn_soma, self._vpn_side, -1, (-0.52, 0.05, 0.0)), 0.16, 0.22, 0.17)
+        add("ol_r", "Right Optic Lobe", QColor(168, 85, 247),
+            side_mean(self._vpn_soma, self._vpn_side, 1, (0.52, 0.05, 0.0)), 0.16, 0.22, 0.17)
 
     def set_tool_mode(self, mode: str):
-        """Set active canvas tool mode ('camera', 'opto', 'inspect')."""
-        if mode in ("camera", "opto", "inspect"):
+        """Canvas tool: "camera" (Explore), "opto" (Stimulate), "silence" ("inspect" is Explore: a click pins the card)."""
+        mode = "camera" if mode == "inspect" else mode
+        if mode in ("camera", "opto", "silence"):
+            if self._held is not None:
+                self._release_held()
             self.tool_mode = mode
-            if mode == "opto":
-                self.setCursor(Qt.CrossCursor)
-            elif mode == "inspect":
-                self.setCursor(Qt.PointingHandCursor)
-            else:
-                self.setCursor(Qt.ArrowCursor)
+            self.setCursor(Qt.ArrowCursor)
+            self._hover_target = None
+            self._schedule_hover()
             self.update()
 
-    def _get_opto_targets(self) -> list[dict]:
-        """Return list of stimulatable circuit targets with authentic 3D positions and evoked behaviors."""
-        targets = []
-        # 1. Giant Fiber (DNp01 escape takeoff)
-        gf_mask = self._dn_type == "GF"
-        if np.any(gf_mask):
-            pos = np.mean(self._dn_soma[gf_mask], axis=0)
+    # ------------------------------------------------------------------ lab targets
+    def _build_lab_members(self) -> dict[str, tuple[str, np.ndarray]]:
+        """Which drawn neurons belong to each lab group: (system "dn" or "vpn", indices into that system's arrays)."""
+        dn_t = np.array([str(t) for t in self._dn_type], dtype=object)
+        dn_s = np.asarray(self._dn_side) if len(self._dn_side) == len(dn_t) else np.zeros(len(dn_t), np.int8)
+        vp_t = np.array([str(t) for t in self._vpn_type], dtype=object)
+        vp_s = np.asarray(self._vpn_side) if len(self._vpn_side) == len(vp_t) else np.zeros(len(vp_t), np.int8)
+        lc10 = np.array([t.startswith("LC10") for t in vp_t], dtype=bool)
+        members = {
+            "GF": ("dn", dn_t == "GF"), "MDN": ("dn", dn_t == "MDN"),
+            "WALK": ("dn", (dn_t == "WALK") | (dn_t == "DNp09")), "GROOM": ("dn", dn_t == "GROOM"),
+            "DNa02_L": ("dn", (dn_t == "DNa02") & (dn_s == -1)), "DNa02_R": ("dn", (dn_t == "DNa02") & (dn_s == 1)),
+            "LC4": ("vpn", vp_t == "LC4"), "LPLC2": ("vpn", vp_t == "LPLC2"), "LPC1": ("vpn", vp_t == "LPC1"),
+            "LC10_L": ("vpn", lc10 & (vp_s == -1)), "LC10_R": ("vpn", lc10 & (vp_s == 1)),
+        }
+        return {g: (sys_, np.flatnonzero(m)) for g, (sys_, m) in members.items() if np.any(m)}
+
+    def _group_of(self, system: str, i: int) -> str | None:
+        for group, (sys_, idx) in self._lab_members.items():
+            if sys_ == system and i in idx:
+                return group
+        return None
+
+    def _members_xy(self, group: str):
+        """Screen (x, y, persp) of a lab group's drawn neurons."""
+        system, idx = self._lab_members[group]
+        pts = self._dn_soma if system == "dn" else self._vpn_soma
+        sx, sy, _, persp = self._proj(pts)
+        return sx[idx], sy[idx], persp[idx]
+
+    def _target_at(self, pos: QPoint, threshold_px: float = 18.0) -> tuple[str | None, dict | None]:
+        """(lab group or sandbox action, card) of the neuron under the cursor among the ones a lab tool acts on."""
+        hit = self._pick(pos, threshold_px, systems=("dn", "vpn", "dan", "alpn"))
+        if hit is None:
+            return None, None
+        card = self._card(*hit)
+        return card.get("lab") or card.get("sandbox"), card
+
+    @staticmethod
+    def target_label(target: str) -> str:
+        if target in LAB_TARGETS:
+            return LAB_TARGETS[target][0]
+        return SANDBOX_TARGETS.get(target, target)
+
+    def _lab_call(self, name: str):
+        r = self.runner
+        fn = getattr(r, name, None) if r is not None else None
+        return fn if fn is not None and getattr(r, "ready", False) else None
+
+    def stimulate_target(self, target: str, hold: bool = False) -> bool:
+        """Light on a lab group (a LAB_PULSE_S pulse, or until _release_held with hold), or a sandbox signal. True if
+        something was sent; nothing is ever sent for an unknown target."""
+        if target in SANDBOX_TARGETS:
+            return self._sandbox(target)
+        if target not in LAB_TARGETS:
+            return False
+        label, effect = LAB_TARGETS[target]
+        if self._lab["available"] and target not in self._lab["available"]:
+            self._set_status(f"{label}: not in the running circuit", warn=True)
+            return False
+        if target in self._lab["silenced"]:
+            self._set_status(f"{label} is silenced: release it first (light cannot make it spike)", warn=True)
+            return False
+        fn = self._lab_call("stimulate")
+        if fn is None or not fn(target, 1.0, 10_000.0 if hold else LAB_PULSE_S * 1000.0):
+            self._set_status(f"{label}: not sent, the engine is not running", warn=True)
+            return False
+        hz = LAB_FULL_HZ.get(target, 0.0)
+        self._set_status(f"Light on {label}, {hz:.0f} Hz{' while held' if hold else f', {LAB_PULSE_S * 1000:.0f} ms'}"
+                         f"  (known effect: {effect})")
+        self._pending = (target, "stim", time.perf_counter(), 0.0)
+        self._pending_state = self.fly_state
+        self._ripples.append((target, time.perf_counter(), QColor(255, 120, 60)))
+        self._kick_timer()
+        return True
+
+    def _release_held(self) -> None:
+        """The button that holds the light came up: stop it, but never before a full pulse."""
+        group, t0 = self._held
+        self._held = None
+        left = LAB_PULSE_S - (time.perf_counter() - t0)
+        fn = self._lab_call("stop_stimulation")
+        if fn is None:
+            return
+        if left <= 0.0:
+            fn()
         else:
-            pos = np.array([0.0, 0.45, 0.25], dtype=np.float32)
-        targets.append({
-            "id": "gf",
-            "name": "Giant Fiber (DNp01)",
-            "action": "Takeoff Escape Reflex",
-            "pos": pos,
-            "color": QColor(0, 229, 255),
-            "inject": "gf",
-        })
+            QTimer.singleShot(int(left * 1000), lambda: self._held is None and fn())
 
-        # 2. Moonwalker (MDN backward moonwalk retreat)
-        mdn_mask = self._dn_type == "MDN"
-        if np.any(mdn_mask):
-            pos = np.mean(self._dn_soma[mdn_mask], axis=0)
-        else:
-            pos = np.array([-0.05, 0.35, 0.15], dtype=np.float32)
-        targets.append({
-            "id": "mdn",
-            "name": "Moonwalker DN (MDN)",
-            "action": "Backward Moonwalk Retreat",
-            "pos": pos,
-            "color": QColor(255, 23, 68),
-            "inject": "mdn",
-        })
+    def toggle_silence(self, target: str) -> bool:
+        if target not in LAB_TARGETS:
+            if target in SANDBOX_TARGETS:
+                self._set_status(f"{SANDBOX_TARGETS[target]} is a designed signal, not neurons: nothing to silence",
+                                 warn=True)
+            return False
+        label = LAB_TARGETS[target][0]
+        if self._lab["available"] and target not in self._lab["available"]:
+            self._set_status(f"{label}: not in the running circuit", warn=True)
+            return False
+        fn = self._lab_call("silence")
+        if fn is None:
+            self._set_status(f"{label}: not sent, the engine is not running", warn=True)
+            return False
+        on = target not in self._asked_silenced()
+        fn(target, on)
+        self._set_status(f"{label} silenced: its neurons cannot spike (learning paused while the lab is on)" if on
+                         else f"{label} released")
+        self._pending = (target, "silence" if on else "release", time.perf_counter(), 0.0)
+        self._ripples.append((target, time.perf_counter(), QColor(148, 163, 184) if on else QColor(56, 189, 248)))
+        self._base_cache_key = None
+        self._kick_timer()
+        return True
 
-        # 3. Walking Command (DNp09 / WALK)
-        walk_mask = np.isin(self._dn_type, ["DNp09", "WALK"])
-        if np.any(walk_mask):
-            pos = np.mean(self._dn_soma[walk_mask], axis=0)
-        else:
-            pos = np.array([0.08, 0.38, 0.18], dtype=np.float32)
-        targets.append({
-            "id": "walk",
-            "name": "Walking DN (DNp09)",
-            "action": "Forward Locomotion",
-            "pos": pos,
-            "color": QColor(118, 255, 3),
-            "inject": "walk",
-        })
+    def release_all(self) -> None:
+        fn = self._lab_call("clear_lab")
+        if fn is not None:
+            fn()
+            self._set_status("Every silenced group released")
+            self._pending = ("", "release_all", time.perf_counter(), 0.0)
 
-        # 4. Steering Command (DNa02)
-        steer_mask = self._dn_type == "DNa02"
-        if np.any(steer_mask):
-            pos = np.mean(self._dn_soma[steer_mask], axis=0)
-        else:
-            pos = np.array([0.15, 0.40, 0.22], dtype=np.float32)
-        targets.append({
-            "id": "steer",
-            "name": "Steering DN (DNa02)",
-            "action": "Asymmetric Steering Torque",
-            "pos": pos,
-            "color": QColor(255, 145, 0),
-            "inject": "steer",
-        })
+    def _asked_silenced(self) -> tuple[str, ...]:
+        return tuple(self._lab.get("asked_silenced", ())) or tuple(self._lab.get("silenced", ()))
 
-        # 5. PAM Dopamine Cluster (Reward)
-        if "pam_reward" in self.data.lobe_centers:
-            pos = np.array(self.data.lobe_centers["pam_reward"], dtype=np.float32)
-            targets.append({
-                "id": "pam",
-                "name": "PAM Cluster (DAN)",
-                "action": "Appetitive Sugar Reward",
-                "pos": pos,
-                "color": QColor(255, 215, 0),
-                "inject": "reward",
-            })
+    def _sandbox(self, action: str) -> bool:
+        names = {"reward": "inject_reward", "punish": "inject_punish", "food": "inject_cue_food"}
+        fn = self._lab_call(names[action])
+        label = SANDBOX_TARGETS[action]
+        if fn is None:
+            self._set_status(f"{label}: not sent, the engine is not running", warn=True)
+            return False
+        fn(1.0)
+        note = " (learning is paused while the lab is on)" if self._lab.get("gate") else ""
+        what = {"reward": "the cues present now are learned as good", "punish": "the cues present now are learned as bad",
+                "food": "the mushroom body sees the food odor for 0.8 s"}[action]
+        self._set_status(f"{label}: {what}{note}")
+        self._ripples.append((action, time.perf_counter(), QColor(250, 204, 21) if action != "punish" else QColor(239, 68, 68)))
+        self._kick_timer()
+        return True
 
-        # 6. PPL1 Dopamine Cluster (Punishment)
-        if "ppl1_punish" in self.data.lobe_centers:
-            pos = np.array(self.data.lobe_centers["ppl1_punish"], dtype=np.float32)
-            targets.append({
-                "id": "ppl1",
-                "name": "PPL1 Cluster (DAN)",
-                "action": "Nociceptive Pain Shock",
-                "pos": pos,
-                "color": QColor(255, 61, 113),
-                "inject": "punish",
-            })
+    def _target_xy(self, target: str) -> tuple[float, float] | None:
+        """Screen point a ripple / marker of a target is drawn at (its drawn neurons' centre)."""
+        if target in self._lab_members:
+            x, y, _ = self._members_xy(target)
+            return float(np.mean(x)), float(np.mean(y))
+        if target in ("reward", "punish"):
+            key = "pam_reward" if target == "reward" else "ppl1_punish"
+            if key in self.data.lobe_centers:
+                sx, sy, _, _ = self._project_points(np.array([self.data.lobe_centers[key]], dtype=np.float32))
+                return float(sx[0]), float(sy[0])
+        if target == "food" and len(self._alpn_soma):
+            sx, sy, _, _ = self._proj(self._alpn_soma)
+            return float(np.mean(sx)), float(np.mean(sy))
+        return None
 
-        # 7. Antennal Glomeruli / Food Odor PN
-        if len(self._alpn_soma) > 0:
-            pos = np.mean(self._alpn_soma, axis=0)
-        else:
-            pos = np.array([-0.25, -0.15, -0.3], dtype=np.float32)
-        targets.append({
-            "id": "alpn",
-            "name": "Antennal Glomeruli (ALPN)",
-            "action": "Appetitive Food Odor Cue",
-            "pos": pos,
-            "color": QColor(0, 230, 118),
-            "inject": "food",
-        })
+    def _set_status(self, text: str, warn: bool = False) -> None:
+        self._status = (text, time.perf_counter(), warn)
+        self.update()
 
-        # 8. Visual Looming Lobes (LC4 / LPLC2)
-        if len(self._vpn_soma) > 0:
-            pos = np.mean(self._vpn_soma, axis=0)
-        else:
-            pos = np.array([0.45, 0.1, -0.1], dtype=np.float32)
-        targets.append({
-            "id": "vpn",
-            "name": "Optic Lobes (LC4 / LPLC2)",
-            "action": "Predator Looming Alert",
-            "pos": pos,
-            "color": QColor(224, 64, 251),
-            "inject": "near",
-        })
-
-        # 9. Ellipsoid Body Ring (EB Compass)
-        cx_eb = self._cx_pts[self._cx_sub == 0] if len(self._cx_sub) == len(self._cx_pts) else self._cx_pts
-        if len(cx_eb) > 0:
-            pos = np.mean(cx_eb, axis=0)
-        else:
-            pos = np.array([0.0, 0.05, 0.15], dtype=np.float32)
-        targets.append({
-            "id": "eb",
-            "name": "Ellipsoid Body (EB)",
-            "action": "Compass Heading Kick",
-            "pos": pos,
-            "color": QColor(0, 176, 255),
-            "inject": "eb",
-        })
-
-        return targets
+    def _kick_timer(self) -> None:
+        if self._timer.interval() != 33:
+            self._timer.setInterval(33)
+        self.update()
 
     # ------------------------------------------------------------------ compass
     def _eb_ring_order(self) -> np.ndarray:
@@ -435,10 +595,10 @@ class MushroomBody3DView(QWidget):
         return idx[np.argsort(np.arctan2(plane[:, 1], plane[:, 0]), kind="stable")]
 
     def _compass_phase(self) -> float:
-        """Angle (rad) the E-PG bump sits at: the fly's real on-screen heading from the runner plus the decaying
-        optogenetic kick. Without a runner heading (standalone view, test doubles) it is the steering integral."""
+        """Angle (rad) the E-PG bump sits at: the fly's real on-screen heading from the runner. Without a runner heading
+        (standalone view, test doubles) it is the steering integral."""
         base = self._fly_heading if self._fly_heading is not None else self.heading_angle
-        return (base + self._compass_kick) % (2 * math.pi)
+        return base % (2 * math.pi)
 
     def _eb_lit(self, n: int) -> np.ndarray:
         """Which of the n ring positions the bump covers (within 0.45 rad of the compass phase)."""
@@ -448,354 +608,218 @@ class MushroomBody3DView(QWidget):
         return np.abs((ang - self._compass_phase() + math.pi) % (2 * math.pi) - math.pi) < 0.45
 
     def _cx_rate(self, i: int) -> float:
-        """Illustrative rate of central-complex node i for the inspector: an EB node in the E-PG bump (the nodes the ring
-        draws white) 16 Hz, the rest of the ring 4 Hz; PB / FB nodes follow the compass phase."""
+        """Illustrative rate of central-complex node i for the inspector (the central complex is not simulated as
+        spiking cells here): an EB node in the E-PG bump (drawn white) 16 Hz, the rest of the ring 4 Hz; PB / FB nodes
+        follow the compass phase."""
         if i < len(self._cx_sub) and self._cx_sub[i] == 0:
             ring_pos = np.flatnonzero(self._eb_ring == i)
             if len(ring_pos):
                 return 16.0 if self._eb_lit(len(self._eb_ring))[ring_pos[0]] else 4.0
         return 10.0 + 6.0 * math.cos(self._compass_phase())
 
-    def _find_opto_target_at(self, pos: QPoint, threshold_px: float = 30.0) -> dict | None:
-        """Find the closest optogenetic target within threshold_px of screen position."""
-        targets = self._get_opto_targets()
-        best_target = None
-        best_dist = float("inf")
-        for t in targets:
-            sx_arr, sy_arr, _, valid_arr = self._project_points(np.array([t["pos"]], dtype=np.float32))
-            if valid_arr[0]:
-                d = math.hypot(pos.x() - sx_arr[0], pos.y() - sy_arr[0])
-                if d <= threshold_px and d < best_dist:
-                    best_dist = d
-                    best_target = t
-        return best_target
+    # ------------------------------------------------------------------ picking and inspector cards
+    def _pick_sources(self):
+        """(system, points, visible) in the order picking breaks ties (the first wins)."""
+        return (("dn", self._dn_soma, self.layer_motor), ("dan", self.data.dan_pos, self.layer_mb),
+                ("mbon", self.data.mbon_pos, self.layer_mb), ("cx", self._cx_pts, self.layer_cx),
+                ("vpn", self._vpn_soma, self.layer_visual), ("alpn", self._alpn_soma, self.layer_olfactory),
+                ("kc", self._soma_pts, self.layer_mb))
 
-    def trigger_opto_stimulus(self, target: dict | str, intensity: float = 1.0):
-        """Trigger virtual optogenetic micro-stimulation on target circuit with ripple animation."""
-        if isinstance(target, str):
-            tid = target.lower()
-            all_t = self._get_opto_targets()
-            matched = next((t for t in all_t if t["id"] == tid), None)
-            if matched is None:
-                matched = next((t for t in all_t if tid in t["name"].lower()), None)
-            if matched is None:
-                matched = all_t[0] if all_t else None
-            target = matched
-
-        if target is None:
-            return
-
-        # Deliver physiological stimulation to runner
-        inj = target.get("inject", "")
-        if inj == "eb":
-            # a display-only perturbation of the compass bump: it relaxes back to the fly's real heading
-            self._compass_kick = (self._compass_kick + math.pi * 0.4 + math.pi) % (2 * math.pi) - math.pi
-        if self.runner is not None and getattr(self.runner, "ready", False):
-            if inj == "gf":
-                self.runner.inject_gf(intensity)
-            elif inj == "mdn":
-                self.runner.inject_mdn(intensity)
-            elif inj == "walk":
-                self.runner.inject_walk(intensity)
-            elif inj == "reward":
-                self.runner.inject_reward(intensity)
-            elif inj == "punish":
-                self.runner.inject_punish(intensity)
-            elif inj == "food":
-                self.runner.inject_cue_food(intensity)
-            elif inj == "near":
-                self.runner.inject_cue_near(intensity)
-            elif inj == "steer":
-                if hasattr(self.runner, "inject_optogenetic"):
-                    self.runner.inject_optogenetic("steer", intensity)
-
-        # Register visual flash ripple
-        self._opto_flashes.append({
-            "pos": target["pos"],
-            "color": target["color"],
-            "name": target["name"],
-            "action": target["action"],
-            "time": time.perf_counter(),
-            "duration": 0.9,
-            "intensity": intensity,
-        })
-
-        self._opto_status = f"ChR2: {target['name']} -> {target['action']}"
-        self._opto_status_time = time.perf_counter()
-
-        if self._timer.interval() != 33:
-            self._timer.setInterval(33)
-        self.update()
-
-    def _trigger_opto_at_screen_pos(self, pos: QPoint):
-        """Fallback stimulation at screen coordinate by selecting nearest brain centroid."""
-        target = self._find_opto_target_at(pos, threshold_px=80.0)
-        if target is not None:
-            self.trigger_opto_stimulus(target)
-        else:
-            targets = self._get_opto_targets()
-            if targets:
-                self.trigger_opto_stimulus(targets[0])
-
-    def _find_neuron_at(self, pos: QPoint, threshold_px: float = 24.0) -> dict | None:
-        """Find the closest neuron or circuit hub across all systems within screen threshold_px."""
+    def _pick(self, pos: QPoint, threshold_px: float = 24.0, systems=None) -> tuple[str, int] | None:
+        """(system, index) of the drawn neuron nearest to pos within threshold_px: one vectorised distance per system
+        on the screen positions kept for this camera pose (~0.1 ms; the old per-point loop cost ~3 ms a mouse move)."""
+        x, y = float(pos.x()), float(pos.y())
+        thr2 = threshold_px * threshold_px
         best = None
-        best_dist = float("inf")
 
-        def check_pts(pts_3d, callback):
-            nonlocal best, best_dist
-            if len(pts_3d) == 0:
+        def consider(system, sx, sy):
+            nonlocal best
+            if len(sx) == 0:
                 return
-            sx_arr, sy_arr, _, valid = self._project_points(pts_3d)
-            for i in range(len(pts_3d)):
-                if valid[i]:
-                    d = math.hypot(pos.x() - sx_arr[i], pos.y() - sy_arr[i])
-                    if d <= threshold_px and d < best_dist:
-                        cand = callback(i, (sx_arr[i], sy_arr[i]))
-                        if cand is not None:
-                            best_dist = d
-                            best = cand
+            d2 = (sx - x) ** 2 + (sy - y) ** 2
+            i = int(np.argmin(d2))
+            if d2[i] <= thr2 and (best is None or d2[i] < best[0]):
+                best = (float(d2[i]), system, i)
 
-        # 1. Descending Motor Neurons (DNs)
-        if len(self._dn_soma) > 0 and self.layer_motor:
-            def dn_cb(i, s_pos):
-                dn_t = str(self._dn_type[i]) if i < len(self._dn_type) else "DN"
-                target_pt = self._dn_target[i] if i < len(self._dn_target) else None
-                soma_pt = self._dn_soma[i]
+        for system, pts, visible in self._pick_sources():
+            if visible and len(pts) and (systems is None or system in systems):
+                sx, sy, _, _ = self._proj(pts)
+                consider(system, sx, sy)
+        if self.layer_mb and len(self._active_off_soma) and (systems is None or "kc" in systems):
+            sx, sy, _, _ = self._project_points(self.data.kc_soma[self._active_off_soma])
+            consider("kc_lit", sx, sy)                # firing cells between the drawn samples
+        return None if best is None else (best[1], best[2])
 
-                if dn_t == "GF":
-                    name = "Giant Fiber (DNp01 / GF)"
-                    role = "Ballistic takeoff escape reflex & jump initiation (< 5 ms)"
-                    hz = f"{self.rate_gf:.1f} Hz"
-                    nt = "ACh (Excitatory)"
-                    col = QColor(0, 229, 255)
-                    part = "In: LPLC2, LC4 Looming • Out: TTM Jump Motor, PSI Wing"
-                elif dn_t == "MDN":
-                    name = "Moonwalker DN (MDN)"
-                    role = "Evokes coordinated backward locomotion / retreat"
-                    hz = f"{self.rate_mdn:.1f} Hz"
-                    nt = "GABA (Inhibitory CPG)"
-                    col = QColor(255, 23, 68)
-                    part = "In: LPC1 visual • Out: Thoracic backward walking CPG"
-                elif dn_t in ("DNp09", "WALK"):
-                    name = f"Walking Command ({dn_t})"
-                    role = "Initiates and sustains forward walking locomotion"
-                    hz = f"{self.rate_walk:.1f} Hz"
-                    nt = "ACh (Excitatory)"
-                    col = QColor(118, 255, 3)
-                    part = "In: Central complex • Out: Leg central pattern generators"
-                elif dn_t == "DNa02":
-                    name = "Steering Command (DNa02)"
-                    role = "Bilateral asymmetric steering torque and body turning"
-                    hz = f"{abs(self.rate_steer):.1f} Hz"
-                    nt = "ACh (Excitatory)"
-                    col = QColor(255, 145, 0)
-                    part = "In: LC10 visual tracking • Out: Asymmetric leg motor bias"
-                else:
-                    name = f"Descending Motor Neuron ({dn_t})"
-                    role = "Motor command descending to ventral nerve cord"
-                    hz = f"{self.rate_groom:.1f} Hz" if "aDN" in dn_t else "Active"
-                    nt = "ACh (Cholinergic)"
-                    col = QColor(239, 68, 68)
-                    part = "In: Brain pre-motor • Out: Ventral nerve cord effector"
+    def _find_neuron_at(self, pos: QPoint, threshold_px: float = 24.0, systems=None) -> dict | None:
+        """Inspector card of the drawn neuron nearest to pos within threshold_px, or None."""
+        hit = self._pick(pos, threshold_px, systems)
+        return None if hit is None else self._card(*hit)
 
-                return {
-                    "name": name,
-                    "type": dn_t,
-                    "system": "Motor Descending (DN)",
-                    "nt": nt,
-                    "nt_color": QColor(56, 189, 248) if "ACh" in nt else QColor(249, 115, 22),
-                    "pos_3d": soma_pt,
-                    "target_3d": target_pt,
-                    "rate_hz": hz,
-                    "role": role,
-                    "partners": part,
-                    "color": col,
-                }
-            check_pts(self._dn_soma, dn_cb)
+    def _card(self, system: str, i: int) -> dict:
+        if system == "kc":
+            return self._kc_card(int(self._soma_indices[i]))
+        if system == "kc_lit":
+            return self._kc_card(int(self._active_off_soma[i]))
+        return {"dn": self._dn_card, "dan": self._dan_card, "mbon": self._mbon_card, "cx": self._cx_card,
+                "vpn": self._vpn_card, "alpn": self._alpn_card}[system](i)
 
-        # 2. Dopaminergic Reinforcement Clusters (DANs)
-        if len(self.data.dan_pos) > 0 and self.layer_mb:
-            def dan_cb(i, s_pos):
-                dan_t = str(self.data.dan_type[i]) if i < len(self.data.dan_type) else "DAN"
-                clus = self.data.dan_cluster[i] if i < len(self.data.dan_cluster) else 2
-                pos_pt = self.data.dan_pos[i]
-                if clus == DAN_PAM:
-                    name = f"PAM Dopamine Cluster ({dan_t})"
-                    role = "Appetitive reinforcement: sugar reward & learned attraction"
-                    hz = f"{self.pam * 40.0:.1f} Hz"
-                    col = QColor(255, 215, 0)
-                    part = "In: Gustatory sugar ORNs • Out: KC Kenyon cell synapses"
-                elif clus == DAN_PPL1:
-                    name = f"PPL1 Dopamine Cluster ({dan_t})"
-                    role = "Aversive reinforcement: electric shock, heat & wall collisions"
-                    hz = f"{self.ppl1 * 40.0:.1f} Hz"
-                    col = QColor(255, 61, 113)
-                    part = "In: Nociceptive threat sensors • Out: KC Kenyon cell synapses"
-                else:
-                    name = f"Dopaminergic Neuron ({dan_t})"
-                    role = "Neuromodulatory arousal and behavioral state gating"
-                    hz = "10.0 Hz"
-                    col = QColor(217, 70, 239)
-                    part = "In: Sensory neuropils • Out: Central brain"
+    def _dn_card(self, i: int) -> dict:
+        dn_t = str(self._dn_type[i]) if i < len(self._dn_type) else "DN"
+        group = self._group_of("dn", i)
+        rate, kind = self._dn_rate(dn_t, group)
+        nt = "ACh (Excitatory)"
+        if dn_t == "GF":
+            name, col = "Giant Fiber (DNp01 / GF)", QColor(0, 229, 255)
+            role = "Ballistic takeoff escape reflex & jump initiation (< 5 ms)"
+            part = "In: LPLC2, LC4 Looming • Out: TTM Jump Motor, PSI Wing"
+        elif dn_t == "MDN":
+            name, col = "Moonwalker DN (MDN)", QColor(255, 23, 68)
+            role = "Evokes coordinated backward locomotion / retreat"
+            part = "In: LPC1 visual • Out: Thoracic backward walking CPG"
+        elif dn_t in ("DNp09", "WALK"):
+            name, col = f"Walking Command ({dn_t})", QColor(118, 255, 3)
+            role = "Initiates and sustains forward walking locomotion"
+            part = "In: Central complex • Out: Leg central pattern generators"
+        elif dn_t == "DNa02":
+            name, col = f"Steering Command (DNa02, {'left' if group == 'DNa02_L' else 'right'})", QColor(255, 145, 0)
+            role = "Turns the fly toward its own side (asymmetric leg motor bias)"
+            part = "In: LC10 visual tracking • Out: Asymmetric leg motor bias"
+        elif dn_t == "GROOM":
+            name, col = "Grooming Command (aDN1/aDN2)", QColor(139, 92, 246)
+            role = "Antennal grooming evoked by touch of the head bristles"
+            part = "In: Head mechanosensory neurons • Out: Front-leg grooming"
+        else:
+            name, col = f"Descending Motor Neuron ({dn_t})", QColor(239, 68, 68)
+            role = "Motor command descending to ventral nerve cord"
+            part = "In: Brain pre-motor • Out: Ventral nerve cord effector"
+            nt = "ACh (Cholinergic)"
+        return {"name": name, "type": dn_t, "system": "Motor Descending (DN)", "nt": nt,
+                "nt_color": QColor(56, 189, 248), "pos_3d": self._dn_soma[i],
+                "target_3d": self._dn_target[i] if i < len(self._dn_target) else None,
+                "rate_hz": rate, "rate_kind": kind, "dn_index": int(i), "lab": group,
+                "role": role, "partners": part, "color": col}
 
-                return {
-                    "name": name,
-                    "type": dan_t,
-                    "system": "Mushroom Body Dopamine (DAN)",
-                    "nt": "DA (Dopaminergic)",
-                    "nt_color": QColor(255, 215, 0),
-                    "pos_3d": pos_pt,
-                    "target_3d": None,
-                    "rate_hz": hz,
-                    "role": role,
-                    "partners": part,
-                    "color": col,
-                }
-            check_pts(self.data.dan_pos, dan_cb)
+    def _dn_rate(self, dn_t: str, group: str | None) -> tuple[str, str]:
+        if group in ("DNa02_L", "DNa02_R") and group in self._lab_rates:
+            return f"{self._lab_rates[group]:.1f} Hz", "spikes"
+        live = {"GF": self.rate_gf, "MDN": self.rate_mdn, "WALK": self.rate_walk, "DNp09": self.rate_walk,
+                "GROOM": self.rate_groom}
+        if dn_t in live:
+            return f"{live[dn_t]:.1f} Hz", "spikes"
+        if dn_t == "DNa02":
+            return f"{abs(self.rate_steer):.1f} Hz", "R-L"
+        return "—", "not read"
 
-        # 3. Mushroom Body Output Neurons (MBONs)
-        if len(self.data.mbon_pos) > 0 and self.layer_mb:
-            def mbon_cb(i, s_pos):
-                mbon_t = str(self.data.mbon_type[i]) if i < len(self.data.mbon_type) else "MBON"
-                sign = self.data.mbon_sign[i] if i < len(self.data.mbon_sign) else 0
-                nt = str(self.data.mbon_nt[i]) if i < len(self.data.mbon_nt) else "ACh"
-                pos_pt = self.data.mbon_pos[i]
+    def _dan_card(self, i: int) -> dict:
+        dan_t = str(self.data.dan_type[i]) if i < len(self.data.dan_type) else "DAN"
+        clus = self.data.dan_cluster[i] if i < len(self.data.dan_cluster) else 2
+        if clus == DAN_PAM:
+            name, col, sandbox = f"PAM Dopamine Cluster ({dan_t})", QColor(255, 215, 0), "reward"
+            role = "Appetitive reinforcement: sugar reward & learned attraction"
+            hz, part = f"{self.pam * 40.0:.1f} Hz", "In: Gustatory sugar ORNs • Out: KC Kenyon cell synapses"
+        elif clus == DAN_PPL1:
+            name, col, sandbox = f"PPL1 Dopamine Cluster ({dan_t})", QColor(255, 61, 113), "punish"
+            role = "Aversive reinforcement: electric shock, heat & wall collisions"
+            hz, part = f"{self.ppl1 * 40.0:.1f} Hz", "In: Nociceptive threat sensors • Out: KC Kenyon cell synapses"
+        else:
+            name, col, sandbox = f"Dopaminergic Neuron ({dan_t})", QColor(217, 70, 239), None
+            role = "Neuromodulatory arousal and behavioral state gating"
+            hz, part = "—", "In: Sensory neuropils • Out: Central brain"
+        return {"name": name, "type": dan_t, "system": "Mushroom Body Dopamine (DAN)", "nt": "DA (Dopaminergic)",
+                "nt_color": QColor(255, 215, 0), "pos_3d": self.data.dan_pos[i], "target_3d": None,
+                "rate_hz": hz, "rate_kind": "designed", "sandbox": sandbox, "role": role, "partners": part,
+                "color": col}
 
-                if sign > 0:
-                    role = "Approach output pool: drives attraction toward learned odor"
-                    hz = f"{self.mbon_app * 18.0:.1f} Hz"
-                    col = QColor(16, 185, 129)
-                elif sign < 0:
-                    role = "Avoidance output pool: drives escape from learned danger"
-                    hz = f"{self.mbon_av * 18.0:.1f} Hz"
-                    col = QColor(239, 68, 68)
-                else:
-                    role = "Neutral / context-dependent behavioral gating"
-                    hz = "12.0 Hz"
-                    col = QColor(148, 163, 184)
+    def _mbon_card(self, i: int) -> dict:
+        mbon_t = str(self.data.mbon_type[i]) if i < len(self.data.mbon_type) else "MBON"
+        sign = self.data.mbon_sign[i] if i < len(self.data.mbon_sign) else 0
+        nt = str(self.data.mbon_nt[i]) if i < len(self.data.mbon_nt) else "ACh"
+        if sign > 0:
+            role, hz, col = ("Approach output pool: drives attraction toward learned odor",
+                             f"{self.mbon_app * 18.0:.1f} Hz", QColor(16, 185, 129))
+        elif sign < 0:
+            role, hz, col = ("Avoidance output pool: drives escape from learned danger",
+                             f"{self.mbon_av * 18.0:.1f} Hz", QColor(239, 68, 68))
+        else:
+            role, hz, col = "Neutral / context-dependent behavioral gating", "—", QColor(148, 163, 184)
+        nt_map = {"ACh": "ACh (Excitatory)", "GABA": "GABA (Inhibitory)", "Glu": "Glu (Glutamatergic)"}
+        nt_col = QColor(56, 189, 248) if nt == "ACh" else (QColor(249, 115, 22) if nt == "GABA" else QColor(234, 179, 8))
+        return {"name": f"Output Neuron ({mbon_t})", "type": mbon_t, "system": "Mushroom Body Output (MBON)",
+                "nt": nt_map.get(nt, nt), "nt_color": nt_col, "pos_3d": self.data.mbon_pos[i], "target_3d": None,
+                "rate_hz": hz, "rate_kind": "designed", "role": role,
+                "partners": "In: KC Kenyon cells • Out: Lateral horn & descending pre-motor", "color": col}
 
-                nt_map = {"ACh": "ACh (Excitatory)", "GABA": "GABA (Inhibitory)", "Glu": "Glu (Glutamatergic)"}
-                nt_full = nt_map.get(nt, nt)
-                nt_col = QColor(56, 189, 248) if nt == "ACh" else (QColor(249, 115, 22) if nt == "GABA" else QColor(234, 179, 8))
+    def _cx_card(self, i: int) -> dict:
+        cx_t = str(self._cx_type[i]) if i < len(self._cx_type) else "CX"
+        sub = self._cx_sub[i] if i < len(self._cx_sub) else 0
+        if sub == 0:
+            sub_name, role = "Ellipsoid Body (EB Ring)", "Internal compass heading: E-PG bump tracking fly orientation"
+            part = "In: Ring neurons, PB • Out: Steering pre-motor"
+        elif sub == 1:
+            sub_name, role = "Protocerebral Bridge (PB)", "Angular velocity integration & bilateral compass bridge"
+            part = "In: EB heading ring • Out: Central fan-shaped body"
+        else:
+            sub_name, role = "Fan-shaped Body (FB)", "Navigation vector calculation and goal-directed heading"
+            part = "In: Protocerebral bridge • Out: Premotor hubs"
+        return {"name": f"{sub_name} ({cx_t})", "type": cx_t, "system": "Central Complex (CX Navigation)",
+                "nt": "ACh / GABA", "nt_color": QColor(56, 189, 248), "pos_3d": self._cx_pts[i], "target_3d": None,
+                "rate_hz": f"{self._cx_rate(i):.1f} Hz", "rate_kind": "illustrative",
+                "cx_index": int(i),                      # a pinned card keeps following the bump (_on_tick)
+                "role": role, "partners": part, "color": QColor(56, 189, 248)}
 
-                return {
-                    "name": f"Output Neuron ({mbon_t})",
-                    "type": mbon_t,
-                    "system": "Mushroom Body Output (MBON)",
-                    "nt": nt_full,
-                    "nt_color": nt_col,
-                    "pos_3d": pos_pt,
-                    "target_3d": None,
-                    "rate_hz": hz,
-                    "role": role,
-                    "partners": "In: KC Kenyon cells • Out: Lateral horn & descending pre-motor",
-                    "color": col,
-                }
-            check_pts(self.data.mbon_pos, mbon_cb)
+    def _vpn_card(self, i: int) -> dict:
+        vpn_t = str(self._vpn_type[i]) if i < len(self._vpn_type) else "VPN"
+        group = self._group_of("vpn", i)
+        if group in self._lab_rates:
+            hz, kind = f"{self._lab_rates[group]:.1f} Hz", "spikes"
+        else:
+            hz, kind = "—", "not read"
+        if "LC4" in vpn_t or "LPLC2" in vpn_t:
+            role, col = "Detects expanding looming predators (direct input to Giant Fiber)", QColor(224, 64, 251)
+            part = "In: Lobula complex • Out: Giant Fiber (DNp01 escape)"
+        elif "LC10" in vpn_t:
+            role, col = "Tracks small high-contrast moving targets (drives DNa02 steering)", QColor(249, 115, 22)
+            part = "In: Lobula plate • Out: DNa02 steering command"
+        elif "LPC1" in vpn_t:
+            role, col = "Retreat input of the model: drives the moonwalker DNs (MDN)", QColor(168, 85, 247)
+            part = "In: Lobula plate • Out: MDN backward walking"
+        else:
+            role, col = "Visual feature projection from optic lobe to central brain", QColor(249, 115, 22)
+            part = "In: Optic lobes • Out: Posterior lateral protocerebrum"
+        return {"name": f"Visual Projection ({vpn_t})", "type": vpn_t, "system": "Optic Lobes (Visual VPN)",
+                "nt": "ACh (Excitatory)", "nt_color": QColor(56, 189, 248), "pos_3d": self._vpn_soma[i],
+                "target_3d": self._vpn_target[i] if i < len(self._vpn_target) else None,
+                "rate_hz": hz, "rate_kind": kind, "vpn_index": int(i), "lab": group, "role": role, "partners": part,
+                "color": col}
 
-        # 4. Central Complex Compass (CX)
-        if len(self._cx_pts) > 0 and self.layer_cx:
-            def cx_cb(i, s_pos):
-                cx_t = str(self._cx_type[i]) if i < len(self._cx_type) else "CX"
-                sub = self._cx_sub[i] if i < len(self._cx_sub) else 0
-                pos_pt = self._cx_pts[i]
-                if sub == 0:
-                    sub_name = "Ellipsoid Body (EB Ring)"
-                    role = "Internal compass heading: E-PG bump tracking fly orientation"
-                    part = "In: Ring neurons, PB • Out: Steering pre-motor"
-                elif sub == 1:
-                    sub_name = "Protocerebral Bridge (PB)"
-                    role = "Angular velocity integration & bilateral compass bridge"
-                    part = "In: EB heading ring • Out: Central fan-shaped body"
-                else:
-                    sub_name = "Fan-shaped Body (FB)"
-                    role = "Navigation vector calculation and goal-directed heading"
-                    part = "In: Protocerebral bridge • Out: Premotor hubs"
+    def _alpn_card(self, i: int) -> dict:
+        alpn_t = str(self._alpn_type[i]) if i < len(self._alpn_type) else "ALPN"
+        return {"name": f"Antennal Glomerulus ({alpn_t})", "type": alpn_t, "system": "Antennal Lobe (Olfactory PN)",
+                "nt": "ACh (Excitatory)", "nt_color": QColor(56, 189, 248), "pos_3d": self._alpn_soma[i],
+                "target_3d": self._alpn_target[i] if i < len(self._alpn_target) else None,
+                "rate_hz": f"{self.cue_food * 45.0:.1f} Hz", "rate_kind": "designed", "sandbox": "food",
+                "role": "Conveys uniglomerular odor identity from antenna to MB Calyx & LH",
+                "partners": "In: Olfactory receptor ORNs • Out: Kenyon Cells & Lateral Horn",
+                "color": QColor(16, 185, 129)}
 
-                return {
-                    "name": f"{sub_name} ({cx_t})",
-                    "type": cx_t,
-                    "system": "Central Complex (CX Navigation)",
-                    "nt": "ACh / GABA",
-                    "nt_color": QColor(56, 189, 248),
-                    "pos_3d": pos_pt,
-                    "target_3d": None,
-                    "rate_hz": f"{self._cx_rate(i):.1f} Hz",
-                    "cx_index": int(i),                  # a pinned card keeps following the bump (_on_tick)
-                    "role": role,
-                    "partners": part,
-                    "color": QColor(56, 189, 248),
-                }
-            check_pts(self._cx_pts, cx_cb)
-
-        # 5. Visual Projection Neurons (VPN)
-        if len(self._vpn_soma) > 0 and self.layer_visual:
-            def vpn_cb(i, s_pos):
-                vpn_t = str(self._vpn_type[i]) if i < len(self._vpn_type) else "VPN"
-                pos_pt = self._vpn_soma[i]
-                target_pt = self._vpn_target[i] if i < len(self._vpn_target) else None
-
-                if "LC4" in vpn_t or "LPLC2" in vpn_t:
-                    role = "Detects expanding looming predators (direct input to Giant Fiber)"
-                    hz = f"{self.cue_near * 55.0:.1f} Hz"
-                    col = QColor(224, 64, 251)
-                    part = "In: Lobula complex • Out: Giant Fiber (DNp01 escape)"
-                elif "LC10" in vpn_t:
-                    role = "Tracks small high-contrast moving targets (drives DNa02 steering)"
-                    hz = f"{abs(self.rate_steer) * 2.5:.1f} Hz"
-                    col = QColor(249, 115, 22)
-                    part = "In: Lobula plate • Out: DNa02 steering command"
-                else:
-                    role = "Visual feature projection from optic lobe to central brain"
-                    hz = "14.0 Hz"
-                    col = QColor(249, 115, 22)
-                    part = "In: Optic lobes • Out: Posterior lateral protocerebrum"
-
-                return {
-                    "name": f"Visual Projection ({vpn_t})",
-                    "type": vpn_t,
-                    "system": "Optic Lobes (Visual VPN)",
-                    "nt": "ACh (Excitatory)",
-                    "nt_color": QColor(56, 189, 248),
-                    "pos_3d": pos_pt,
-                    "target_3d": target_pt,
-                    "rate_hz": hz,
-                    "role": role,
-                    "partners": part,
-                    "color": col,
-                }
-            check_pts(self._vpn_soma, vpn_cb)
-
-        # 6. Antennal Lobe Projection Neurons (ALPN)
-        if len(self._alpn_soma) > 0 and self.layer_olfactory:
-            def alpn_cb(i, s_pos):
-                alpn_t = str(self._alpn_type[i]) if i < len(self._alpn_type) else "ALPN"
-                pos_pt = self._alpn_soma[i]
-                target_pt = self._alpn_target[i] if i < len(self._alpn_target) else None
-                return {
-                    "name": f"Antennal Glomerulus ({alpn_t})",
-                    "type": alpn_t,
-                    "system": "Antennal Lobe (Olfactory PN)",
-                    "nt": "ACh (Excitatory)",
-                    "nt_color": QColor(56, 189, 248),
-                    "pos_3d": pos_pt,
-                    "target_3d": target_pt,
-                    "rate_hz": f"{self.cue_food * 45.0:.1f} Hz",
-                    "role": "Conveys uniglomerular odor identity from antenna to MB Calyx & LH",
-                    "partners": "In: Olfactory receptor ORNs • Out: Kenyon Cells & Lateral Horn",
-                    "color": QColor(16, 185, 129),
-                }
-            check_pts(self._alpn_soma, alpn_cb)
-
-        # 7. Kenyon Cells (KC): the sampled somas, and the firing cells between them (drawn by the off-stride pass)
-        if len(self._soma_pts) > 0 and self.layer_mb:
-            check_pts(self._soma_pts, lambda i, s_pos: self._kc_card(int(self._soma_indices[i])))
-            lit = self._active_off_soma
-            if len(lit):
-                check_pts(self.data.kc_soma[lit], lambda i, s_pos: self._kc_card(int(lit[i])))
-
-        return best
+    def _refresh_card(self, card: dict) -> None:
+        """Live numbers of a shown card (pinned or hovered)."""
+        if "kc_index" in card:
+            card["rate_hz"] = self._kc_status(card["kc_index"])
+        elif "cx_index" in card:
+            card["rate_hz"] = f"{self._cx_rate(card['cx_index']):.1f} Hz"
+        elif "dn_index" in card:
+            card["rate_hz"], card["rate_kind"] = self._dn_rate(str(card.get("type", "")), card.get("lab"))
+        elif "vpn_index" in card:
+            g = card.get("lab")
+            if g in self._lab_rates:
+                card["rate_hz"], card["rate_kind"] = f"{self._lab_rates[g]:.1f} Hz", "spikes"
+        elif card.get("sandbox") == "reward":
+            card["rate_hz"] = f"{self.pam * 40.0:.1f} Hz"
+        elif card.get("sandbox") == "punish":
+            card["rate_hz"] = f"{self.ppl1 * 40.0:.1f} Hz"
+        elif card.get("sandbox") == "food":
+            card["rate_hz"] = f"{self.cue_food * 45.0:.1f} Hz"
 
     @staticmethod
     def _same_card(a: dict | None, b: dict | None) -> bool:
@@ -831,6 +855,7 @@ class MushroomBody3DView(QWidget):
             "pos_3d": self.data.kc_soma[real_idx],
             "target_3d": target_pt,
             "rate_hz": self._kc_status(real_idx),
+            "rate_kind": "model" if self._kc_from_model else "illustrative",
             "kc_index": real_idx,                    # a pinned card keeps following the cell (_on_tick)
             "role": f"Sparse olfactory memory encoding in {lobe_name}",
             "partners": "In: Antennal PNs (Calyx) • Out: MBONs & DANs (Compartment)",
@@ -868,6 +893,8 @@ class MushroomBody3DView(QWidget):
     def hideEvent(self, event):
         super().hideEvent(event)
         self._timer.stop()
+        if self._held is not None:      # a light held while the view goes away (popout closed, panel hidden)
+            self._release_held()
         if self._kc_from_model:          # no ticks while hidden: the glow would come back stale when shown again
             self._kc_glow[:] = 0.0
             self._set_active_kc_mask(np.zeros(self.data.n_kc, dtype=bool))
@@ -926,60 +953,28 @@ class MushroomBody3DView(QWidget):
             self._kc_glow *= math.exp(-dt / 0.15)
             if self._set_active_kc_mask(self._kc_glow > 0.2):
                 dirty = True
-        if self._compass_kick:
-            self._compass_kick *= math.exp(-dt / 1.5)
-            if abs(self._compass_kick) < 0.01:
-                self._compass_kick = 0.0
-            dirty = True
+        self._ripples = [r for r in self._ripples if now - r[1] < 0.7]
 
-        # Refresh live firing rate on inspected card if present
-        if self._inspected_neuron is not None:
-            t = str(self._inspected_neuron.get("type", ""))
-            if t == "GF":
-                self._inspected_neuron["rate_hz"] = f"{self.rate_gf:.1f} Hz"
-            elif t == "MDN":
-                self._inspected_neuron["rate_hz"] = f"{self.rate_mdn:.1f} Hz"
-            elif t in ("DNp09", "WALK"):
-                self._inspected_neuron["rate_hz"] = f"{self.rate_walk:.1f} Hz"
-            elif t == "DNa02":
-                self._inspected_neuron["rate_hz"] = f"{abs(self.rate_steer):.1f} Hz"
-            elif "PAM" in t:
-                self._inspected_neuron["rate_hz"] = f"{self.pam * 40.0:.1f} Hz"
-            elif "PPL1" in t:
-                self._inspected_neuron["rate_hz"] = f"{self.ppl1 * 40.0:.1f} Hz"
-            elif "LC4" in t or "LPLC2" in t:
-                self._inspected_neuron["rate_hz"] = f"{self.cue_near * 55.0:.1f} Hz"
-            elif "ALPN" in str(self._inspected_neuron.get("system", "")):
-                self._inspected_neuron["rate_hz"] = f"{self.cue_food * 45.0:.1f} Hz"
-            elif "cx_index" in self._inspected_neuron:
-                self._inspected_neuron["rate_hz"] = f"{self._cx_rate(self._inspected_neuron['cx_index']):.1f} Hz"
-            elif "kc_index" in self._inspected_neuron:
-                self._inspected_neuron["rate_hz"] = self._kc_status(self._inspected_neuron["kc_index"])
+        # live numbers on the shown cards
+        for card in (self._inspected_neuron, self._hover_card):
+            if card is not None:
+                self._refresh_card(card)
 
-        # Check if animation or telemetry is active
-        is_active = (
-            self.auto_rotate
-            or self._is_panning
-            or bool(self._opto_flashes)
-            or self._compass_kick != 0.0
-            or (time.perf_counter() - self._opto_status_time < 3.0)
-            or self.pam > 0.02
-            or self.ppl1 > 0.02
-            or self.kc_active_count > 0
-            or self.rate_gf > 1.5
-            or self.rate_walk > 1.5
-            or self.rate_mdn > 1.5
-            or abs(self.rate_steer) > 1.5
-            or self.rate_groom > 1.5
-            or self.cue_food > 0.02
-            or self.cue_near > 0.02
-            or self.view_mode == MODE_ACTIVITY
-        )
-
-        if is_active:
-            # High-rate rendering (33 ms ~ 30 FPS) with wave propagation
-            if self._timer.interval() != 33:
-                self._timer.setInterval(33)
+        # Frame pacing. The view shares the GUI thread with the pet (a 16 ms tick): it repaints at 30 FPS while
+        # something moves, slower when only the telemetry changes and a frame is expensive, so it never takes more than
+        # about a third of that thread (interval >= 3 x the measured paint time); 5 FPS when nothing happens.
+        moving = (self.auto_rotate or self._dragging or bool(self._ripples) or self._held is not None
+                  or bool(self._lab.get("stimulated")))
+        live = (dirty or self.pam > 0.02 or self.ppl1 > 0.02 or self.kc_active_count > 0 or self.rate_gf > 1.5
+                or self.rate_walk > 1.5 or self.rate_mdn > 1.5 or abs(self.rate_steer) > 1.5 or self.rate_groom > 1.5
+                or self.cue_food > 0.02 or self.cue_near > 0.02 or self.view_mode == MODE_ACTIVITY)
+        pinned = self._inspected_neuron is not None or bool(self._status[0])
+        if moving or live or pinned:
+            want = 33.0 if moving or (live and self._paint_ms < 11.0) else 66.0
+            want = max(want, 3.0 * self._paint_ms)
+            interval = next(v for v in (33, 66, 120, 250) if want <= v * 1.2 or v == 250)
+            if self._timer.interval() != interval:
+                self._timer.setInterval(interval)
             self._pulse_phase = (self._pulse_phase + dt * 1.5) % 1.0
             self.update()
         else:
@@ -1094,7 +1089,55 @@ class MushroomBody3DView(QWidget):
                 self._set_active_kc_mask(np.zeros(self.data.n_kc, dtype=bool))
                 dirty = True
 
+        # the lab: what the worker has really applied, the visual groups' rates, the fly's state
+        lab_fn = getattr(self.runner, "lab_status", None)
+        if callable(lab_fn):
+            lab = lab_fn()
+            if lab != self._lab:
+                self._lab = lab
+                dirty = True
+        rates_fn = getattr(self.runner, "lab_rates", None)
+        if callable(rates_fn):
+            self._lab_rates = rates_fn()
+        state = st.get("state")
+        if state is not None and state != self.fly_state:
+            self.fly_state = str(state)
+            dirty = True
+        self._confirm_pending()
         return dirty
+
+    _STATE_WORDS = {"fly": "takes off", "retreat": "backs away", "walk": "walks", "groom": "grooms",
+                    "freeze": "freezes", "stand": "stands"}
+
+    def _confirm_pending(self) -> None:
+        """Status line: once the worker has applied a request say so, and what the fly did then."""
+        if self._pending is None:
+            return
+        group, action, t0, _ = self._pending
+        age = time.perf_counter() - t0
+        lab = self._lab
+        if not lab.get("acked", True):
+            if age > 2.0:
+                self._set_status("No answer from the engine (is it restarting?)", warn=True)
+                self._pending = None
+            return
+        label = self.target_label(group) if group else ""
+        if action == "stim":
+            before = getattr(self, "_pending_state", "")
+            if self.fly_state and before and self.fly_state != before:
+                word = self._STATE_WORDS.get(self.fly_state, self.fly_state)
+                self._set_status(f"{label}: light applied, the fly {word}")
+                self._pending = None
+            elif age > 1.5:
+                self._set_status(f"{label}: light applied, no change in behavior")
+                self._pending = None
+        elif action == "silence" and group in lab.get("silenced", ()):
+            self._set_status(f"{label} silenced (applied): its neurons cannot spike; plasticity paused")
+            self._pending = None
+        elif action in ("release", "release_all") and group not in lab.get("silenced", ()):
+            self._pending = None
+        elif age > 2.0:
+            self._pending = None
 
     def _set_active_kc_mask(self, mask: np.ndarray) -> bool:
         """Install a new firing mask; also index the lit cells that the soma / tract strides skip. True if it changed."""
@@ -1107,16 +1150,20 @@ class MushroomBody3DView(QWidget):
         return True
 
     # ------------------------------------------------------------------ 3D projection
-    def _project_points(self, pts_3d: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
-        """Project (N, 3) coordinates into screen (x, y) coordinates with depth."""
-        if self._cam_R is None:
+    def _camera_R(self) -> np.ndarray:
+        """The camera rotation for the current yaw / pitch (recomputed only when they change)."""
+        if self._cam_R is None or self._cam_R_for != (self.yaw, self.pitch):
             cy, sy = math.cos(self.yaw), math.sin(self.yaw)
             cp, sp = math.cos(self.pitch), math.sin(self.pitch)
             Ry = np.array([[cy, 0, sy], [0, 1, 0], [-sy, 0, cy]], dtype=np.float32)
             Rx = np.array([[1, 0, 0], [0, cp, -sp], [0, sp, cp]], dtype=np.float32)
             self._cam_R = Ry @ Rx
+            self._cam_R_for = (self.yaw, self.pitch)
+        return self._cam_R
 
-        cam = pts_3d @ self._cam_R
+    def _project_points(self, pts_3d: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+        """Project (N, 3) coordinates into screen (x, y) coordinates with depth."""
+        cam = pts_3d @ self._camera_R()
 
         # Perspective divisor
         persp = 1.0 / np.maximum(0.2, 1.0 + cam[:, 2] * 0.22)
@@ -1129,346 +1176,366 @@ class MushroomBody3DView(QWidget):
 
         return sx, sy_proj, cam[:, 2], persp
 
+    def _camera_key(self) -> tuple:
+        return (round(self.yaw, 6), round(self.pitch, 6), round(self.zoom, 4), round(self.pan_x, 3),
+                round(self.pan_y, 3), self.width(), self.height())
+
+    def _proj(self, pts_3d: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+        """_project_points of one of the fixed anatomy arrays, kept for the current camera pose: the base layer, the
+        live layer and the hit-test all reuse it. Only for arrays that live on (the memo holds the array, so its id
+        cannot be reused by another while the entry exists); slices made on the fly go to _project_points."""
+        key = self._camera_key()
+        if self._proj_key != key:
+            self._proj_memo.clear()
+            self._proj_key = key
+        hit = self._proj_memo.get(id(pts_3d))
+        if hit is None or hit[0] is not pts_3d:
+            hit = self._proj_memo[id(pts_3d)] = (pts_3d, self._project_points(pts_3d))
+        return hit[1]
+
     # ------------------------------------------------------------------ paint
     def paintEvent(self, event):
+        t0 = time.perf_counter()
         p = QPainter(self)
         p.setRenderHint(QPainter.Antialiasing)
-        p.setRenderHint(QPainter.SmoothPixmapTransform)
+        self._camera_R()
 
+        # 1. Everything that only moves with the camera, cached (background, envelopes, circuits at rest)
+        p.drawPixmap(0, 0, self._base_layer())
+
+        # 2. What changes every step: firing cells and pulses, the compass bump, dopamine
+        self._paint_live(p)
+
+        # 3. The lab: stimulated groups glowing, the target under the cursor, markers, action ripples
+        self._draw_lab_overlay(p)
+
+        # 4. Inspected Neuron Reticle & Synaptic Streamline
+        self._draw_inspected_reticle(p)
+
+        # 5. HUD Overlay (toolbar, telemetry, inspector card, status line, hover label)
+        self._draw_hud(p)
+
+        # 6. Help Guide Overlay (if toggled)
+        if self._show_help:
+            self._draw_help_overlay(p)
+
+        p.end()
+        self._paint_ms += 0.2 * ((time.perf_counter() - t0) * 1000.0 - self._paint_ms)
+
+    def _base_key(self) -> tuple:
+        return (self._camera_key(), self.devicePixelRatioF(), self.view_mode, self.kc_weights.tobytes(),
+                self.layer_wireframe, self.layer_hulls, self.layer_olfactory, self.layer_visual, self.layer_cx,
+                self.layer_mb, self.layer_motor, tuple(self._lab.get("silenced", ())))
+
+    def _base_layer(self) -> QPixmap:
+        """The scene at rest for the current camera pose, view mode, learned weights and layers, rendered into a
+        pixmap once and reused until one of them changes (a frame with the camera still only draws the live layer)."""
+        key = self._base_key()
+        if self._base_cache is not None and self._base_cache_key == key:
+            return self._base_cache
+        dpr = self.devicePixelRatioF()
+        size = QSize(max(1, round(self.width() * dpr)), max(1, round(self.height() * dpr)))
+        pix = self._base_cache if self._base_cache is not None and self._base_cache.size() == size else QPixmap(size)
+        pix.setDevicePixelRatio(dpr)
+        bp = QPainter(pix)
+        bp.setRenderHint(QPainter.Antialiasing)
+        self._paint_base(bp)
+        bp.end()
+        self._base_cache, self._base_cache_key = pix, key
+        return pix
+
+    def _background(self, dpr: float) -> QPixmap:
+        """The backdrop (gradient and a faint dotted grid) for the widget size: it does not move with the camera, and
+        the dotted grid alone cost ~10 ms a time."""
         w, h = self.width(), self.height()
+        key = (w, h, dpr)
+        if getattr(self, "_bg_key", None) != key:
+            pix = QPixmap(max(1, round(w * dpr)), max(1, round(h * dpr)))
+            pix.setDevicePixelRatio(dpr)
+            bp = QPainter(pix)
+            bg_grad = QLinearGradient(0, 0, 0, h)
+            bg_grad.setColorAt(0.0, QColor(9, 9, 13))
+            bg_grad.setColorAt(1.0, QColor(14, 14, 20))
+            bp.fillRect(0, 0, w, h, bg_grad)
+            bp.setRenderHint(QPainter.Antialiasing)
+            bp.setPen(QPen(QColor(255, 255, 255, 6), 1, Qt.DotLine))
+            bp.drawLines([QLineF(gx, 0, gx, h) for gx in range(0, w, 60)]
+                         + [QLineF(0, gy, w, gy) for gy in range(0, h, 60)])
+            bp.end()
+            self._bg_pix, self._bg_key = pix, key
+        return self._bg_pix
 
-        # Compute camera matrix for this frame once
-        cy, sy = math.cos(self.yaw), math.sin(self.yaw)
-        cp, sp = math.cos(self.pitch), math.sin(self.pitch)
-        Ry = np.array([[cy, 0, sy], [0, 1, 0], [-sy, 0, cy]], dtype=np.float32)
-        Rx = np.array([[1, 0, 0], [0, cp, -sp], [0, sp, cp]], dtype=np.float32)
-        self._cam_R = Ry @ Rx
+    def _paint_base(self, p: QPainter) -> None:
+        # Background and the subtle grid
+        dev = p.device()
+        p.drawPixmap(0, 0, self._background(dev.devicePixelRatioF() if dev is not None else 1.0))
 
-        # 1. Background
-        bg_grad = QLinearGradient(0, 0, 0, h)
-        bg_grad.setColorAt(0.0, QColor(9, 9, 13))
-        bg_grad.setColorAt(1.0, QColor(14, 14, 20))
-        p.fillRect(0, 0, w, h, bg_grad)
-
-        # Subtle background grid lines
-        p.setPen(QPen(QColor(255, 255, 255, 6), 1, Qt.DotLine))
-        grid_step = 60
-        for gx in range(0, w, grid_step):
-            p.drawLine(gx, 0, gx, h)
-        for gy in range(0, h, grid_step):
-            p.drawLine(0, gy, w, gy)
-
-        # 2. Draw Drosophila Brain Neuropil Wireframe
+        # Drosophila Brain Neuropil Wireframe and the translucent envelopes (AL, MB, CX, Optic)
         if self.layer_wireframe:
             self._draw_brain_wireframe(p)
-
-        # 2.5. Draw Translucent Neuropil Volumetric Envelopes (AL, MB, CX, Optic)
         if self.layer_hulls:
             self._draw_neuropil_volumes(p)
 
-        # 3. Sensory Input Circuits (Olfactory & Visual)
+        # Sensory Input Circuits (Olfactory & Visual)
         if self.layer_olfactory:
             self._draw_antennal_lobes(p)
         if self.layer_visual:
             self._draw_visual_projections(p)
 
-        # 4. Central Complex Navigation & Compass Ring
+        # Central Complex Navigation & Compass Ring
         if self.layer_cx:
             self._draw_central_complex(p)
 
-        # 5. Mushroom Body Learning Circuit
+        # Mushroom Body Learning Circuit
         if self.layer_mb:
             self._draw_axon_tracts(p)
             self._draw_kenyon_somas(p)
-            self._draw_dopamine_clusters(p)
             self._draw_mbons(p)
 
-        # 6. Motor Output System (Descending Neurons)
+        # Motor Output System (Descending Neurons)
         if self.layer_motor:
             self._draw_descending_neurons(p)
 
-        # 6.5. Optogenetic Laser Pulses & Flash Ripples
-        self._draw_opto_flashes(p)
-
-        # 6.6. Inspected Neuron Reticle & Synaptic Streamline
-        self._draw_inspected_reticle(p)
-
-        # 7. Draw HUD Overlay (Valence gauge, stats, dopamine bars, toolbar)
-        self._draw_hud(p)
-
-        # 8. Draw Help Guide Overlay (if toggled)
-        if self._show_help:
-            self._draw_help_overlay(p)
-
-        p.end()
+    def _paint_live(self, p: QPainter) -> None:
+        """The part of the scene that changes every step, drawn over the base layer each frame."""
+        if self.layer_olfactory:
+            self._draw_odor_pulses(p)
+        if self.layer_visual:
+            self._draw_visual_pulses(p)
+        if self.layer_cx:
+            self._draw_compass_bump(p)
+        if self.layer_mb:
+            self._draw_firing_kenyon_cells(p)
+            self._draw_dopamine_clusters(p)
+        if self.layer_motor:
+            self._draw_motor_pulses(p)
 
     # ------------------------------------------------------------------ wireframe
     def _draw_brain_wireframe(self, p: QPainter):
         if len(self._wf_p1) == 0:
             return
 
-        x1, y1, _, _ = self._project_points(self._wf_p1)
-        x2, y2, _, _ = self._project_points(self._wf_p2)
+        x1, y1, _, _ = self._proj(self._wf_p1)
+        x2, y2, _, _ = self._proj(self._wf_p2)
 
         p.setBrush(Qt.NoBrush)
-        pen = QPen(QColor(56, 189, 248, 22), 1.0)
-        p.setPen(pen)
-
-        lines = [QLineF(float(x1[i]), float(y1[i]), float(x2[i]), float(y2[i])) for i in range(len(x1))]
-        p.drawLines(lines)
+        p.setPen(QPen(QColor(56, 189, 248, 22), 1.0))
+        p.drawLines([QLineF(a, b, c, d) for a, b, c, d in zip(x1.tolist(), y1.tolist(), x2.tolist(), y2.tolist())])
 
     # ------------------------------------------------------------------ neuropil hulls
     def _draw_neuropil_volumes(self, p: QPainter):
-        """Draw translucent volumetric hulls around major brain neuropils with fresnel contour shading."""
-        if not self.layer_hulls or not hasattr(self, "_neuropil_volumes"):
-            return
-
-        p.save()
+        """Translucent glass envelopes around the major neuropils. Each is an ellipsoid, so its outline on screen is an
+        ellipse; a gradient that brightens toward the rim gives the fresnel look (edge-on surface glows) in one fill per
+        hull (the per-triangle version cost ~200 ms a frame)."""
+        R = self._camera_R().astype(np.float64)
+        ox = self.width() * 0.5 + self.pan_x
+        oy = self.height() * 0.48 + self.pan_y
+        hulls = []
         for nv in self._neuropil_volumes:
-            verts_3d = nv["vertices"]
-            faces = nv["faces"]
-            base_col = nv["color"]
+            c_cam = nv["center"] @ R
+            k = self.zoom / max(0.2, 1.0 + float(c_cam[2]) * 0.22)      # perspective at the hull's centre
+            # world ellipsoid c + diag(radii) u, |u| = 1 -> screen offsets k * F (R^T diag(radii))[:2] u, F flips y
+            m = (R.T[:2] * nv["radii"][None, :]) * k
+            m[1] *= -1.0
+            vals, vecs = np.linalg.eigh(m @ m.T)
+            a, b = math.sqrt(max(vals[1], 0.0)), math.sqrt(max(vals[0], 0.0))
+            if b < 0.5:
+                continue
+            ang = math.degrees(math.atan2(vecs[1, 1], vecs[0, 1]))
+            hulls.append((float(c_cam[2]), ox + c_cam[0] * k, oy - c_cam[1] * k, a, b, ang, nv["color"]))
 
-            sx_arr, sy_arr, z_cam, valid = self._project_points(verts_3d)
+        rim = QPen()
+        rim.setCosmetic(True)
+        rim.setWidthF(1.0)
+        for _, x, y, a, b, ang, col in sorted(hulls, key=lambda t: -t[0]):     # far to near
+            p.save()
+            p.translate(x, y)
+            p.rotate(ang)
+            p.scale(a, b)                       # the unit circle becomes the hull's outline
+            grad = QRadialGradient(0.0, 0.0, 1.0)
+            for at, alpha in ((0.0, 4), (0.62, 8), (0.88, 18), (1.0, 38)):
+                grad.setColorAt(at, QColor(col.red(), col.green(), col.blue(), alpha))
+            p.setBrush(QBrush(grad))
+            rim.setColor(QColor(col.red(), col.green(), col.blue(), 74))
+            p.setPen(rim)
+            p.drawEllipse(QPointF(0.0, 0.0), 1.0, 1.0)
+            p.restore()
 
-            # Depth sort faces from back to front
-            f_z = (z_cam[faces[:, 0]] + z_cam[faces[:, 1]] + z_cam[faces[:, 2]]) / 3.0
-            order = np.argsort(f_z)
-
-            for fi in order:
-                idx0, idx1, idx2 = faces[fi]
-                if not (valid[idx0] and valid[idx1] and valid[idx2]):
-                    continue
-
-                poly = QPolygonF([
-                    QPointF(sx_arr[idx0], sy_arr[idx0]),
-                    QPointF(sx_arr[idx1], sy_arr[idx1]),
-                    QPointF(sx_arr[idx2], sy_arr[idx2]),
-                ])
-
-                # 3D normal vector
-                v0, v1, v2 = verts_3d[idx0], verts_3d[idx1], verts_3d[idx2]
-                norm = np.cross(v1 - v0, v2 - v0)
-                norm_len = np.linalg.norm(norm)
-                if norm_len < 1e-6:
-                    continue
-                norm = norm / norm_len
-
-                # Camera space projection for fresnel rim shading
-                if self._cam_R is not None:
-                    norm_cam = self._cam_R @ norm
-                    cos_theta = abs(float(norm_cam[2]))
-                else:
-                    cos_theta = 0.5
-
-                rim = 1.0 - min(1.0, cos_theta)
-                alpha_fill = int(6 + rim * 16)
-                alpha_edge = int(18 + rim * 55)
-
-                p.setBrush(QBrush(QColor(base_col.red(), base_col.green(), base_col.blue(), alpha_fill)))
-                p.setPen(QPen(QColor(base_col.red(), base_col.green(), base_col.blue(), alpha_edge), 1.0))
-                p.drawPolygon(poly)
-
-        p.restore()
+    # ------------------------------------------------------------------ colours
+    def _resting_rgba(self, weight, lobe, alpha: int) -> np.ndarray:
+        """_color_for_neuron(w, lobe, False, alpha) for whole arrays, packed 0xAARRGGBB. The ramps are cut into 64 steps
+        (below what the eye resolves) so a few hundred cells share a few dozen colours and draw as one path each."""
+        w = np.asarray(weight, dtype=np.float64)
+        n = len(w)
+        r, g, b = np.zeros(n), np.zeros(n), np.zeros(n)
+        a = np.full(n, float(alpha))
+        if self.view_mode == MODE_VALENCE:
+            r[:], g[:], b[:] = 56, 189, 248                        # naive
+            pos, neg = w > 0.005, w < -0.005
+            t = np.round(np.minimum(1.0, w[pos] / 0.15) * 64) / 64
+            r[pos], g[pos], b[pos] = 16 * (1 - t) + 251 * t, 185 * (1 - t) + 191 * t, 129 * (1 - t) + 36 * t
+            a[pos] = np.minimum(255, np.floor(alpha * (1.0 + t * 0.4)))
+            t = np.round(np.minimum(1.0, -w[neg] / 0.15) * 64) / 64
+            r[neg], g[neg], b[neg] = 244 * (1 - t) + 220 * t, 63 * (1 - t) + 38 * t, 94 * (1 - t) + 38 * t
+            a[neg] = np.minimum(255, np.floor(alpha * (1.0 + t * 0.4)))
+        elif self.view_mode == MODE_PLASTICITY:
+            mag = np.round(np.minimum(1.0, np.abs(w) / 0.12) * 64) / 64
+            lo = mag < 0.5
+            t = np.where(lo, mag / 0.5, (mag - 0.5) / 0.5)
+            r = np.where(lo, 59 * (1 - t) + 249 * t, 249 * (1 - t) + 253 * t)
+            g = np.where(lo, 130 * (1 - t) + 115 * t, 115 * (1 - t) + 224 * t)
+            b = np.where(lo, 246 * (1 - t) + 22 * t, 22 * (1 - t) + 71 * t)
+            a = np.minimum(255, np.floor(alpha * (0.8 + mag * 0.5)))
+        elif self.view_mode == MODE_ANATOMY:
+            lobe = np.asarray(lobe)
+            gam, ab = lobe == LOBE_GAMMA, lobe == LOBE_ALPHABETA
+            r = np.where(gam, 6, np.where(ab, 245, 217))
+            g = np.where(gam, 182, np.where(ab, 158, 70))
+            b = np.where(gam, 212, np.where(ab, 11, 239))
+        else:                                                      # MODE_ACTIVITY: dim at rest, sparks on top
+            r[:], g[:], b[:] = 71, 85, 105
+        return _pack_rgba(r, g, b, a)
 
     # ------------------------------------------------------------------ tracts
     def _draw_axon_tracts(self, p: QPainter):
-        """Draw curved axon bundles connecting Calyx to anterior heel and lobes."""
+        """Curved axon bundles from the calyx through the pedunculus to the lobes, at rest (the firing ones are drawn
+        bright on top every frame by _draw_firing_kenyon_cells)."""
         if len(self._tract_indices) == 0:
             return
-        self._draw_tract_set(p, self._tract_soma, self._tract_ped, self._tract_target,
-                             self.kc_weights[self._tract_indices], self._tract_lobes,
-                             self.active_kc_mask[self._tract_indices])
-        lit = self._active_off_tract
-        if len(lit):                    # firing cells between the sampled streamlines
-            self._draw_tract_set(p, self.data.kc_soma[lit], self.data.kc_ped[lit], self.data.kc_target[lit],
-                                 self.kc_weights[lit], self.data.kc_lobe[lit], np.ones(len(lit), dtype=bool))
-
-    def _draw_tract_set(self, p: QPainter, soma, ped, target, weights, lobes, active):
-        sx, sy, _, _ = self._project_points(soma)
-        px, py, _, _ = self._project_points(ped)
-        tx, ty, _, _ = self._project_points(target)
-
+        sx, sy, _, _ = self._proj(self._tract_soma)
+        px, py, _, _ = self._proj(self._tract_ped)
+        tx, ty, _, _ = self._proj(self._tract_target)
+        rgba = self._resting_rgba(self.kc_weights[self._tract_indices], self._tract_lobes, alpha=45)
         p.setBrush(Qt.NoBrush)
-
-        for i in range(len(soma)):
-            w_val = weights[i]
-            is_on = active[i]
-            lobe = lobes[i]
-
-            # Choose color based on view mode
-            col = self._color_for_neuron(w_val, lobe, is_on, alpha=45 if not is_on else 180)
-            line_w = 1.0 if not is_on else 2.0
-            p.setPen(QPen(col, line_w))
-
-            # Quadratic Bezier through Pedunculus waypoint
-            path = QPainterPath()
-            path.moveTo(sx[i], sy[i])
-            path.quadTo(px[i], py[i], tx[i], ty[i])
-            p.drawPath(path)
-
-            # Traveling action potential pulse if neuron is active
-            if is_on:
-                t = self._pulse_phase
-                # Point along Bezier: (1-t)^2*P0 + 2(1-t)t*P1 + t^2*P2
-                bx = (1 - t) ** 2 * sx[i] + 2 * (1 - t) * t * px[i] + t ** 2 * tx[i]
-                by = (1 - t) ** 2 * sy[i] + 2 * (1 - t) * t * py[i] + t ** 2 * ty[i]
-                p.setPen(Qt.NoPen)
-                p.setBrush(QBrush(QColor(255, 255, 255, 230)))
-                p.drawEllipse(QPointF(bx, by), 2.2, 2.2)
-                p.setBrush(Qt.NoBrush)
+        for col, idx in _rgba_groups(rgba):
+            p.setPen(QPen(col, 1.0))
+            p.drawPath(_curve_path(sx[idx], sy[idx], px[idx], py[idx], tx[idx], ty[idx]))
 
     # ------------------------------------------------------------------ somas
     def _draw_kenyon_somas(self, p: QPainter):
-        """Draw thousands of Kenyon cell somas in the bilateral Calyx cups."""
+        """Kenyon cell somas in the bilateral calyx cups, at rest: the plain cells in one point pass per colour, the
+        learned ones (every one in the plasticity and activity modes) as dots in their colour, strongly learned ones
+        with a halo. The firing cells are drawn on top every frame."""
         if len(self._soma_indices) == 0:
             return
 
-        sx, sy, sz, persp = self._project_points(self._soma_pts)
+        sx, sy, _, persp = self._proj(self._soma_pts)
         weights = self.kc_weights[self._soma_indices]
         lobes = self._soma_lobes
-        active = self.active_kc_mask[self._soma_indices]
-
-        # Fast path optimization:
-        # Group points into naive (batch rendered with drawPoints) and special (rendered individually).
-        special_indices: list[int] = []
-        naive_pts: list[QPointF] = []
 
         if self.view_mode == MODE_VALENCE:
-            for i in range(len(self._soma_indices)):
-                w_val = weights[i]
-                is_on = active[i]
-                if is_on or abs(w_val) > 0.005:
-                    special_indices.append(i)
-                else:
-                    naive_pts.append(QPointF(sx[i], sy[i]))
-
-            # 1. Batch draw naive somas in one fast drawPoints call
-            if naive_pts:
-                p.setBrush(Qt.NoBrush)
-                p.setPen(QPen(QColor(56, 189, 248, 140), 3.4, Qt.SolidLine, Qt.RoundCap))
-                p.drawPoints(naive_pts)
-
+            special = np.abs(weights) > 0.005
+            plain = [(QColor(56, 189, 248, 140), ~special)]
         elif self.view_mode == MODE_ANATOMY:
-            # Batch draw by anatomical lobe
-            gamma_pts: list[QPointF] = []
-            ab_pts: list[QPointF] = []
-            abp_pts: list[QPointF] = []
-            for i in range(len(self._soma_indices)):
-                if active[i]:
-                    special_indices.append(i)
-                else:
-                    l = lobes[i]
-                    pt = QPointF(sx[i], sy[i])
-                    if l == LOBE_GAMMA:
-                        gamma_pts.append(pt)
-                    elif l == LOBE_ALPHABETA:
-                        ab_pts.append(pt)
-                    else:
-                        abp_pts.append(pt)
-
-            p.setBrush(Qt.NoBrush)
-            if gamma_pts:
-                p.setPen(QPen(QColor(6, 182, 212, 140), 3.4, Qt.SolidLine, Qt.RoundCap))
-                p.drawPoints(gamma_pts)
-            if ab_pts:
-                p.setPen(QPen(QColor(245, 158, 11, 140), 3.4, Qt.SolidLine, Qt.RoundCap))
-                p.drawPoints(ab_pts)
-            if abp_pts:
-                p.setPen(QPen(QColor(217, 70, 239, 140), 3.4, Qt.SolidLine, Qt.RoundCap))
-                p.drawPoints(abp_pts)
-
+            special = np.zeros(len(weights), dtype=bool)
+            gam, ab = lobes == LOBE_GAMMA, lobes == LOBE_ALPHABETA
+            plain = [(QColor(6, 182, 212, 140), gam), (QColor(245, 158, 11, 140), ab),
+                     (QColor(217, 70, 239, 140), ~gam & ~ab)]
         else:  # MODE_PLASTICITY, MODE_ACTIVITY
-            for i in range(len(self._soma_indices)):
-                special_indices.append(i)
+            special = np.ones(len(weights), dtype=bool)
+            plain = []
 
-        # 2. Draw special (active or strongly conditioned) somas with individual halos
-        if special_indices:
+        p.setPen(Qt.NoPen)
+        for col, sel in plain:
+            idx = np.flatnonzero(sel)
+            if len(idx):
+                p.setBrush(col)
+                _draw_dots(p, sx[idx], sy[idx], 1.7)
+
+        idx = np.flatnonzero(special)
+        if len(idx) == 0:
+            return
+        radius = 1.8 * persp[idx]
+        strong = np.abs(weights[idx]) > 0.04
+        for col, sub in _rgba_groups(self._resting_rgba(weights[idx], lobes[idx], alpha=140)):
+            cells = idx[sub]
+            p.setBrush(col)
+            _draw_dots(p, sx[cells], sy[cells], radius[sub])
+            halo = sub[strong[sub]]
+            if len(halo):
+                p.setBrush(QColor(col.red(), col.green(), col.blue(), 45))
+                _draw_dots(p, sx[idx[halo]], sy[idx[halo]], radius[halo] * 2.2)
+
+    def _draw_firing_kenyon_cells(self, p: QPainter):
+        """The cells that fire now (or glow a moment after): a bright axon with a travelling action potential, a white
+        soma with a halo. Includes the firing cells the soma / tract samples skip (_active_off_soma / _off_tract)."""
+        mask = self.active_kc_mask
+
+        # axons: (1-t)^2*P0 + 2(1-t)t*P1 + t^2*P2 for the pulse
+        segs = []
+        on = np.flatnonzero(mask[self._tract_indices]) if len(self._tract_indices) else []
+        if len(on):
+            segs.append([a[on] for q in (self._tract_soma, self._tract_ped, self._tract_target)
+                         for a in self._proj(q)[:2]])
+        lit = self._active_off_tract
+        if len(lit):
+            segs.append([a for q in (self.data.kc_soma[lit], self.data.kc_ped[lit], self.data.kc_target[lit])
+                         for a in self._project_points(q)[:2]])
+        if segs:
+            x0, y0, cx, cy, x1, y1 = (np.concatenate(c) for c in zip(*segs))
+            p.setBrush(Qt.NoBrush)
+            p.setPen(QPen(QColor(255, 255, 255, 235), 1.0))
+            p.drawPath(_curve_path(x0, y0, cx, cy, x1, y1))
+            t = self._pulse_phase
+            bx = (1 - t) ** 2 * x0 + 2 * (1 - t) * t * cx + t ** 2 * x1
+            by = (1 - t) ** 2 * y0 + 2 * (1 - t) * t * cy + t ** 2 * y1
             p.setPen(Qt.NoPen)
-            for i in special_indices:
-                w_val = weights[i]
-                is_on = active[i]
-                lobe = lobes[i]
+            p.setBrush(QColor(255, 255, 255, 230))
+            _draw_dots(p, bx, by, 2.2)
 
-                base_r = 1.8 * persp[i]
-                if is_on:
-                    base_r = max(base_r * 1.8, 3.2)
-
-                col = self._color_for_neuron(w_val, lobe, is_on, alpha=140 if not is_on else 255)
-                p.setBrush(QBrush(col))
-
-                pt = QPointF(sx[i], sy[i])
-                p.drawEllipse(pt, base_r, base_r)
-
-                # Halo for strongly learned or active cells
-                if abs(w_val) > 0.04 or is_on:
-                    halo_col = QColor(col)
-                    halo_col.setAlpha(45)
-                    p.setBrush(QBrush(halo_col))
-                    p.drawEllipse(pt, base_r * 2.2, base_r * 2.2)
-
-        # 3. Firing cells that the stride sample skipped
+        # somas
+        xs, ys, rs = [], [], []
+        on = np.flatnonzero(mask[self._soma_indices]) if len(self._soma_indices) else []
+        if len(on):
+            sx, sy, _, persp = self._proj(self._soma_pts)
+            xs.append(sx[on])
+            ys.append(sy[on])
+            rs.append(np.maximum(1.8 * persp[on] * 1.8, 3.2))
         lit = self._active_off_soma
         if len(lit):
             lx, ly, _, lp = self._project_points(self.data.kc_soma[lit])
-            lw, ll = self.kc_weights[lit], self.data.kc_lobe[lit]
+            xs.append(lx)
+            ys.append(ly)
+            rs.append(np.maximum(1.8 * lp * 1.8, 3.2))
+        if xs:
+            x, y, r = np.concatenate(xs), np.concatenate(ys), np.concatenate(rs)
             p.setPen(Qt.NoPen)
-            for j in range(len(lit)):
-                base_r = max(1.8 * lp[j] * 1.8, 3.2)
-                col = self._color_for_neuron(lw[j], ll[j], True, alpha=255)
-                pt = QPointF(lx[j], ly[j])
-                p.setBrush(QBrush(col))
-                p.drawEllipse(pt, base_r, base_r)
-                halo_col = QColor(col)
-                halo_col.setAlpha(45)
-                p.setBrush(QBrush(halo_col))
-                p.drawEllipse(pt, base_r * 2.2, base_r * 2.2)
+            p.setBrush(QColor(255, 255, 255, 255))
+            _draw_dots(p, x, y, r)
+            p.setBrush(QColor(255, 255, 255, 45))
+            _draw_dots(p, x, y, r * 2.2)
 
     # ------------------------------------------------------------------ dopamine
     def _draw_dopamine_clusters(self, p: QPainter):
-        """Draw PAM (reward) and PPL1 (punishment) dopaminergic clusters."""
+        """Draw PAM (reward) and PPL1 (punishment) dopaminergic clusters (their glow follows the live dopamine)."""
         dans = self.data.dan_pos
-        dx, dy, dz, persp = self._project_points(dans)
-
-        clusters = self.data.dan_cluster
+        if len(dans) == 0:
+            return
+        dx, dy, _, persp = self._proj(dans)
+        clusters = np.asarray(self.data.dan_cluster)[:len(dans)]
+        pam_i = np.flatnonzero(clusters == DAN_PAM)
+        ppl_i = np.flatnonzero(clusters == DAN_PPL1)
+        other = np.flatnonzero((clusters != DAN_PAM) & (clusters != DAN_PPL1))
 
         # 1. Radiant shockwaves if PAM or PPL1 is actively firing
-        if self.pam > 0.05:
-            pam_pts = np.flatnonzero(clusters == DAN_PAM)
-            if len(pam_pts) > 0:
-                mid_x = float(np.mean(dx[pam_pts]))
-                mid_y = float(np.mean(dy[pam_pts]))
-                self._draw_dopamine_wave(p, mid_x, mid_y, QColor(250, 204, 21), self.pam)
+        if self.pam > 0.05 and len(pam_i) > 0:
+            self._draw_dopamine_wave(p, float(np.mean(dx[pam_i])), float(np.mean(dy[pam_i])),
+                                     QColor(250, 204, 21), self.pam)
+        if self.ppl1 > 0.05 and len(ppl_i) > 0:
+            self._draw_dopamine_wave(p, float(np.mean(dx[ppl_i])), float(np.mean(dy[ppl_i])),
+                                     QColor(239, 68, 68), self.ppl1)
 
-        if self.ppl1 > 0.05:
-            ppl_pts = np.flatnonzero(clusters == DAN_PPL1)
-            if len(ppl_pts) > 0:
-                mid_x = float(np.mean(dx[ppl_pts]))
-                mid_y = float(np.mean(dy[ppl_pts]))
-                self._draw_dopamine_wave(p, mid_x, mid_y, QColor(239, 68, 68), self.ppl1)
+        # 2. The DAN nodes: radiant gold (reward) and fiery scarlet (punishment) glow with their dopamine
+        def glow(level: float) -> int:
+            return int(max(0.0, min(1.0, 0.4 + level * 0.6)) * 255)
 
-        # 2. Draw individual DAN nodes
         p.setPen(Qt.NoPen)
-        for i in range(len(dans)):
-            cl = clusters[i]
-            if cl == DAN_PAM:
-                # Radiant Gold (Reward)
-                glow = min(1.0, 0.4 + self.pam * 0.6)
-                alpha = int(glow * 255)
-                col = QColor(245, 158, 11, alpha)
-                r = (2.4 + self.pam * 2.0) * persp[i]
-            elif cl == DAN_PPL1:
-                # Fiery Scarlet (Punishment / Pain)
-                glow = min(1.0, 0.4 + self.ppl1 * 0.6)
-                alpha = int(glow * 255)
-                col = QColor(239, 68, 68, alpha)
-                r = (2.4 + self.ppl1 * 2.0) * persp[i]
-            else:
-                col = QColor(168, 85, 247, 120)
-                r = 1.8 * persp[i]
-
-            p.setBrush(QBrush(col))
-            p.drawEllipse(QPointF(dx[i], dy[i]), r, r)
+        for idx, col, r in ((other, QColor(168, 85, 247, 120), 1.8),
+                            (pam_i, QColor(245, 158, 11, glow(self.pam)), 2.4 + self.pam * 2.0),
+                            (ppl_i, QColor(239, 68, 68, glow(self.ppl1)), 2.4 + self.ppl1 * 2.0)):
+            if len(idx):
+                p.setBrush(col)
+                _draw_dots(p, dx[idx], dy[idx], r * persp[idx])
 
     def _draw_dopamine_wave(self, p: QPainter, cx: float, cy: float, col: QColor, strength: float):
         """Draw concentric pulsating dopamine diffusion rings."""
@@ -1481,413 +1548,327 @@ class MushroomBody3DView(QWidget):
                 continue
             fade = max(0.0, 1.0 - r / max_r)
             ring_col = QColor(col)
-            ring_col.setAlpha(int(fade * 140 * strength))
+            ring_col.setAlpha(int(fade * 140 * min(1.0, strength)))
             p.setPen(QPen(ring_col, 1.8))
             p.setBrush(Qt.NoBrush)
             p.drawEllipse(QPointF(cx, cy), r, r)
 
     # ------------------------------------------------------------------ mbons
     def _draw_mbons(self, p: QPainter):
-        """Draw Mushroom Body Output Neuron (MBON) terminals."""
+        """Draw Mushroom Body Output Neuron (MBON) terminals: approach (+1) green, avoidance (-1) rose."""
         mbons = self.data.mbon_pos
-        mx, my, mz, persp = self._project_points(mbons)
-
-        signs = self.data.mbon_sign
+        if len(mbons) == 0:
+            return
+        mx, my, _, persp = self._proj(mbons)
+        signs = np.asarray(self.data.mbon_sign)[:len(mbons)]
 
         p.setPen(QPen(QColor(255, 255, 255, 100), 0.8))
-
-        for i in range(len(mbons)):
-            sign = signs[i]
-            # Approach MBON (+1) vs Avoidance MBON (-1)
-            if sign > 0:
-                col = QColor(34, 197, 94, 210) # Spring Green
-            elif sign < 0:
-                col = QColor(244, 63, 94, 210) # Coral Rose
-            else:
-                col = QColor(148, 163, 184, 160)
-
-            p.setBrush(QBrush(col))
-            r = 3.0 * persp[i]
-            p.drawEllipse(QPointF(mx[i], my[i]), r, r)
+        for sel, col in ((signs > 0, QColor(34, 197, 94, 210)), (signs < 0, QColor(244, 63, 94, 210)),
+                         (signs == 0, QColor(148, 163, 184, 160))):
+            idx = np.flatnonzero(sel)
+            if len(idx):
+                p.setBrush(col)
+                _draw_dots(p, mx[idx], my[idx], 3.0 * persp[idx])
 
     # ------------------------------------------------------------------ central complex
     def _draw_central_complex(self, p: QPainter):
-        """Draw Central Complex (CX) navigation hub: Ellipsoid Body (EB) compass ring & PB bridge."""
+        """Central Complex (CX) navigation hub at rest: the Ellipsoid Body (EB) compass ring, PB bridge and FB."""
         if len(self._cx_pts) == 0:
             return
 
-        cx, cy, _, persp = self._project_points(self._cx_pts)
-        subs = self._cx_sub
+        cx, cy, _, persp = self._proj(self._cx_pts)
+        subs = self._cx_sub if len(self._cx_sub) == len(self._cx_pts) else np.zeros(0, dtype=np.int8)
 
-        # 1. Ellipsoid Body (EB) Ring: Toroidal compass ring (nodes in ring order, see _eb_ring_order)
+        def poly(idx):
+            return QPolygonF([QPointF(x, y) for x, y in zip(cx[idx].tolist(), cy[idx].tolist())])
+
+        # 1. Ellipsoid Body (EB) Ring: toroidal compass ring (nodes in ring order, see _eb_ring_order); the bump on it
+        # is live (_draw_compass_bump)
         eb_idx = self._eb_ring
         if len(eb_idx) > 0:
-            eb_cx = cx[eb_idx]
-            eb_cy = cy[eb_idx]
-
-            # Connect perimeter nodes to form the ring outline
             p.setBrush(Qt.NoBrush)
-            p.setPen(QPen(QColor(56, 189, 248, 120), 1.6))
-            eb_poly = QPolygonF([QPointF(float(eb_cx[i]), float(eb_cy[i])) for i in range(len(eb_idx))])
-            p.drawPolyline(eb_poly)
+            p.setPen(QPen(QColor(56, 189, 248, 150), 1.0))
             if len(eb_idx) > 2:
-                p.drawLine(QPointF(float(eb_cx[-1]), float(eb_cy[-1])), QPointF(float(eb_cx[0]), float(eb_cy[0])))
-
-            # Draw E-PG compass neurons on the ring: the bump sits at the fly's heading
-            lit = self._eb_lit(len(eb_idx))
-            for i in range(len(eb_idx)):
-                is_heading = bool(lit[i])
-
-                if is_heading:
-                    col = QColor(255, 255, 255, 250)
-                    r = 3.6 * persp[eb_idx[i]]
-                else:
-                    col = QColor(56, 189, 248, 180)
-                    r = 2.2 * persp[eb_idx[i]]
-
-                p.setBrush(QBrush(col))
-                p.setPen(Qt.NoPen)
-                p.drawEllipse(QPointF(float(eb_cx[i]), float(eb_cy[i])), r, r)
+                p.drawPolygon(poly(eb_idx))
+            else:
+                p.drawPolyline(poly(eb_idx))
+            p.setPen(Qt.NoPen)
+            p.setBrush(QColor(56, 189, 248, 180))
+            _draw_dots(p, cx[eb_idx], cy[eb_idx], 2.2 * persp[eb_idx])
 
         # 2. Protocerebral Bridge (PB): Horizontal arched mustache
-        pb_mask = subs == 1
-        if np.any(pb_mask):
-            pb_idx = np.flatnonzero(pb_mask)
+        pb_idx = np.flatnonzero(subs == 1)
+        if len(pb_idx):
             p.setBrush(Qt.NoBrush)
-            p.setPen(QPen(QColor(168, 85, 247, 130), 1.4))
-            for i in range(len(pb_idx) - 1):
-                p.drawLine(QPointF(float(cx[pb_idx[i]]), float(cy[pb_idx[i]])),
-                           QPointF(float(cx[pb_idx[i+1]]), float(cy[pb_idx[i+1]])))
-
+            p.setPen(QPen(QColor(168, 85, 247, 160), 1.0))
+            p.drawPolyline(poly(pb_idx))
             p.setPen(Qt.NoPen)
-            p.setBrush(QBrush(QColor(168, 85, 247, 200)))
-            for i in range(len(pb_idx)):
-                r = 2.0 * persp[pb_idx[i]]
-                p.drawEllipse(QPointF(float(cx[pb_idx[i]]), float(cy[pb_idx[i]])), r, r)
+            p.setBrush(QColor(168, 85, 247, 200))
+            _draw_dots(p, cx[pb_idx], cy[pb_idx], 2.0 * persp[pb_idx])
 
-        # 3. Fan-shaped Body (FB):
-        fb_mask = subs == 2
-        if np.any(fb_mask):
-            fb_idx = np.flatnonzero(fb_mask)
+        # 3. Fan-shaped Body (FB)
+        fb_idx = np.flatnonzero(subs == 2)
+        if len(fb_idx):
             p.setPen(Qt.NoPen)
-            p.setBrush(QBrush(QColor(234, 179, 8, 150)))
-            for i in range(len(fb_idx)):
-                r = 1.8 * persp[fb_idx[i]]
-                p.drawEllipse(QPointF(float(cx[fb_idx[i]]), float(cy[fb_idx[i]])), r, r)
+            p.setBrush(QColor(234, 179, 8, 150))
+            _draw_dots(p, cx[fb_idx], cy[fb_idx], 1.8 * persp[fb_idx])
+
+    def _draw_compass_bump(self, p: QPainter):
+        """The E-PG bump: the ring nodes at the fly's heading, white over the resting ring."""
+        eb_idx = self._eb_ring
+        if len(eb_idx) == 0:
+            return
+        lit = eb_idx[np.flatnonzero(self._eb_lit(len(eb_idx)))]
+        if len(lit):
+            cx, cy, _, persp = self._proj(self._cx_pts)
+            p.setPen(Qt.NoPen)
+            p.setBrush(QColor(255, 255, 255, 250))
+            _draw_dots(p, cx[lit], cy[lit], 3.6 * persp[lit])
 
     # ------------------------------------------------------------------ visual projections
+    def _vpn_groups(self) -> list[tuple[QColor, np.ndarray]]:
+        """(colour, indices) of the visual projection neurons by type: LC4 amber (looming speed), LC10 sky blue (target
+        tracking), LPLC2 coral (looming size), LPC1 violet (retreat), others blue."""
+        types = self._vpn_type
+        if getattr(self, "_vpn_groups_for", None) is not types:
+            cols = (QColor(245, 158, 11, 140), QColor(14, 165, 233, 140), QColor(249, 115, 22, 140),
+                    QColor(168, 85, 247, 140), QColor(56, 189, 248, 100))
+            kind = np.array([next((k for k, tag in enumerate(("LC4", "LC10", "LPLC2", "LPC1")) if tag in str(t)), 4)
+                             for t in types], dtype=np.int64)
+            self._vpn_groups_cache = [(cols[k], np.flatnonzero(kind == k)) for k in range(5) if np.any(kind == k)]
+            self._vpn_groups_for = types
+        return self._vpn_groups_cache
+
+    def _vpn_curves(self):
+        sx, sy, _, s_persp = self._proj(self._vpn_soma)
+        tx, ty, _, _ = self._proj(self._vpn_target)
+        return sx, sy, (sx + tx) * 0.5, np.minimum(sy, ty) - 8.0, tx, ty, s_persp
+
     def _draw_visual_projections(self, p: QPainter):
         """Draw Visual Projection Neurons (VPN) from Optic Lobes to central brain (LC4, LC10, LPLC2, LPC1)."""
         if len(self._vpn_soma) == 0:
             return
-
-        sx, sy, _, s_persp = self._project_points(self._vpn_soma)
-        tx, ty, _, _ = self._project_points(self._vpn_target)
-        types = self._vpn_type
-
+        sx, sy, mx, my, tx, ty, s_persp = self._vpn_curves()
+        groups = self._vpn_groups()
         p.setBrush(Qt.NoBrush)
+        for col, idx in groups:
+            p.setPen(QPen(col, 1.0))
+            p.drawPath(_curve_path(sx[idx], sy[idx], mx[idx], my[idx], tx[idx], ty[idx]))
+        p.setPen(Qt.NoPen)
+        for col, idx in groups:
+            p.setBrush(col)
+            _draw_dots(p, sx[idx], sy[idx], 2.2 * s_persp[idx])
+        self._draw_silenced(p, "vpn", sx, sy, 2.6 * s_persp)
 
-        for i in range(len(self._vpn_soma)):
-            vtype = types[i]
-            if "LC4" in vtype:
-                col = QColor(245, 158, 11, 140)    # Amber (Collision/Looming speed)
-            elif "LC10" in vtype:
-                col = QColor(14, 165, 233, 140)    # Electric Sky-Blue (Target tracking / Steering)
-            elif "LPLC2" in vtype:
-                col = QColor(249, 115, 22, 140)    # Coral Orange (Looming size detector)
-            elif "LPC1" in vtype:
-                col = QColor(168, 85, 247, 140)    # Violet (Retreat drive)
-            else:
-                col = QColor(56, 189, 248, 100)
-
-            mid_x = (sx[i] + tx[i]) * 0.5
-            mid_y = min(sy[i], ty[i]) - 8.0
-            p.setPen(QPen(col, 1.2))
-
-            path = QPainterPath()
-            path.moveTo(float(sx[i]), float(sy[i]))
-            path.quadTo(float(mid_x), float(mid_y), float(tx[i]), float(ty[i]))
-            p.drawPath(path)
-
-            # Traveling action potential pulse when visual stimuli or activity is present
-            vis_active = (self.cue_near > 0.02 or self.rate_gf > 1.5 or abs(self.rate_steer) > 1.5 or self.view_mode == MODE_ACTIVITY)
-            if vis_active:
-                t_pulse = (self._pulse_phase + (i % 7) * 0.14) % 1.0
-                bx = (1 - t_pulse) ** 2 * sx[i] + 2 * (1 - t_pulse) * t_pulse * mid_x + t_pulse ** 2 * tx[i]
-                by = (1 - t_pulse) ** 2 * sy[i] + 2 * (1 - t_pulse) * t_pulse * mid_y + t_pulse ** 2 * ty[i]
-                p.setPen(Qt.NoPen)
-                p.setBrush(QBrush(QColor(255, 255, 255, 240)))
-                p.drawEllipse(QPointF(float(bx), float(by)), 2.4, 2.4)
-                p.setBrush(Qt.NoBrush)
-
-            p.setPen(Qt.NoPen)
-            p.setBrush(QBrush(col))
-            r = 2.2 * s_persp[i]
-            p.drawEllipse(QPointF(float(sx[i]), float(sy[i])), r, r)
+    def _draw_visual_pulses(self, p: QPainter):
+        """Travelling action potentials along the visual projections while there is something to see."""
+        if len(self._vpn_soma) == 0:
+            return
+        if not (self.cue_near > 0.02 or self.rate_gf > 1.5 or abs(self.rate_steer) > 1.5
+                or self.view_mode == MODE_ACTIVITY):
+            return
+        sx, sy, mx, my, tx, ty, _ = self._vpn_curves()
+        t = (self._pulse_phase + (np.arange(len(sx)) % 7) * 0.14) % 1.0
+        bx = (1 - t) ** 2 * sx + 2 * (1 - t) * t * mx + t ** 2 * tx
+        by = (1 - t) ** 2 * sy + 2 * (1 - t) * t * my + t ** 2 * ty
+        p.setPen(Qt.NoPen)
+        p.setBrush(QColor(255, 255, 255, 240))
+        _draw_dots(p, bx, by, 2.4)
 
     # ------------------------------------------------------------------ antennal lobes
+    def _alpn_curves(self):
+        sx, sy, _, s_persp = self._proj(self._alpn_soma)
+        tx, ty, _, _ = self._proj(self._alpn_target)
+        return sx, sy, (sx + tx) * 0.5, (sy + ty) * 0.5 - 12.0, tx, ty, s_persp
+
     def _draw_antennal_lobes(self, p: QPainter):
         """Draw Antennal Lobes (AL) and olfactory projection neurons (ALPN) to Calyx & Lateral Horn."""
         if len(self._alpn_soma) == 0:
             return
-
-        sx, sy, _, s_persp = self._project_points(self._alpn_soma)
-        tx, ty, _, _ = self._project_points(self._alpn_target)
-
+        sx, sy, mx, my, tx, ty, s_persp = self._alpn_curves()
         p.setBrush(Qt.NoBrush)
-        pen = QPen(QColor(16, 185, 129, 90), 1.0)
-        p.setPen(pen)
-
-        odor_active = (self.cue_food > 0.02 or self.pam > 0.05 or self.view_mode == MODE_ACTIVITY)
-
-        for i in range(len(self._alpn_soma)):
-            path = QPainterPath()
-            path.moveTo(float(sx[i]), float(sy[i]))
-            mid_x = (sx[i] + tx[i]) * 0.5
-            mid_y = (sy[i] + ty[i]) * 0.5 - 12.0
-            path.quadTo(float(mid_x), float(mid_y), float(tx[i]), float(ty[i]))
-            p.drawPath(path)
-
-            # Traveling olfactory pulse packet
-            if odor_active:
-                t_pulse = (self._pulse_phase + (i % 5) * 0.20) % 1.0
-                bx = (1 - t_pulse) ** 2 * sx[i] + 2 * (1 - t_pulse) * t_pulse * mid_x + t_pulse ** 2 * tx[i]
-                by = (1 - t_pulse) ** 2 * sy[i] + 2 * (1 - t_pulse) * t_pulse * mid_y + t_pulse ** 2 * ty[i]
-                p.setPen(Qt.NoPen)
-                p.setBrush(QBrush(QColor(167, 243, 208, 240)))
-                p.drawEllipse(QPointF(float(bx), float(by)), 2.2, 2.2)
-                p.setBrush(Qt.NoBrush)
-
+        p.setPen(QPen(QColor(16, 185, 129, 90), 1.0))
+        p.drawPath(_curve_path(sx, sy, mx, my, tx, ty))
         p.setPen(Qt.NoPen)
-        p.setBrush(QBrush(QColor(16, 185, 129, 210)))
-        for i in range(len(self._alpn_soma)):
-            r = 2.6 * s_persp[i]
-            p.drawEllipse(QPointF(float(sx[i]), float(sy[i])), r, r)
+        p.setBrush(QColor(16, 185, 129, 210))
+        _draw_dots(p, sx, sy, 2.6 * s_persp)
+
+    def _draw_odor_pulses(self, p: QPainter):
+        """Travelling olfactory packets along the projection neurons while there is an odour (or a reward)."""
+        if len(self._alpn_soma) == 0:
+            return
+        if not (self.cue_food > 0.02 or self.pam > 0.05 or self.view_mode == MODE_ACTIVITY):
+            return
+        sx, sy, mx, my, tx, ty, _ = self._alpn_curves()
+        t = (self._pulse_phase + (np.arange(len(sx)) % 5) * 0.20) % 1.0
+        bx = (1 - t) ** 2 * sx + 2 * (1 - t) * t * mx + t ** 2 * tx
+        by = (1 - t) ** 2 * sy + 2 * (1 - t) * t * my + t ** 2 * ty
+        p.setPen(Qt.NoPen)
+        p.setBrush(QColor(167, 243, 208, 240))
+        _draw_dots(p, bx, by, 2.2)
 
     # ------------------------------------------------------------------ descending neurons
+    _DN_STYLES = (("GF", QColor(239, 68, 68, 240), 2.6),      # Giant Fiber (blazing crimson)
+                  ("MDN", QColor(217, 70, 239, 230), 2.0),    # Moonwalker (fuchsia)
+                  ("WALK", QColor(34, 197, 94, 230), 2.0),    # Forward walk (lime green)
+                  ("DNa", QColor(6, 182, 212, 230), 2.0),     # Steering (cyan); matched as a prefix
+                  ("GROOM", QColor(139, 92, 246, 230), 2.0),  # Grooming (violet)
+                  ("", QColor(148, 163, 184, 180), 1.4))
+
+    def _dn_style_index(self) -> np.ndarray:
+        types = self._dn_type
+        if getattr(self, "_dn_style_for", None) is not types:
+            def style(t: str) -> int:
+                if t in ("GF", "MDN", "WALK", "GROOM"):
+                    return ("GF", "MDN", "WALK", "DNa", "GROOM").index(t)
+                return 3 if "DNa" in t else 5
+            self._dn_style_cache = np.array([style(str(t)) for t in types], dtype=np.int64)
+            self._dn_style_for = types
+        return self._dn_style_cache
+
     def _draw_descending_neurons(self, p: QPainter):
         """Draw Descending Motor Neurons (DN Hub) plunging through cervical connective toward the VNC."""
         if len(self._dn_soma) == 0:
             return
-
-        sx, sy, _, s_persp = self._project_points(self._dn_soma)
-        tx, ty, _, t_persp = self._project_points(self._dn_target)
-        types = self._dn_type
-
-        font_tag = QFont("Cascadia Mono", 7, QFont.Bold)
-
-        for i in range(len(self._dn_soma)):
-            ntype = types[i]
-
-            if ntype == "GF":
-                col = QColor(239, 68, 68, 240) # Giant Fiber (blazing crimson)
-                line_w = 2.6
-            elif ntype == "MDN":
-                col = QColor(217, 70, 239, 230) # Moonwalker (fuchsia)
-                line_w = 2.0
-            elif ntype == "WALK":
-                col = QColor(34, 197, 94, 230) # Forward walk (lime green)
-                line_w = 2.0
-            elif "DNa" in ntype:
-                col = QColor(6, 182, 212, 230) # Steering (cyan)
-                line_w = 2.0
-            elif ntype == "GROOM":
-                col = QColor(139, 92, 246, 230) # Grooming (violet)
-                line_w = 2.0
-            else:
-                col = QColor(148, 163, 184, 180)
-                line_w = 1.4
-
-            # Descending axon trunk
+        sx, sy, _, s_persp = self._proj(self._dn_soma)
+        tx, ty, _, t_persp = self._proj(self._dn_target)
+        style = self._dn_style_index()
+        for k, (_, col, line_w) in enumerate(self._DN_STYLES):
+            idx = np.flatnonzero(style == k)
+            if len(idx) == 0:
+                continue
+            # descending axon trunks (straight lines stay cheap at 2-2.6 px; it is curves that a wide pen makes slow)
             p.setBrush(Qt.NoBrush)
             p.setPen(QPen(col, line_w))
-            p.drawLine(QPointF(float(sx[i]), float(sy[i])), QPointF(float(tx[i]), float(ty[i])))
-
-            # Action potentials propagating down motor axon trunks into the VNC
-            is_firing = (
-                (ntype == "GF" and self.rate_gf > 1.5) or
-                (ntype == "WALK" and self.rate_walk > 1.5) or
-                (ntype == "MDN" and self.rate_mdn > 1.5) or
-                ("DNa" in ntype and abs(self.rate_steer) > 1.5) or
-                (ntype == "GROOM" and self.rate_groom > 1.5) or
-                (self.view_mode == MODE_ACTIVITY)
-            )
-
-            if is_firing:
-                t_pulse = (self._pulse_phase * 2.2 + (i % 3) * 0.33) % 1.0
-                px = sx[i] + (tx[i] - sx[i]) * t_pulse
-                py = sy[i] + (ty[i] - sy[i]) * t_pulse
-                p.setPen(Qt.NoPen)
-                p.setBrush(QBrush(QColor(255, 255, 255, 250)))
-                p.drawEllipse(QPointF(float(px), float(py)), 3.2, 3.2)
-                p.setBrush(Qt.NoBrush)
-
-            # Soma node in central brain
+            p.drawLines([QLineF(a, b, c, d) for a, b, c, d in
+                         zip(sx[idx].tolist(), sy[idx].tolist(), tx[idx].tolist(), ty[idx].tolist())])
+            # soma nodes in the central brain and the cervical terminal markers
             p.setPen(Qt.NoPen)
-            p.setBrush(QBrush(col))
-            r = 3.8 * s_persp[i]
-            p.drawEllipse(QPointF(float(sx[i]), float(sy[i])), r, r)
+            p.setBrush(col)
+            _draw_dots(p, sx[idx], sy[idx], 3.8 * s_persp[idx])
+            _draw_dots(p, tx[idx], ty[idx], 2.0 * t_persp[idx])
 
-            # Cervical terminal marker
-            r_term = 2.0 * t_persp[i]
-            p.drawEllipse(QPointF(float(tx[i]), float(ty[i])), r_term, r_term)
+        self._draw_silenced(p, "dn", sx, sy, 4.2 * s_persp)
 
-            # Labeled tag for primary anchor neurons
-            if ntype in ("GF", "MDN", "WALK") and i % 2 == 0:
-                p.setFont(font_tag)
-                p.setPen(col)
+        # labelled tags for the primary anchor neurons
+        p.setFont(self._fonts()["tag"])
+        for i in range(0, len(self._dn_soma), 2):
+            ntype = str(self._dn_type[i])
+            if ntype in ("GF", "MDN", "WALK"):
+                p.setPen(self._DN_STYLES[int(style[i])][1])
                 p.drawText(int(sx[i]) + 6, int(sy[i]) + 3, ntype)
+
+    def _draw_motor_pulses(self, p: QPainter):
+        """Action potentials travelling down the trunks of the descending neurons that fire."""
+        if len(self._dn_soma) == 0:
+            return
+        types = self._dn_type
+        if self.view_mode == MODE_ACTIVITY:
+            firing = np.ones(len(types), dtype=bool)
+        else:
+            rate = {"GF": self.rate_gf, "WALK": self.rate_walk, "MDN": self.rate_mdn, "GROOM": self.rate_groom}
+            firing = np.array([(rate.get(str(t), 0.0) > 1.5) or ("DNa" in str(t) and abs(self.rate_steer) > 1.5)
+                               for t in types], dtype=bool)
+        idx = np.flatnonzero(firing)
+        if len(idx) == 0:
+            return
+        sx, sy, _, _ = self._proj(self._dn_soma)
+        tx, ty, _, _ = self._proj(self._dn_target)
+        t = (self._pulse_phase * 2.2 + (idx % 3) * 0.33) % 1.0
+        p.setPen(Qt.NoPen)
+        p.setBrush(QColor(255, 255, 255, 250))
+        _draw_dots(p, sx[idx] + (tx[idx] - sx[idx]) * t, sy[idx] + (ty[idx] - sy[idx]) * t, 3.2)
+
     def _color_for_neuron(self, weight: float, lobe: int, is_active: bool, alpha: int = 180) -> QColor:
         """Map neuron attributes to color based on current visual mode."""
         if is_active:
             # Active firing spark: bright white-hot cyan
             return QColor(255, 255, 255, min(255, alpha + 50))
+        return QColor.fromRgba(int(self._resting_rgba([weight], [lobe], alpha)[0]))
 
-        if self.view_mode == MODE_VALENCE:
-            # Learned mental map:
-            # weight > 0: Appetitive memory (Reward -> Emerald Green to Golden Yellow)
-            # weight < 0: Aversive memory (Punishment -> Ruby Red to Crimson Violet)
-            # weight ~ 0: Naive (Slate Ice-Blue)
-            if weight > 0.005:
-                t = min(1.0, weight / 0.15)
-                # Emerald (#10b981) to Gold (#fbbf24)
-                r = int(16 * (1 - t) + 251 * t)
-                g = int(185 * (1 - t) + 191 * t)
-                b = int(129 * (1 - t) + 36 * t)
-                return QColor(r, g, b, min(255, int(alpha * (1.0 + t * 0.4))))
-            elif weight < -0.005:
-                t = min(1.0, -weight / 0.15)
-                # Crimson (#f43f5e) to Ruby Red (#dc2626)
-                r = int(244 * (1 - t) + 220 * t)
-                g = int(63 * (1 - t) + 38 * t)
-                b = int(94 * (1 - t) + 38 * t)
-                return QColor(r, g, b, min(255, int(alpha * (1.0 + t * 0.4))))
-            else:
-                # Naive / neutral
-                return QColor(56, 189, 248, alpha)
-
-        elif self.view_mode == MODE_PLASTICITY:
-            # Plasticity magnitude |Δw| heatmap
-            mag = min(1.0, abs(weight) / 0.12)
-            # Blue-violet (#3b82f6) -> Orange (#f97316) -> Radiant Yellow (#fde047)
-            if mag < 0.5:
-                t = mag / 0.5
-                r = int(59 * (1 - t) + 249 * t)
-                g = int(130 * (1 - t) + 115 * t)
-                b = int(246 * (1 - t) + 22 * t)
-            else:
-                t = (mag - 0.5) / 0.5
-                r = int(249 * (1 - t) + 253 * t)
-                g = int(115 * (1 - t) + 224 * t)
-                b = int(22 * (1 - t) + 71 * t)
-            return QColor(r, g, b, min(255, int(alpha * (0.8 + mag * 0.5))))
-
-        elif self.view_mode == MODE_ANATOMY:
-            # Biological anatomical lobes
-            if lobe == LOBE_GAMMA:
-                return QColor(6, 182, 212, alpha)       # Cyan (Gamma)
-            elif lobe == LOBE_ALPHABETA:
-                return QColor(245, 158, 11, alpha)      # Amber (Alpha/Beta)
-            else:
-                return QColor(217, 70, 239, alpha)      # Magenta (Alpha'/Beta')
-
-        else: # MODE_ACTIVITY
-            # Base dim cyan, sparks handled above
-            return QColor(71, 85, 105, alpha)
-
-    def _draw_opto_flashes(self, p: QPainter):
-        """Draw animated optogenetic laser beams, concentric shockwave ripples, and floating badges."""
-        if not self._opto_flashes:
+    def _draw_silenced(self, p: QPainter, system: str, sx, sy, r) -> None:
+        """Silenced groups' neurons in grey with a dark rim (base layer: it changes only when the silencing does)."""
+        idx = [m for g in self._lab.get("silenced", ()) if g in self._lab_members
+               for sys_, m in [self._lab_members[g]] if sys_ == system]
+        if not idx:
             return
+        sel = np.concatenate(idx)
+        p.setPen(QPen(QColor(15, 15, 20, 230), 1.0))
+        p.setBrush(QColor(120, 128, 140, 235))
+        _draw_dots(p, sx[sel], sy[sel], np.maximum(r[sel], 3.0))
 
+    def _group_anchors(self, group: str) -> list[tuple[float, float]]:
+        """Where a group's marker label goes: the centre of its drawn neurons on each side."""
+        system, idx = self._lab_members[group]
+        sides = self._dn_side if system == "dn" else self._vpn_side
+        x, y, _ = self._members_xy(group)
+        if len(sides) < 1 or group.endswith(("_L", "_R")):
+            return [(float(np.mean(x)), float(np.mean(y)))]
+        side = np.asarray(sides)[idx] if len(sides) > int(idx.max()) else np.zeros(len(idx))
+        out = []
+        for s_ in (-1, 1):
+            m = side == s_
+            if m.any():
+                out.append((float(np.mean(x[m])), float(np.mean(y[m]))))
+        return out or [(float(np.mean(x)), float(np.mean(y)))]
+
+    def _draw_lab_overlay(self, p: QPainter) -> None:
+        """Stimulated groups glow (from what the worker reports), the target under the cursor is ringed, the lab tools
+        show where their targets are, and every action leaves one ripple."""
         now = time.perf_counter()
-        active = []
-        for f in self._opto_flashes:
-            dt = now - f["time"]
-            dur = f.get("duration", 0.9)
-            if dt > dur:
-                continue
-            active.append(f)
-            progress = dt / dur
-            alpha = int(255 * (1.0 - progress))
-            col = f["color"]
-
-            sx_arr, sy_arr, _, valid_arr = self._project_points(np.array([f["pos"]], dtype=np.float32))
-            if not valid_arr[0]:
-                continue
-            sx, sy = float(sx_arr[0]), float(sy_arr[0])
-
-            p.save()
-            # 1. Optical laser beam from top of screen into target
-            beam_alpha = int(alpha * 0.75)
-            beam_pen = QPen(QColor(col.red(), col.green(), col.blue(), beam_alpha), 2.0, Qt.DashLine)
-            p.setPen(beam_pen)
-            p.drawLine(int(sx), 0, int(sx), int(sy))
-
-            # 2. Concentric expanding shockwave ripple rings
-            p.setBrush(Qt.NoBrush)
-            for r_idx in range(3):
-                phase = (progress + r_idx * 0.25) % 1.0
-                radius = 8.0 + phase * 65.0
-                ring_alpha = int(alpha * (1.0 - phase))
-                if ring_alpha > 5:
-                    r_col = QColor(col.red(), col.green(), col.blue(), ring_alpha)
-                    p.setPen(QPen(r_col, max(1.2, 3.5 * (1.0 - phase))))
-                    p.drawEllipse(QPointF(sx, sy), radius, radius)
-
-            # 3. Bright central photostimulation flare
-            flare_grad = QRadialGradient(sx, sy, 24.0)
-            flare_grad.setColorAt(0.0, QColor(255, 255, 255, alpha))
-            flare_grad.setColorAt(0.35, QColor(col.red(), col.green(), col.blue(), int(alpha * 0.85)))
-            flare_grad.setColorAt(1.0, QColor(col.red(), col.green(), col.blue(), 0))
-            p.setBrush(QBrush(flare_grad))
+        visible = {g for g, (sys_, _) in self._lab_members.items()
+                   if (self.layer_motor if sys_ == "dn" else self.layer_visual)}
+        p.save()
+        # 1. light on: the group's neurons pulse orange
+        lit = [g for g in self._lab.get("stimulated", ()) if g in visible]
+        if lit:
+            glow = 0.55 + 0.45 * math.sin(now * 12.0)
             p.setPen(Qt.NoPen)
-            p.drawEllipse(QPointF(sx, sy), 24.0, 24.0)
-
-            # 4. Floating holographic badge
-            badge_y = sy - 30.0 - progress * 20.0
-            badge_text = f"ChR2: {f['name']} ({f['action']})"
-            font_badge = QFont("Segoe UI", 8, QFont.Bold)
-            p.setFont(font_badge)
-            bw = p.fontMetrics().horizontalAdvance(badge_text) + 16
-            bx = int(sx - bw / 2)
-            by = int(badge_y - 10)
-            b_rect = QRect(bx, by, bw, 20)
-
-            p.setBrush(QBrush(QColor(12, 14, 20, int(alpha * 0.88))))
-            p.setPen(QPen(QColor(col.red(), col.green(), col.blue(), int(alpha * 0.9)), 1.2))
-            p.drawRoundedRect(b_rect, 4, 4)
-
-            p.setPen(QColor(255, 255, 255, alpha))
-            p.drawText(b_rect, Qt.AlignCenter, badge_text)
-            p.restore()
-
-        self._opto_flashes = active
-
-    def _draw_opto_banner(self, p: QPainter, w: int):
-        """Draw glowing top status banner when optogenetic pulse is evoked."""
-        now = time.perf_counter()
-        dt = now - self._opto_status_time
-        if dt >= 3.0:
-            return
-
-        fade = max(0.0, min(1.0, 3.0 - dt))
-        alpha = int(255 * fade)
-
-        font_b = QFont("Segoe UI", 9, QFont.Bold)
-        p.setFont(font_b)
-        text = f"OPTOGENETIC PULSE: {self._opto_status}"
-        tw = p.fontMetrics().horizontalAdvance(text) + 28
-        bx = int((w - tw) / 2)
-        by = 12
-        rect = QRect(bx, by, tw, 26)
-
-        p.setBrush(QBrush(QColor(10, 18, 28, int(225 * fade))))
-        p.setPen(QPen(QColor(0, 229, 255, alpha), 1.5))
-        p.drawRoundedRect(rect, 13, 13)
-
-        p.setPen(QColor(230, 248, 255, alpha))
-        p.drawText(rect, Qt.AlignCenter, text)
+            for g in lit:
+                x, y, persp = self._members_xy(g)
+                p.setBrush(QColor(255, 120, 60, int(70 * glow)))
+                _draw_dots(p, x, y, 9.0 * persp)
+                p.setBrush(QColor(255, 196, 120, 235))
+                _draw_dots(p, x, y, 3.2 * persp)
+        # 2. markers of the lab tools
+        p.setFont(self._fonts()["tag"])
+        if self.tool_mode in ("opto", "silence"):
+            avail = set(self._lab.get("available", ())) or set(self._lab_members)
+            for g in sorted(visible):
+                off = g not in avail
+                sil = g in self._lab.get("silenced", ())
+                text = "" if g in ("GF", "MDN", "WALK") else g.replace("_L", " L").replace("_R", " R").replace(
+                    "GROOM", "aDN")
+                for ax, ay in self._group_anchors(g):
+                    col = (QColor(110, 110, 120, 150) if off else QColor(148, 163, 184, 230) if sil
+                           else QColor(255, 150, 90, 230) if self.tool_mode == "opto" else QColor(186, 196, 210, 230))
+                    p.setPen(QPen(col, 1.0))
+                    p.setBrush(Qt.NoBrush)
+                    p.drawEllipse(QPointF(ax, ay), 7.0, 7.0)
+                    label = f"{text} ⊘".strip() if sil else text
+                    if label:
+                        p.drawText(QPointF(ax + 10.0, ay - 6.0), label)
+        # 3. the target under the cursor: every neuron of its group ringed
+        g = self._hover_target
+        if g in self._lab_members and g in visible:
+            x, y, persp = self._members_xy(g)
+            col = QColor(255, 150, 90) if self.tool_mode == "opto" else QColor(226, 232, 240)
+            p.setPen(QPen(col, 1.0))
+            p.setBrush(Qt.NoBrush)
+            for xx, yy, pp in zip(x.tolist(), y.tolist(), persp.tolist()):
+                p.drawEllipse(QPointF(xx, yy), 6.0 * pp + 2.0, 6.0 * pp + 2.0)
+        # 4. one ripple per action
+        for target, t0, col in self._ripples:
+            age = (now - t0) / 0.7
+            xy = self._target_xy(target)
+            if xy is None or age >= 1.0:
+                continue
+            c = QColor(col)
+            c.setAlpha(int(220 * (1.0 - age)))
+            p.setPen(QPen(c, 1.0))
+            p.setBrush(Qt.NoBrush)
+            p.drawEllipse(QPointF(*xy), 8.0 + 40.0 * age, 8.0 + 40.0 * age)
+        p.restore()
 
     def _draw_inspected_reticle(self, p: QPainter):
         """Draw 3D animated target reticle and axon connection line for inspected neuron."""
@@ -1945,409 +1926,409 @@ class MushroomBody3DView(QWidget):
 
         p.restore()
 
+    def _card_rect(self, w: int, h: int) -> QRect:
+        cw = min(380, w - 32)
+        ch = 120
+        return QRect(16, h - 66 - ch - 8, cw, ch)
+
     def _draw_inspector_card(self, p: QPainter, w: int, h: int):
-        """Draw holographic glass card displaying FlyWire connectome metadata and real-time Hz."""
-        if self._inspected_neuron is None:
+        """The pinned neuron's card: what it is, its rate (and whether that is a spike rate, a designed signal or an
+        illustration), and for a lab target the actions."""
+        card = self._inspected_neuron
+        if card is None:
             return
-
-        cw = min(360, w - 32)
-        ch = 118
-        cx = 16
-        cy = h - 52 - ch - 12
-        card_rect = QRect(cx, cy, cw, ch)
-
+        f = self._fonts()
+        r = self._card_rect(w, h)
+        cx, cy, cw, ch = r.x(), r.y(), r.width(), r.height()
         p.save()
-        # Card background gradient
         bg = QLinearGradient(cx, cy, cx, cy + ch)
         bg.setColorAt(0.0, QColor(14, 16, 24, 240))
         bg.setColorAt(1.0, QColor(10, 11, 16, 248))
         p.setBrush(QBrush(bg))
-
-        col = self._inspected_neuron.get("color", QColor(168, 85, 247))
+        col = card.get("color", QColor(168, 85, 247))
         p.setPen(QPen(QColor(col.red(), col.green(), col.blue(), 170), 1.2))
-        p.drawRoundedRect(card_rect, 6, 6)
+        p.drawRoundedRect(r, 6, 6)
 
-        # Top line: Category + Pin status
-        font_cat = QFont("Segoe UI", 7, QFont.Bold)
-        p.setFont(font_cat)
+        p.setFont(f["cat"])
         p.setPen(QColor(col.red(), col.green(), col.blue(), 230))
-        status_txt = "PINNED" if self._inspected_pinned else "HOVER PREVIEW"
-        cat_txt = f"NEURON INSPECTOR • {self._inspected_neuron.get('system', '')} • [{status_txt}]"
-        p.drawText(cx + 12, cy + 18, cat_txt)
-
-        # Close button [×] at top right
+        p.drawText(QRect(cx + 12, cy + 6, cw - 40, 16), Qt.AlignLeft | Qt.AlignVCenter,
+                   QFontMetrics(f["cat"]).elidedText(f"INSPECTOR • {card.get('system', '')}", Qt.ElideRight, cw - 40))
         close_rect = QRect(cx + cw - 22, cy + 6, 16, 16)
         self._btn_rects["close_inspector"] = close_rect
         p.setPen(QColor(150, 150, 160, 200))
         p.drawText(close_rect, Qt.AlignCenter, "×")
 
-        # Main Name
-        font_name = QFont("Segoe UI", 10, QFont.Bold)
-        p.setFont(font_name)
+        p.setFont(f["name"])
         p.setPen(QColor(245, 245, 250))
-        p.drawText(cx + 12, cy + 36, self._inspected_neuron.get("name", "Neuron"))
+        p.drawText(QRect(cx + 12, cy + 24, cw - 24, 18), Qt.AlignLeft | Qt.AlignVCenter,
+                   QFontMetrics(f["name"]).elidedText(card.get("name", "Neuron"), Qt.ElideRight, cw - 24))
 
-        # Badges row: Neurotransmitter + Rate
-        font_badge = QFont("Segoe UI", 7, QFont.DemiBold)
-        p.setFont(font_badge)
-
-        bx = cx + 12
-        by = cy + 44
-        # NT Badge
-        nt_txt = self._inspected_neuron.get("nt", "ACh")
-        nt_w = p.fontMetrics().horizontalAdvance(nt_txt) + 12
-        nt_rect = QRect(bx, by, nt_w, 18)
-        nt_c = self._inspected_neuron.get("nt_color", QColor(56, 189, 248))
-        p.setBrush(QBrush(QColor(nt_c.red(), nt_c.green(), nt_c.blue(), 55)))
+        # badges: neurotransmitter, rate (and what kind of number it is)
+        p.setFont(f["badge"])
+        fm = QFontMetrics(f["badge"])
+        bx, by = cx + 12, cy + 46
+        nt_txt = card.get("nt", "ACh")
+        nt_rect = QRect(bx, by, fm.horizontalAdvance(nt_txt) + 12, 18)
+        nt_c = card.get("nt_color", QColor(56, 189, 248))
+        p.setBrush(QColor(nt_c.red(), nt_c.green(), nt_c.blue(), 55))
         p.setPen(QPen(QColor(nt_c.red(), nt_c.green(), nt_c.blue(), 180), 1))
         p.drawRoundedRect(nt_rect, 3, 3)
         p.setPen(QColor(245, 245, 250))
         p.drawText(nt_rect, Qt.AlignCenter, nt_txt)
-        bx += nt_w + 6
-
-        # Rate Badge
-        rate_txt = f"Rate: {self._inspected_neuron.get('rate_hz', '0.0 Hz')}"
-        rate_w = p.fontMetrics().horizontalAdvance(rate_txt) + 12
-        rate_rect = QRect(bx, by, rate_w, 18)
-        p.setBrush(QBrush(QColor(30, 32, 42, 180)))
+        bx += nt_rect.width() + 6
+        kind = card.get("rate_kind", "")
+        rate_txt = f"Rate: {card.get('rate_hz', '0.0 Hz')}" + (f"  ({kind})" if kind and kind != "spikes" else "")
+        rate_rect = QRect(bx, by, fm.horizontalAdvance(rate_txt) + 12, 18)
+        p.setBrush(QColor(30, 32, 42, 180))
         p.setPen(QPen(QColor(80, 85, 105, 140), 1))
         p.drawRoundedRect(rate_rect, 3, 3)
-        p.setPen(QColor(220, 225, 235))
+        p.setPen(QColor(220, 225, 235) if kind in ("spikes", "model") else QColor(170, 175, 190))
         p.drawText(rate_rect, Qt.AlignCenter, rate_txt)
 
-        # Role description
-        font_role = QFont("Segoe UI", 8, QFont.Normal)
-        p.setFont(font_role)
+        # actions of a lab target (or a sandbox signal)
+        actions = []
+        if card.get("lab"):
+            actions = [("card_stim", "Stimulate"),
+                       ("card_silence", "Release" if card["lab"] in self._asked_silenced() else "Silence")]
+        elif card.get("sandbox"):
+            actions = [("card_sandbox", {"reward": "Send reward", "punish": "Send punishment",
+                                         "food": "Show odor"}[card["sandbox"]])]
+        ax = cx + cw - 12
+        for bid, text in reversed(actions):
+            bw = fm.horizontalAdvance(text) + 16
+            ax -= bw
+            rect = QRect(ax, by, bw, 18)
+            self._btn_rects[bid] = rect
+            accent = QColor(255, 140, 80) if bid == "card_stim" else QColor(148, 163, 184)
+            p.setBrush(QColor(accent.red(), accent.green(), accent.blue(), 40))
+            p.setPen(QPen(QColor(accent.red(), accent.green(), accent.blue(), 190), 1))
+            p.drawRoundedRect(rect, 4, 4)
+            p.setPen(QColor(240, 240, 245))
+            p.drawText(rect, Qt.AlignCenter, text)
+            ax -= 6
+
+        p.setFont(f["role"])
         p.setPen(QColor(180, 185, 195))
-        p.drawText(cx + 12, cy + 78, self._inspected_neuron.get("role", ""))
-
-        # Synaptic Partners
-        font_part = QFont("Segoe UI", 7, QFont.Normal)
-        p.setFont(font_part)
+        p.drawText(QRect(cx + 12, cy + 70, cw - 24, 16), Qt.AlignLeft | Qt.AlignVCenter,
+                   QFontMetrics(f["role"]).elidedText(card.get("role", ""), Qt.ElideRight, cw - 24))
+        p.setFont(f["small"])
         p.setPen(QColor(130, 135, 145))
-        p.drawText(cx + 12, cy + 96, self._inspected_neuron.get("partners", ""))
-
+        p.drawText(QRect(cx + 12, cy + 88, cw - 24, 14), Qt.AlignLeft | Qt.AlignVCenter,
+                   QFontMetrics(f["small"]).elidedText(card.get("partners", ""), Qt.ElideRight, cw - 24))
+        if card.get("lab"):
+            label, effect = LAB_TARGETS[card["lab"]]
+            note = f"Lab group {card['lab']}: light drives it at {LAB_FULL_HZ.get(card['lab'], 0):.0f} Hz (known: {effect})"
+        elif card.get("sandbox"):
+            note = "Designed learning signal (not spiking neurons): teaches the cues present now"
+        else:
+            note = ""
+        if note:
+            p.setPen(QColor(150, 155, 170))
+            p.drawText(QRect(cx + 12, cy + 102, cw - 24, 14), Qt.AlignLeft | Qt.AlignVCenter,
+                       QFontMetrics(f["small"]).elidedText(note, Qt.ElideRight, cw - 24))
         p.restore()
 
     # ------------------------------------------------------------------ HUD
-    def _draw_hud(self, p: QPainter):
-        """Draw titles, control buttons, and live telemetry overlays."""
-        self._btn_rects.clear()
-        w, h = self.width(), self.height()
+    def _fonts(self) -> dict[str, QFont]:
+        """The HUD's fonts, made once (a QFont per text per frame cost a few ms)."""
+        if self._fonts_cache is None:
+            self._fonts_cache = {
+                "title": QFont("Segoe UI", 9, QFont.Bold), "small": QFont("Segoe UI", 7),
+                "btn": QFont("Segoe UI", 8, QFont.DemiBold), "pill": QFont("Segoe UI", 7, QFont.DemiBold),
+                "mono": QFont("Cascadia Mono", 9, QFont.DemiBold), "tag": QFont("Cascadia Mono", 7, QFont.Bold),
+                "cat": QFont("Segoe UI", 7, QFont.Bold), "name": QFont("Segoe UI", 10, QFont.Bold),
+                "badge": QFont("Segoe UI", 7, QFont.DemiBold), "role": QFont("Segoe UI", 8),
+                "status": QFont("Segoe UI", 8, QFont.DemiBold), "bar": QFont("Segoe UI", 8),
+            }
+        return self._fonts_cache
 
-        font_title = QFont("Segoe UI", 10, QFont.Bold)
-        font_small = QFont("Segoe UI", 8, QFont.Normal)
-        font_mono = QFont("Cascadia Mono", 9, QFont.DemiBold)
+    def _hud_items(self) -> dict[str, list[tuple[str, str, str]]]:
+        """The HUD's controls as (id, text, kind) per group; short labels on a narrow view."""
+        compact = self.width() < 760
+        camera = [("iso", "Iso" if compact else "3D Iso"), ("dorsal", "Top"), ("ant", "Front"),
+                  ("rot", ("Spin" if compact else "Auto Rotate") if not self.auto_rotate else "Stop"),
+                  ("reset", "Reset"), ("help", "?")]
+        modes = [(f"mode_{MODE_VALENCE}", "Valence" if compact else "Mental Map"),
+                 (f"mode_{MODE_PLASTICITY}", "Plasticity"), (f"mode_{MODE_ANATOMY}", "Anatomy"),
+                 (f"mode_{MODE_ACTIVITY}", "Activity" if compact else "Live Activity")]
+        layers = [("layer_mb", "Mushroom" if compact else "Mushroom Body"), ("layer_cx", "CX"),
+                  ("layer_visual", "Vision"), ("layer_olfactory", "Odor"), ("layer_motor", "Motor"),
+                  ("layer_hulls", "Hulls" if compact else "Neuropils"),
+                  ("layer_wireframe", "Cage" if compact else "Wireframe")]
+        return {"camera": [(i, t, "btn") for i, t in camera], "modes": [(i, t, "btn") for i, t in modes],
+                "layers": [(i, t, "pill") for i, t in layers]}
 
-        # 0.5. Top-Center Optogenetic Status Banner
-        if self._opto_status:
-            self._draw_opto_banner(p, w)
-
-        # 0.6. Neuron Inspector Card
-        if self._inspected_neuron is not None:
-            self._draw_inspector_card(p, w, h)
-
-        # 1. Top-Left: Header
-        p.setFont(font_title)
-        p.setPen(QColor(236, 236, 241, 230))
-        p.drawText(16, 24, "3D DROSOPHILA CONNECTOME & NEURAL MAP")
-
-        p.setFont(font_small)
-        p.setPen(QColor(139, 139, 150, 200))
-        p.drawText(16, 38, f"FlyWire v783 • {self.data.n_kc:,} KCs | {self.data.n_mbon} MBONs | {self.data.n_cx} CX Compass | {self.data.n_vpn} Optic | {self.data.n_dn} Motor DNs")
-
-        # 1.5. Layer Toggles Bar (below header)
-        self._draw_layer_filters(p, 16, 46)
-
-        # 2. Top-Right: Toolbar buttons
-        self._draw_toolbar(p, w)
-
-        # 3. Bottom: Telemetry Bar (Valence Dual-Meter, Dopamine Bars, KC Count)
-        self._draw_bottom_telemetry(p, w, h, font_small, font_mono)
-
-        # 4. Hover Tooltip
-        if self._hover_text:
-            p.setFont(font_small)
-            p.setPen(QColor(255, 255, 255, 220))
-            p.setBrush(QBrush(QColor(20, 20, 26, 230)))
-            rect = QRect(16, h - 84, 280, 24)
-            p.drawRoundedRect(rect, 4, 4)
-            p.drawText(rect.adjusted(8, 0, 0, 0), Qt.AlignVCenter, self._hover_text)
-
-    def _draw_layer_filters(self, p: QPainter, start_x: int, start_y: int):
-        """Draw interactive layer toggle pills on top-left."""
-        font_pill = QFont("Segoe UI", 7, QFont.DemiBold)
-        p.setFont(font_pill)
-
+    def _layout_hud(self) -> dict[str, QRect]:
+        """Rectangles of every HUD control for the widget size. Rows of a left and a right group; when the two do not
+        fit side by side the right group gets a row of its own, so no control ever covers another at any width. The
+        tools stand in a column at the left edge, under the rows."""
+        f = self._fonts()
+        fm = {"btn": QFontMetrics(f["btn"]), "pill": QFontMetrics(f["pill"])}
+        items = self._hud_items()
         w = self.width()
-        is_compact = w < 760
+        margin, gap, row_h = 12, 5, 22
 
-        layers = [
-            ("layer_mb", "Mushroom" if is_compact else "Mushroom Body", self.layer_mb, QColor(245, 158, 11)),
-            ("layer_cx", "CX Compass" if is_compact else "Central Complex (CX)", self.layer_cx, QColor(56, 189, 248)),
-            ("layer_visual", "Vision" if is_compact else "Vision (VPN)", self.layer_visual, QColor(249, 115, 22)),
-            ("layer_olfactory", "Odor" if is_compact else "Odor (AL)", self.layer_olfactory, QColor(16, 185, 129)),
-            ("layer_motor", "Motor" if is_compact else "Motor (DN)", self.layer_motor, QColor(239, 68, 68)),
-            ("layer_hulls", "Hulls" if is_compact else "Neuropils", self.layer_hulls, QColor(168, 85, 247)),
-            ("layer_wireframe", "Cage" if is_compact else "Wireframe", self.layer_wireframe, QColor(148, 163, 184)),
-        ]
+        def widths(group):
+            return [(i, fm[k].horizontalAdvance(t) + (16 if k == "btn" else 12)) for i, t, k in group]
 
-        bx = start_x
-        by = start_y
-        pill_h = 19
-        spacing = 5
+        def span(ws):
+            return sum(bw for _, bw in ws) + gap * max(0, len(ws) - 1)
 
-        for lid, name, is_on, accent_col in layers:
-            text_w = p.fontMetrics().horizontalAdvance(name) + 12
-            rect = QRect(bx, by, text_w, pill_h)
-            self._btn_rects[lid] = rect
+        rects: dict[str, QRect] = {}
 
-            if is_on:
-                bg_col = QColor(accent_col.red(), accent_col.green(), accent_col.blue(), 55)
-                border_col = QColor(accent_col.red(), accent_col.green(), accent_col.blue(), 180)
-                text_col = QColor(255, 255, 255, 240)
+        def place(ws, x, y):
+            for i, bw in ws:
+                rects[i] = QRect(int(x), y, bw, row_h)
+                x += bw + gap
+
+        y = 8
+        title_w = QFontMetrics(f["title"]).horizontalAdvance("NEURAL MAP") + 8
+        for left, right in ((None, widths(items["camera"])), (widths(items["layers"]), widths(items["modes"]))):
+            lw = title_w if left is None else span(left)
+            rw = span(right)
+            if left is not None and lw > w - 2 * margin:      # the pills alone do not fit: two rows of them
+                half = (len(left) + 1) // 2
+                place(left[:half], margin, y)
+                y += row_h + 5
+                left, lw = left[half:], span(left[half:])
+            if margin + lw + 16 + rw + margin > w:
+                if left is not None:
+                    place(left, margin, y)
+                else:
+                    rects["title"] = QRect(margin, y, title_w, row_h)
+                y += row_h + 5
+                place(right, max(margin, w - margin - rw), y)
             else:
-                bg_col = QColor(24, 24, 30, 160)
-                border_col = QColor(55, 55, 65, 130)
-                text_col = QColor(120, 120, 130, 180)
+                if left is not None:
+                    place(left, margin, y)
+                else:
+                    rects["title"] = QRect(margin, y, title_w, row_h)
+                place(right, w - margin - rw, y)
+            y += row_h + 5
+        # the tools: a column at the left edge
+        tool_w = max(fm["btn"].horizontalAdvance(t) for _, t in TOOLS) + 18
+        ty = y + 4
+        for tid, _ in TOOLS:
+            rects[f"tool_{tid}"] = QRect(margin, ty, tool_w, row_h + 2)
+            ty += row_h + 6
+        self._hud_bottom = ty
+        return rects
 
-            p.setBrush(QBrush(bg_col))
-            p.setPen(QPen(border_col, 1))
-            p.drawRoundedRect(rect, 4, 4)
+    def _draw_hud(self, p: QPainter):
+        """Draw the controls, the telemetry bar, the inspector card, the status line and the hover label."""
+        self._btn_rects = {}
+        w, h = self.width(), self.height()
+        f = self._fonts()
+        rects = self._layout_hud()
+        items = {i: (t, k) for group in self._hud_items().values() for i, t, k in group}
+        p.save()
 
-            p.setPen(text_col)
-            p.drawText(rect, Qt.AlignCenter, name)
-
-            bx += text_w + spacing
-
-    def _draw_toolbar(self, p: QPainter, w: int):
-        """Draw interactive buttons on top-right corner."""
-        font_btn = QFont("Segoe UI", 8, QFont.DemiBold)
-        p.setFont(font_btn)
-
-        if w < 640:
-            buttons = [
-                ("iso", "Iso"),
-                ("dorsal", "Top"),
-                ("ant", "Front"),
-                ("rot", "Rotate" if not self.auto_rotate else "Stop"),
-                ("reset", "Reset"),
-                ("help", "?" if not self._show_help else "? Open"),
-            ]
-            mode_buttons = [
-                (MODE_VALENCE, "Valence"),
-                (MODE_PLASTICITY, "Plasticity"),
-                (MODE_ANATOMY, "Anatomy"),
-                (MODE_ACTIVITY, "Activity"),
-            ]
-        else:
-            buttons = [
-                ("iso", "3D Isometric"),
-                ("dorsal", "Top (Dorsal)"),
-                ("ant", "Front (Anterior)"),
-                ("rot", "Auto Rotate" if not self.auto_rotate else "Stop Rotation"),
-                ("reset", "Reset Camera"),
-                ("help", "?" if not self._show_help else "? Open"),
-            ]
-            mode_buttons = [
-                (MODE_VALENCE, "Mental Map (Valence)"),
-                (MODE_PLASTICITY, "Plasticity |Δw|"),
-                (MODE_ANATOMY, "Anatomy"),
-                (MODE_ACTIVITY, "Live Activity"),
-            ]
-
-        bx = w - 16
-        by = 14
-        btn_h = 24
-        spacing = 6
-
-        # Render preset buttons right-to-left
-        for bid, text in reversed(buttons):
-            text_w = p.fontMetrics().horizontalAdvance(text) + 16
-            bx -= text_w
-            rect = QRect(bx, by, text_w, btn_h)
-            self._btn_rects[bid] = rect
-
-            is_active = (bid == "rot" and self.auto_rotate) or (bid == "help" and self._show_help)
-            bg_col = QColor(76, 201, 240, 60) if is_active else QColor(28, 28, 33, 190)
-            border_col = QColor(76, 201, 240, 140) if is_active else QColor(58, 58, 66, 160)
-
-            p.setBrush(QBrush(bg_col))
-            p.setPen(QPen(border_col, 1))
-            p.drawRoundedRect(rect, 6, 6)
-
+        # title
+        if "title" in rects:
+            p.setFont(f["title"])
             p.setPen(QColor(236, 236, 241, 220))
+            p.drawText(rects["title"], Qt.AlignLeft | Qt.AlignVCenter, "NEURAL MAP")
+
+        layer_cols = {"layer_mb": QColor(245, 158, 11), "layer_cx": QColor(56, 189, 248),
+                      "layer_visual": QColor(249, 115, 22), "layer_olfactory": QColor(16, 185, 129),
+                      "layer_motor": QColor(239, 68, 68), "layer_hulls": QColor(168, 85, 247),
+                      "layer_wireframe": QColor(148, 163, 184)}
+        for bid, (text, kind) in items.items():
+            rect = rects.get(bid)
+            if rect is None:
+                continue
+            self._btn_rects[bid] = rect
+            if bid.startswith("layer_"):
+                on = getattr(self, bid)
+                acc = layer_cols[bid]
+                bg = QColor(acc.red(), acc.green(), acc.blue(), 55) if on else QColor(24, 24, 30, 160)
+                border = QColor(acc.red(), acc.green(), acc.blue(), 180) if on else QColor(55, 55, 65, 130)
+                fg = QColor(255, 255, 255, 240) if on else QColor(120, 120, 130, 180)
+                radius, font = 4, f["pill"]
+            else:
+                on = ((bid == "rot" and self.auto_rotate) or (bid == "help" and self._show_help)
+                      or bid == f"mode_{self.view_mode}")
+                bg = QColor(76, 201, 240, 80) if on else QColor(28, 28, 33, 200)
+                border = QColor(76, 201, 240, 190) if on else QColor(58, 58, 66, 160)
+                fg = QColor(255, 255, 255, 245) if on else QColor(200, 200, 210, 220)
+                radius, font = 5, f["btn"]
+            p.setBrush(bg)
+            p.setPen(QPen(border, 1))
+            p.drawRoundedRect(rect, radius, radius)
+            p.setFont(font)
+            p.setPen(fg)
             p.drawText(rect, Qt.AlignCenter, text)
 
-            bx -= spacing
+        # tools
+        tool_cols = {"camera": QColor(148, 163, 184), "opto": QColor(255, 120, 60), "silence": QColor(203, 213, 225)}
+        p.setFont(f["btn"])
+        for tid, text in TOOLS:
+            rect = rects[f"tool_{tid}"]
+            self._btn_rects[f"tool_{tid}"] = rect
+            on = self.tool_mode == tid
+            acc = tool_cols[tid]
+            p.setBrush(QColor(acc.red(), acc.green(), acc.blue(), 70) if on else QColor(24, 24, 28, 190))
+            p.setPen(QPen(QColor(acc.red(), acc.green(), acc.blue(), 220) if on else QColor(50, 50, 58, 160), 1))
+            p.drawRoundedRect(rect, 5, 5)
+            p.setPen(QColor(255, 255, 255, 250) if on else QColor(150, 150, 160, 210))
+            p.drawText(rect, Qt.AlignCenter, text)
 
-        mbx = w - 16
-        mby = by + btn_h + 8
-        for mid, mtext in reversed(mode_buttons):
-            mw = p.fontMetrics().horizontalAdvance(mtext) + 14
-            mbx -= mw
-            mrect = QRect(mbx, mby, mw, 22)
-            self._btn_rects[f"mode_{mid}"] = mrect
+        # silenced groups: one chip each (up to three) and "release all"
+        silenced = list(self._asked_silenced())
+        if silenced:
+            cy = self._hud_bottom + 4
+            p.setFont(f["pill"])
+            fmp = QFontMetrics(f["pill"])
+            shown = silenced[:3]
+            chips = [(f"chip_{g}", f"{g} ⊘  ×") for g in shown]
+            if len(silenced) > 3:
+                chips.append(("chip_more", f"+{len(silenced) - 3}"))
+            chips.append(("release_all", "Release all"))
+            for cid, text in chips:
+                rect = QRect(12, cy, fmp.horizontalAdvance(text) + 14, 19)
+                if cid != "chip_more":
+                    self._btn_rects[cid] = rect
+                p.setBrush(QColor(71, 85, 105, 120))
+                p.setPen(QPen(QColor(148, 163, 184, 200), 1))
+                p.drawRoundedRect(rect, 4, 4)
+                p.setPen(QColor(226, 232, 240))
+                p.drawText(rect, Qt.AlignCenter, text)
+                cy += 23
 
-            is_sel = (self.view_mode == mid)
-            bg_c = QColor(76, 201, 240, 90) if is_sel else QColor(24, 24, 28, 160)
-            border_c = QColor(76, 201, 240, 200) if is_sel else QColor(48, 48, 54, 140)
+        # bottom: telemetry bar, then the card above it on the left and the status line on the right
+        self._draw_bottom_telemetry(p, w, h, f["bar"], f["mono"])
+        if self._inspected_neuron is not None:
+            self._draw_inspector_card(p, w, h)
+        self._draw_status_line(p, w, h)
+        self._draw_hover_label(p, w, h)
+        p.restore()
 
-            p.setBrush(QBrush(bg_c))
-            p.setPen(QPen(border_c, 1))
-            p.drawRoundedRect(mrect, 5, 5)
+    def _draw_status_line(self, p: QPainter, w: int, h: int) -> None:
+        """What the last lab action did: sent, applied by the worker, and what the fly did then (fades after 8 s)."""
+        text, t0, warn = self._status
+        if not text:
+            return
+        age = time.perf_counter() - t0
+        if age > 8.0:
+            self._status = ("", 0.0, False)
+            return
+        fade = 1.0 if age < 6.0 else max(0.0, (8.0 - age) / 2.0)
+        f = self._fonts()["status"]
+        fm = QFontMetrics(f)
+        left = 16 + (self._card_rect(w, h).width() + 12 if self._inspected_neuron is not None else 0)
+        avail = max(120, w - 16 - left)
+        shown = fm.elidedText(text, Qt.ElideRight, avail - 20)
+        tw = fm.horizontalAdvance(shown) + 20
+        rect = QRect(w - 16 - tw, h - 66 - 8 - 24, tw, 24)
+        acc = QColor(245, 158, 11) if warn else QColor(76, 201, 240)
+        p.setBrush(QColor(12, 14, 20, int(225 * fade)))
+        p.setPen(QPen(QColor(acc.red(), acc.green(), acc.blue(), int(200 * fade)), 1))
+        p.drawRoundedRect(rect, 6, 6)
+        p.setFont(f)
+        p.setPen(QColor(235, 240, 248, int(255 * fade)))
+        p.drawText(rect, Qt.AlignCenter, shown)
 
-            p.setPen(QColor(255, 255, 255, 240) if is_sel else QColor(160, 160, 170, 200))
-            p.drawText(mrect, Qt.AlignCenter, mtext)
-
-            mbx -= spacing
-
-        # Separator gap
-        mbx -= 8
-
-        # Tool mode selector buttons
-        tool_buttons = [
-            ("tool_camera", "Orbit", self.tool_mode == "camera", QColor(148, 163, 184)),
-            ("tool_opto", "ChR2 Opto" if w >= 640 else "ChR2", self.tool_mode == "opto", QColor(0, 229, 255)),
-            ("tool_inspect", "Inspect", self.tool_mode == "inspect", QColor(168, 85, 247)),
-        ]
-
-        for tid, ttext, is_act, col in reversed(tool_buttons):
-            tw = p.fontMetrics().horizontalAdvance(ttext) + 14
-            mbx -= tw
-            trect = QRect(mbx, mby, tw, 22)
-            self._btn_rects[tid] = trect
-
-            if is_act:
-                bg_c = QColor(col.red(), col.green(), col.blue(), 75)
-                border_c = QColor(col.red(), col.green(), col.blue(), 210)
-                text_c = QColor(255, 255, 255, 250)
-            else:
-                bg_c = QColor(24, 24, 28, 160)
-                border_c = QColor(50, 50, 58, 140)
-                text_c = QColor(140, 140, 150, 200)
-
-            p.setBrush(QBrush(bg_c))
-            p.setPen(QPen(border_c, 1))
-            p.drawRoundedRect(trect, 5, 5)
-
-            p.setPen(text_c)
-            p.drawText(trect, Qt.AlignCenter, ttext)
-
-            mbx -= spacing
+    def _draw_hover_label(self, p: QPainter, w: int, h: int) -> None:
+        """A short label next to the cursor: a HUD button's meaning, or the neuron / target under it."""
+        text = self._hover_text
+        pos = self._hover_pos
+        if not text or pos is None or self._press is not None:
+            return
+        f = self._fonts()["small"]
+        fm = QFontMetrics(f)
+        shown = fm.elidedText(text, Qt.ElideRight, max(80, w - 32))
+        tw, th = fm.horizontalAdvance(shown) + 14, 20
+        x = min(max(4, pos.x() + 14), w - tw - 4)
+        y = pos.y() + 18 if pos.y() + 18 + th < h - 4 else pos.y() - 18 - th
+        rect = QRect(x, y, tw, th)
+        p.setBrush(QColor(20, 20, 26, 235))
+        p.setPen(QPen(QColor(90, 95, 110, 200), 1))
+        p.drawRoundedRect(rect, 4, 4)
+        p.setFont(f)
+        p.setPen(QColor(235, 235, 242))
+        p.drawText(rect, Qt.AlignCenter, shown)
 
     def _draw_bottom_telemetry(self, p: QPainter, w: int, h: int, font_small: QFont, font_mono: QFont):
-        """Draw bottom glass telemetry card."""
+        """The bottom telemetry card: sections placed by their measured widths, left to right, as many as fit."""
         bar_h = 52
         bar_rect = QRect(16, h - bar_h - 14, w - 32, bar_h)
-
-        # Card container
         p.setBrush(QBrush(QColor(18, 18, 23, 220)))
         p.setPen(QPen(QColor(45, 45, 53, 180), 1))
         p.drawRoundedRect(bar_rect, 10, 10)
 
-        # 1. Valence Dual Meter (-1.00 Fear <-> +1.00 Desire)
-        v_width = 170
-        vx = bar_rect.x() + 16
-        vy = bar_rect.y() + 14
-
-        p.setFont(font_small)
-        p.setPen(QColor(139, 139, 150, 220))
-        p.drawText(vx, vy, "LEARNED VALENCE (MENTAL MAP)")
-
-        # Meter background
-        my = vy + 6
-        p.setPen(Qt.NoPen)
-        p.setBrush(QBrush(QColor(28, 28, 33)))
-        p.drawRoundedRect(vx, my, v_width, 10, 5, 5)
-
-        # Center line
-        mid_vx = vx + v_width // 2
-        p.setPen(QPen(QColor(100, 100, 110, 120), 1))
-        p.drawLine(mid_vx, my, mid_vx, my + 10)
-
-        # Fill bar
+        fm_l, fm_m = QFontMetrics(font_small), QFontMetrics(font_mono)
+        vy = bar_rect.y() + 18                          # label baseline
+        my = vy + 6                                     # meter top
         val = max(-1.0, min(1.0, self.valence))
-        if val > 0:
-            fill_w = int((val) * (v_width // 2))
-            p.setBrush(QBrush(QColor(16, 185, 129, 230))) # Emerald
-            p.drawRoundedRect(mid_vx, my, fill_w, 10, 3, 3)
-        elif val < 0:
-            fill_w = int((-val) * (v_width // 2))
-            p.setBrush(QBrush(QColor(239, 68, 68, 230))) # Ruby
-            p.drawRoundedRect(mid_vx - fill_w, my, fill_w, 10, 3, 3)
+        grey = QColor(148, 163, 184)
+        state = {"fly": "fly", "retreat": "back", "walk": "walk", "groom": "groom", "freeze": "freeze",
+                 "stand": "stand"}.get(self.fly_state, "")
 
-        p.setFont(font_mono)
-        v_color = QColor(16, 185, 129) if val > 0.02 else (QColor(239, 68, 68) if val < -0.02 else QColor(220, 220, 230))
-        p.setPen(v_color)
-        p.drawText(vx + v_width + 10, my + 9, f"{val:+.2f}")
+        def meter(x, width, frac, col):
+            p.setPen(Qt.NoPen)
+            p.setBrush(QColor(28, 28, 33))
+            p.drawRoundedRect(x, my, width, 10, 4, 4)
+            fill = int(max(0.0, min(1.0, frac)) * width)
+            if fill > 0:
+                p.setBrush(col)
+                p.drawRoundedRect(x, my, fill, 10, 4, 4)
 
-        # 2. Dopamine Bars: PAM (Reward) & PPL1 (Punish)
-        d_x = vx + v_width + 75
-        p.setFont(font_small)
-        p.setPen(QColor(139, 139, 150, 220))
-        p.drawText(d_x, vy, "DOPAMINE (PAM REWARD / PPL1 PUNISH)")
+        def valence(x):
+            mid = x + 85
+            p.setPen(Qt.NoPen)
+            p.setBrush(QColor(28, 28, 33))
+            p.drawRoundedRect(x, my, 170, 10, 5, 5)
+            p.setPen(QPen(QColor(100, 100, 110, 120), 1))
+            p.drawLine(mid, my, mid, my + 10)
+            fill = int(abs(val) * 85)
+            if fill:
+                p.setPen(Qt.NoPen)
+                p.setBrush(QColor(16, 185, 129, 230) if val > 0 else QColor(239, 68, 68, 230))
+                p.drawRoundedRect(mid if val > 0 else mid - fill, my, fill, 10, 3, 3)
+            p.setFont(font_mono)
+            p.setPen(QColor(16, 185, 129) if val > 0.02 else QColor(239, 68, 68) if val < -0.02 else QColor(220, 220, 230))
+            p.drawText(x + 178, my + 9, f"{val:+.2f}")
 
-        d_bar_w = 80
-        # PAM Gold Bar
-        p.setBrush(QBrush(QColor(28, 28, 33)))
-        p.setPen(Qt.NoPen)
-        p.drawRoundedRect(d_x, my, d_bar_w, 10, 4, 4)
-        pam_fill = int(min(1.0, self.pam) * d_bar_w)
-        if pam_fill > 0:
-            p.setBrush(QBrush(QColor(245, 158, 11, 230)))
-            p.drawRoundedRect(d_x, my, pam_fill, 10, 4, 4)
+        def dopamine(x):
+            meter(x, 70, self.pam, QColor(245, 158, 11, 230))
+            meter(x + 78, 70, self.ppl1, QColor(239, 68, 68, 230))
 
-        # PPL1 Red Bar
-        ppl_x = d_x + d_bar_w + 10
-        p.setBrush(QBrush(QColor(28, 28, 33)))
-        p.drawRoundedRect(ppl_x, my, d_bar_w, 10, 4, 4)
-        ppl_fill = int(min(1.0, self.ppl1) * d_bar_w)
-        if ppl_fill > 0:
-            p.setBrush(QBrush(QColor(239, 68, 68, 230)))
-            p.drawRoundedRect(ppl_x, my, ppl_fill, 10, 4, 4)
+        def text(x, t, col):
+            p.setFont(font_mono)
+            p.setPen(col)
+            p.drawText(x, my + 9, t)
 
-        # 3. Active KCs Count & Sparsity
-        k_x = ppl_x + d_bar_w + 35
-        if k_x < bar_rect.right() - 140:
+        def motor(x):
+            p.setFont(font_mono)
+            for t, on, col in ((f"GF {self.rate_gf:.0f}", self.rate_gf > 2.0, QColor(239, 68, 68)),
+                               (f"W {self.rate_walk:.0f}", self.rate_walk > 2.0, QColor(34, 197, 94)),
+                               (f"M {self.rate_mdn:.0f}", self.rate_mdn > 2.0, QColor(217, 70, 239))):
+                p.setPen(col if on else grey)
+                p.drawText(x, my + 9, t)
+                x += fm_m.horizontalAdvance(t) + 10
+
+        mbon = f"+{self.mbon_app:.2f} / -{self.mbon_av:.2f}"
+        motor_w = sum(fm_m.horizontalAdvance(t) + 10 for t in (f"GF {self.rate_gf:.0f}", f"W {self.rate_walk:.0f}",
+                                                               f"M {self.rate_mdn:.0f}"))
+        sections = [
+            ("LEARNED VALENCE", 178 + fm_m.horizontalAdvance("+0.00"), valence),
+            ("DOPAMINE  PAM / PPL1", 148, dopamine),
+            ("ACTIVE KC", fm_m.horizontalAdvance(self._kc_hud_text()), lambda x: text(x, self._kc_hud_text(),
+                                                                                      QColor(236, 236, 241))),
+            ("MOTOR DNs (Hz)" + (f"  · {state}" if state else ""), motor_w, motor),
+            ("MBON BALANCE", fm_m.horizontalAdvance(mbon), lambda x: text(x, mbon, QColor(56, 189, 248))),
+        ]
+        x = bar_rect.x() + 16
+        right = bar_rect.right() - 12
+        for label, content_w, draw in sections:
+            sw = max(fm_l.horizontalAdvance(label), content_w)
+            if x + sw > right:
+                break
             p.setFont(font_small)
             p.setPen(QColor(139, 139, 150, 220))
-            p.drawText(k_x, vy, "ACTIVE KC (SPARSE CODE)")
-
-            p.setFont(font_mono)
-            p.setPen(QColor(236, 236, 241))
-            p.drawText(k_x, my + 9, self._kc_hud_text())
-
-        # 4. MBON Balance
-        m_x = k_x + 160
-        if m_x < bar_rect.right() - 110:
-            p.setFont(font_small)
-            p.setPen(QColor(139, 139, 150, 220))
-            p.drawText(m_x, vy, "MBON BALANCE")
-
-            p.setFont(font_mono)
-            p.setPen(QColor(56, 189, 248))
-            p.drawText(m_x, my + 9, f"+{self.mbon_app:.2f} / -{self.mbon_av:.2f}")
-
-        # 5. Live Descending Motor Outputs Readout
-        mot_x = m_x + 145
-        if mot_x < bar_rect.right() - 150:
-            p.setFont(font_small)
-            p.setPen(QColor(139, 139, 150, 220))
-            p.drawText(mot_x, vy, "MOTOR DNs (GF / WALK / MDN)")
-
-            p.setFont(font_mono)
-            gf_col = QColor(239, 68, 68) if self.rate_gf > 2.0 else QColor(148, 163, 184)
-            p.setPen(gf_col)
-            p.drawText(mot_x, my + 9, f"GF:{self.rate_gf:.0f}Hz")
-
-            walk_col = QColor(34, 197, 94) if self.rate_walk > 2.0 else QColor(148, 163, 184)
-            p.setPen(walk_col)
-            p.drawText(mot_x + 60, my + 9, f"W:{self.rate_walk:.0f}Hz")
-
-            mdn_col = QColor(217, 70, 239) if self.rate_mdn > 2.0 else QColor(148, 163, 184)
-            p.setPen(mdn_col)
-            p.drawText(mot_x + 115, my + 9, f"M:{self.rate_mdn:.0f}Hz")
+            p.drawText(x, vy, label)
+            draw(x)
+            x += sw + 28
 
     # ------------------------------------------------------------------ help overlay
     def _draw_help_overlay(self, p: QPainter):
@@ -2430,12 +2411,12 @@ class MushroomBody3DView(QWidget):
             ),
             (
                 QRect(panel2_x, bot_y, panel_w, panel_h),
-                "4. MOUSE & CAMERA CONTROLS",
+                "4. MOUSE, CAMERA & LAB",
                 [
-                    (QColor(140, 145, 160), "Left Click + Drag", "3D free rotation (Orbit)."),
-                    (QColor(140, 145, 160), "Right Click / Shift", "2D camera translation (Pan)."),
-                    (QColor(140, 145, 160), "Mouse Wheel", "Camera zoom in / out."),
-                    (QColor(140, 145, 160), "Double Click / Reset", "Return to default isometric view."),
+                    (QColor(140, 145, 160), "Drag: left orbits, right pans", "Wheel zooms; Home or double-click resets."),
+                    (QColor(148, 163, 184), "Explore: click a neuron", "Pins its card (real rate, actions)."),
+                    (QColor(255, 120, 60), "Stimulate: press a target", "Light on its neurons while held (0.3 s click)."),
+                    (QColor(203, 213, 225), "Silence: click a target", "Its neurons cannot spike; click again to release."),
                 ],
             ),
         ]
@@ -2472,111 +2453,167 @@ class MushroomBody3DView(QWidget):
                 iy += item_step
 
     # ------------------------------------------------------------------ events
+    _BTN_TIPS = {
+        "help": "Guide to the map, the circuits and the lab", "iso": "3D isometric view", "dorsal": "Top (dorsal) view",
+        "ant": "Front (anterior) view", "rot": "Rotate the brain slowly", "reset": "Reset the camera (Home)",
+        "tool_camera": "Explore (1): drag to orbit, click a neuron to inspect it",
+        "tool_opto": "Stimulate (2): press a target, its neurons fire while the button is held",
+        "tool_silence": "Silence (3): click a target, its neurons cannot spike until released",
+        "mode_valence": "Learned valence: green = appetitive, red = aversive",
+        "mode_plasticity": "How much each Kenyon cell's output synapses changed |Δw|",
+        "mode_anatomy": "Mushroom-body lobes: γ, α/β, α'/β'", "mode_activity": "Live spikes only",
+        "layer_mb": "Mushroom body: Kenyon cells, output and dopamine neurons", "layer_cx": "Central complex compass",
+        "layer_visual": "Visual projection neurons (LC4, LPLC2, LPC1, LC10)", "layer_olfactory": "Antennal lobe PNs",
+        "layer_motor": "Descending neurons (GF, MDN, DNp09, DNa02, aDN)", "layer_hulls": "Neuropil envelopes",
+        "layer_wireframe": "Brain outline", "release_all": "Release every silenced group",
+        "close_inspector": "Close the card", "card_stim": "A light pulse on this group",
+        "card_silence": "Silence or release this group", "card_sandbox": "Send this designed learning signal",
+    }
+
+    def _hud_hit(self, pos: QPoint) -> str | None:
+        """The HUD control under pos, topmost (drawn last) first."""
+        for bid, rect in reversed(list(self._btn_rects.items())):
+            if rect.contains(pos):
+                return bid
+        return None
+
+    def _on_hud(self, bid: str) -> None:
+        if bid == "help":
+            self._show_help = not self._show_help
+        elif bid == "close_help":
+            self._show_help = False
+        elif bid == "iso":
+            self.set_preset(*PRESET_ISOMETRIC)
+        elif bid == "dorsal":
+            self.set_preset(*PRESET_DORSAL)
+        elif bid == "ant":
+            self.set_preset(*PRESET_ANTERIOR)
+        elif bid == "rot":
+            self.toggle_auto_rotate()
+        elif bid == "reset":
+            self.reset_camera()
+        elif bid.startswith("mode_"):
+            self.set_view_mode(bid[5:])
+        elif bid.startswith("layer_"):
+            self.toggle_layer(bid[6:])
+        elif bid.startswith("tool_"):
+            self.set_tool_mode(bid[5:])
+        elif bid == "close_inspector":
+            self._inspected_neuron = None
+            self._inspected_pinned = False
+        elif bid == "release_all":
+            self.release_all()
+        elif bid.startswith("chip_"):
+            self.toggle_silence(bid[5:])
+        elif bid == "card_stim" and self._inspected_neuron is not None:
+            self.stimulate_target(self._inspected_neuron["lab"])
+        elif bid == "card_silence" and self._inspected_neuron is not None:
+            self.toggle_silence(self._inspected_neuron["lab"])
+        elif bid == "card_sandbox" and self._inspected_neuron is not None:
+            self._sandbox(self._inspected_neuron["sandbox"])
+        self.update()
+
     def mousePressEvent(self, event):
         pos = event.pos()
-
-        # Check button clicks
-        for bid, rect in self._btn_rects.items():
-            if rect.contains(pos):
-                if bid == "help":
-                    self._show_help = not self._show_help
-                    self.update()
-                    return
-                elif bid == "close_help":
-                    self._show_help = False
-                    self.update()
-                    return
-                elif bid == "iso":
-                    self.set_preset(*PRESET_ISOMETRIC)
-                elif bid == "dorsal":
-                    self.set_preset(*PRESET_DORSAL)
-                elif bid == "ant":
-                    self.set_preset(*PRESET_ANTERIOR)
-                elif bid == "rot":
-                    self.toggle_auto_rotate()
-                elif bid == "reset":
-                    self.reset_camera()
-                elif bid.startswith("mode_"):
-                    self.set_view_mode(bid.replace("mode_", ""))
-                elif bid.startswith("layer_"):
-                    self.toggle_layer(bid.replace("layer_", ""))
-                elif bid.startswith("tool_"):
-                    self.set_tool_mode(bid.replace("tool_", ""))
-                elif bid == "close_inspector":
-                    self._inspected_neuron = None
-                    self._inspected_pinned = False
-                    self.update()
-                return
-
-        # If help overlay is open: dismiss if clicked outside card, ignore inside clicks
-        if self._show_help:
+        bid = self._hud_hit(pos)
+        if bid is not None:
+            self._on_hud(bid)
+            return
+        if self._show_help:                     # a click outside the guide closes it, a click inside does nothing
             if not self._help_card_rect.contains(pos):
                 self._show_help = False
                 self.update()
             return
-
-        # Virtual Optogenetics click stimulation
-        if self.tool_mode == "opto" or event.modifiers() & (Qt.ControlModifier | Qt.AltModifier):
-            thresh = 42.0 if self.tool_mode == "opto" else 22.0
-            target = self._find_opto_target_at(pos, threshold_px=thresh)
-            if target is not None:
-                self.trigger_opto_stimulus(target)
-                return
-            elif self.tool_mode == "opto":
-                self._trigger_opto_at_screen_pos(pos)
-                return
-
-        # Neuron & Connectome Inspector click handling
-        if self.tool_mode == "inspect" or (event.modifiers() & Qt.ShiftModifier and event.button() == Qt.LeftButton):
-            neuron = self._find_neuron_at(pos, threshold_px=28.0)
-            if neuron is not None:
-                self._inspected_neuron = neuron
-                self._inspected_pinned = True
-                self.update()
-                return
-            else:
-                if self._inspected_pinned:
-                    self._inspected_neuron = None
-                    self._inspected_pinned = False
-                    self.update()
-
+        self._press = (pos, event.button(), time.perf_counter())
+        self._dragging = False
         self._last_mouse_pos = pos
-        if event.button() == Qt.RightButton or event.modifiers() & Qt.ShiftModifier:
-            self._is_panning = True
-        else:
-            self._is_panning = False
+        self._is_panning = event.button() == Qt.RightButton or bool(event.modifiers() & Qt.ShiftModifier)
+        if self.tool_mode == "opto" and event.button() == Qt.LeftButton:
+            target, _ = self._target_at(pos)
+            if target in LAB_TARGETS and self.stimulate_target(target, hold=True):
+                self._held = (target, time.perf_counter())       # light on while the button is down
 
     def mouseMoveEvent(self, event):
         pos = event.pos()
-
-        if self._last_mouse_pos is not None:
-            dx = pos.x() - self._last_mouse_pos.x()
-            dy = pos.y() - self._last_mouse_pos.y()
-            self._last_mouse_pos = pos
-
-            if self._is_panning:
-                self.pan_x += dx
-                self.pan_y += dy
-            else:
-                self.yaw += dx * 0.008
-                self.pitch = max(-1.55, min(1.55, self.pitch + dy * 0.008))
-                self._cam_R = None
-
-            self.update()
-        else:
-            # Hover detection for tooltips
-            self._check_hover(pos)
-
-            # Live inspect hover preview
-            if self.tool_mode == "inspect" and not self._inspected_pinned:
-                neuron = self._find_neuron_at(pos, threshold_px=22.0)
-                if not self._same_card(neuron, self._inspected_neuron):
-                    self._inspected_neuron = neuron
-                    self.update()
+        if self._press is not None and self._held is None:
+            if not self._dragging and (pos - self._press[0]).manhattanLength() > 4:
+                self._dragging = True
+            if self._dragging and self._last_mouse_pos is not None:
+                dx = pos.x() - self._last_mouse_pos.x()
+                dy = pos.y() - self._last_mouse_pos.y()
+                if self._is_panning:
+                    self.pan_x += dx
+                    self.pan_y += dy
+                else:
+                    self.yaw += dx * 0.008
+                    self.pitch = max(-1.55, min(1.55, self.pitch + dy * 0.008))
+                    self._cam_R = None
+                self._last_mouse_pos = pos
+                self.update()
+            return
+        if self._press is None:
+            self._hover_pos = pos
+            self._schedule_hover()
 
     def mouseReleaseEvent(self, event):
+        press, dragged = self._press, self._dragging
+        self._press = None
+        self._dragging = False
         self._last_mouse_pos = None
         self._is_panning = False
+        if self._held is not None:
+            self._release_held()
+            return
+        if press is None or dragged:
+            return
+        if press[1] == Qt.LeftButton:
+            self._on_click(press[0])
+        elif press[1] == Qt.RightButton:
+            self._context_menu(press[0])
+
+    def _on_click(self, pos: QPoint) -> None:
+        """A click (no drag). Nothing is ever stimulated on a miss."""
+        if self.tool_mode == "camera":
+            card = self._find_neuron_at(pos, threshold_px=22.0)
+            if card is not None:
+                self._inspected_neuron, self._inspected_pinned = card, True
+            elif self._inspected_pinned:
+                self._inspected_neuron, self._inspected_pinned = None, False
+        else:
+            target, _ = self._target_at(pos)
+            if target is None:
+                self._set_status("Nothing here: the lab acts on the marked targets (descending and visual neurons)")
+            elif self.tool_mode == "silence":
+                self.toggle_silence(target)
+            elif target in SANDBOX_TARGETS:
+                self._sandbox(target)
+        self.update()
+
+    def _context_menu(self, pos: QPoint) -> None:
+        """Right click without a drag: the actions for the neuron under the cursor."""
+        target, card = self._target_at(pos)
+        if card is None:
+            card = self._find_neuron_at(pos, threshold_px=22.0)
+        menu = QMenu(self)
+        if target in LAB_TARGETS:
+            label = LAB_TARGETS[target][0]
+            menu.addAction(f"Stimulate {label} (0.3 s)", lambda: self.stimulate_target(target))
+            silenced = target in self._asked_silenced()
+            menu.addAction(f"{'Release' if silenced else 'Silence'} {label}", lambda: self.toggle_silence(target))
+        elif target in SANDBOX_TARGETS:
+            menu.addAction(f"Send: {SANDBOX_TARGETS[target]}", lambda: self._sandbox(target))
+        if card is not None:
+            menu.addAction("Inspect", lambda: self._pin(card))
+        if self._asked_silenced():
+            menu.addSeparator()
+            menu.addAction("Release every silenced group", self.release_all)
+        menu.addSeparator()
+        menu.addAction("Reset camera", self.reset_camera)
+        menu.exec(self.mapToGlobal(pos))
+
+    def _pin(self, card: dict) -> None:
+        self._inspected_neuron, self._inspected_pinned = card, True
+        self.update()
 
     def wheelEvent(self, event):
         delta = event.angleDelta().y()
@@ -2585,67 +2622,70 @@ class MushroomBody3DView(QWidget):
         self.update()
 
     def mouseDoubleClickEvent(self, event):
-        self.reset_camera()
+        """Reset the camera, in Explore only (quick clicks on a lab target must not move the view)."""
+        if self.tool_mode == "camera" and self._hud_hit(event.pos()) is None:
+            self.reset_camera()
+
+    def keyPressEvent(self, event):
+        key = event.key()
+        if key == Qt.Key_Home:
+            self.reset_camera()
+        elif key in (Qt.Key_1, Qt.Key_2, Qt.Key_3):
+            self.set_tool_mode(TOOLS[key - Qt.Key_1][0])
+        elif key == Qt.Key_Escape:
+            self._show_help = False
+            self._inspected_neuron, self._inspected_pinned = None, False
+            self.update()
+        else:
+            super().keyPressEvent(event)
+
+    def leaveEvent(self, event):
+        super().leaveEvent(event)
+        self._hover_pos = None
+        self._hover_text, self._hover_target, self._hover_card = "", None, None
+        self.update()
+
+    def _schedule_hover(self) -> None:
+        """Hover work runs once per event-loop pass, on the last mouse position (moves arrive faster than frames)."""
+        if not self._hover_scheduled:
+            self._hover_scheduled = True
+            QTimer.singleShot(0, self._do_hover)
+
+    def _do_hover(self) -> None:
+        self._hover_scheduled = False
+        if self._hover_pos is not None:
+            self._check_hover(self._hover_pos)
 
     def _check_hover(self, pos: QPoint):
-        """Detect which button or anatomical region is under the cursor."""
-        found = ""
-
-        # Check button hover first
-        for bid, rect in self._btn_rects.items():
-            if rect.contains(pos):
-                btn_tooltips = {
-                    "help": "Mental Map & Biological Guide [Toggle]",
-                    "close_help": "Close Guide",
-                    "iso": "3D Isometric View Angle",
-                    "dorsal": "Top (Dorsal) View Angle",
-                    "ant": "Front (Anterior) View Angle",
-                    "rot": "Toggle Auto 3D Rotation",
-                    "reset": "Reset Camera Angle & Position",
-                    "tool_camera": "Camera Orbit & Pan Tool [Default]",
-                    "tool_opto": "Virtual Optogenetics (ChR2 Laser): Micro-stimulate neural hubs to evoke behavioral reflexes",
-                    "tool_inspect": "Neuron & Synapse Inspector: Inspect connectome cell types and neurotransmitters",
-                    "mode_valence": "Mental Map Mode: Valence (Reward / Punishment)",
-                    "mode_plasticity": "Synaptic Plasticity Mode: |Δw| Weight Shifts",
-                    "mode_anatomy": "Anatomy Mode: Biological Lobe Compartments",
-                    "mode_activity": "Live Activity Mode: Neural Spikes & Sparks",
-                    "layer_mb": "Mushroom Body: Kenyon cell somas, MBONs, and dopamine memory circuit [Toggle]",
-                    "layer_cx": "Central Complex: Ellipsoid Body (EB) compass heading ring and PB bridge [Toggle]",
-                    "layer_visual": "Visual Projections: Optic lobes to central brain (LC4/LPLC2 looming, LC10 steering) [Toggle]",
-                    "layer_olfactory": "Antennal Lobes: Food & pheromone projection neurons (ALPN) to Calyx [Toggle]",
-                    "layer_motor": "Descending Motor Neurons: Giant Fiber (escape), MDN (moonwalk), DNp09 (walk), DNa02 (steer) [Toggle]",
-                    "layer_hulls": "Translucent Neuropil Volumetric Envelopes (AL, MB, CX, Optic Lobes) [Toggle]",
-                    "layer_wireframe": "Drosophila Brain Wireframe Envelope [Toggle]",
-                }
-                found = btn_tooltips.get(bid, "")
-                if found:
-                    break
-
-        # Check optogenetic targets if in opto tool mode or general hover
-        if not found:
-            opto_target = self._find_opto_target_at(pos, threshold_px=28.0)
-            if opto_target is not None:
-                found = f"ChR2 Target: {opto_target['name']} — Click to evoke {opto_target['action']}"
-
-        # Check proximity to known lobe centers if not hovering over a button
-        if not found:
-            for name, center_3d in self.data.lobe_centers.items():
-                sx, sy, _, _ = self._project_points(np.array([center_3d], dtype=np.float32))
-                dist = math.hypot(pos.x() - sx[0], pos.y() - sy[0])
-                if dist < 28:
-                    titles = {
-                        "calyx_left": "Left Calyx (Kenyon Cell Somas & Olfactory Input)",
-                        "calyx_right": "Right Calyx (Kenyon Cell Somas & Olfactory Input)",
-                        "gamma_left": "Left Gamma Lobe (Horizontal Lobe: Odor Memory)",
-                        "gamma_right": "Right Gamma Lobe (Horizontal Lobe: Odor Memory)",
-                        "alpha_left": "Left Alpha/Beta Lobe (Vertical Lobe: Avoidance / Approach)",
-                        "alpha_right": "Right Alpha/Beta Lobe (Vertical Lobe: Avoidance / Approach)",
-                        "pam_reward": "PAM Dopamine Cluster (Reward / Sugar / Food)",
-                        "ppl1_punish": "PPL1 Dopamine Cluster (Punishment / Nociception / Wall Shock)",
-                    }
-                    found = titles.get(name, name)
-                    break
-
-        if found != self._hover_text:
-            self._hover_text = found
+        """What is under the cursor: a HUD control's meaning, else the target / neuron (with its group ringed)."""
+        self._hover_pos = pos
+        found, target, card = "", None, None
+        bid = self._hud_hit(pos)
+        if bid is not None:
+            found = self._BTN_TIPS.get(bid, "")
+            if bid.startswith("chip_"):
+                found = f"Release {bid[5:]}"
+        elif not self._show_help:
+            if self.tool_mode in ("opto", "silence"):
+                target, card = self._target_at(pos)
+                if target in LAB_TARGETS:
+                    label = LAB_TARGETS[target][0]
+                    if target in self._lab.get("available", ()) or not self._lab.get("available"):
+                        verb = ("press: light on" if self.tool_mode == "opto"
+                                else "click: release" if target in self._asked_silenced() else "click: silence")
+                        found = f"{label} · {card.get('rate_hz', '')} · {verb}"
+                    else:
+                        found = f"{label}: not in the running circuit"
+                elif target in SANDBOX_TARGETS:
+                    found = (f"{SANDBOX_TARGETS[target]} · click: send" if self.tool_mode == "opto"
+                             else f"{SANDBOX_TARGETS[target]}: a designed signal, nothing to silence")
+            else:
+                card = self._find_neuron_at(pos, threshold_px=18.0)
+                if card is not None:
+                    found = f"{card['name']} · {card.get('rate_hz', '')}"
+        changed = found != self._hover_text or target != self._hover_target
+        self._hover_text, self._hover_target, self._hover_card = found, target, card
+        if self.tool_mode != "camera":
+            self.setCursor(Qt.PointingHandCursor if target else Qt.ArrowCursor)
+        if changed or found:
             self.update()

@@ -60,11 +60,17 @@ uv run neuropest
     - Flight: $\approx 0.080 / \text{s}$ (~$16\times$ basal consumption!)
   - Satiated flies groom and rest. Hungry flies experience internal walking drive (DNp09 hyperactivity) and increased food odor sensitivity.
   - Approaching food spots triggers proboscis extension, emerald crop glow, and floating "+Reward" effects.
+  - **Foraging flight.** A hungry fly (hunger >= 0.45) that smells a food source 180-~400 px away, and is not getting
+    closer to it on foot, builds an urge to fly there; at full urge it takes off in long mode **without the Giant Fiber**
+    (von Reyn et al. 2014: long-mode take-offs do not need it), turns toward the source first, slows on the way in and
+    lands on it (`brain.GOAL_*`, `fly.GOAL_*`; the GUI tells the brain where the source is, a designed shortcut). An attack
+    on the way turns it into an escape. `tools/probe_goal_flight.py` (15k tier, 6 seeds x 4 directions, food 300 px away,
+    hunger 0.6): 24/24 ate, median 3.2 s, every landing on the food, no wall hits, Giant Fiber silent; walking alone 0/24.
   - Instant "Feed" and "Starve" actions are available in the control panel; live hunger percentage is badged in the system tray.
 - **Screen Boundaries & Wall Avoidance:**
   - Strict 2 px safety margin ensures fly body and wings never clip outside visible screen bounds.
   - Elastic collision bounce reflects velocity inwards upon hitting screen edges.
-  - Each wall impact injects a nociceptive pain stimulus (PPL1 dopaminergic pulse), training the Mushroom Body to avoid borders over time (aversive conditioning).
+  - Each wall impact injects a nociceptive pain stimulus (PPL1 dopaminergic pulse), training the Mushroom Body to avoid borders over time (aversive conditioning); not during a foraging flight, and not while the 3D lab manipulates the circuit.
   - Multi-monitor support enables smooth traversal across taskbars and display boundaries (or pinning to a single monitor in View settings).
 - **Visual Appearance & Skins:**
   - Real-time skin selector with custom icon cards in the View settings:
@@ -75,6 +81,21 @@ uv run neuropest
     - **Cartoon (Retro):** Expressive compound eyes, retro stylized dorsal patterns.
 - **Screen Capture Vision (Compound Eye Perception):**
   - Enable "Screen Capture Vision" in the control panel to replace cursor coordinate math with optical sampling of real screen pixels through ommatidia and medulla column receptive fields.
+- **3D Neural Map & Lab (Learning tab):**
+  - **Explore:** drag to orbit (left) or pan (right), scroll to zoom, Home or double-click resets; click a neuron to pin
+    its card, which says whether its rate is a spike rate of the simulation, a designed signal or an illustration.
+  - **Stimulate:** press a marked target (Giant Fiber, MDN, DNp09, DNa02 left / right, grooming DNs, LC4, LPLC2, LPC1,
+    LC10 left / right): its neurons are forced to spike, like a light-gated channel, while the button is held (a click is
+    a 0.3 s pulse; every stimulation ends by itself after 10 s at most). What the fly then does is the circuit's own
+    response: a GF pulse takes off through its own spikes, LC4 + LPLC2 drive the GF, LPC1 drives MDN, LC10 on one side
+    turns it. A click on empty space does nothing.
+  - **Silence:** click a target to clamp its neurons (they cannot spike, whatever drives them), again to release it;
+    silenced groups are grey, listed as chips with "Release all", and survive an engine restart (not saved).
+  - While the lab is on (and 0.6 s after) the mushroom body does not learn and nothing is punished, so an experiment
+    never teaches the pet fear; the status line says when the engine applied a request and what the fly did.
+  - The view renders the scene at rest once per camera pose and only the live layer per frame (~9 ms a frame at
+    700x410, was 150-350 ms), and slows its own frame rate when frames get expensive, so it never takes more than about
+    a third of the GUI thread the pet runs on. Opening it in its own window pauses the embedded copy.
 - **Control Panel:**
   - Dark-themed card interface displaying real-time telemetry (Giant Fiber, MDN, Steering, real-time factor, CPU load, active neuron count, valence, hunger).
   - Collapsible **Advanced Behavior Settings** (Motility at 65%, Skittishness $\times 1.00$, Wall Pain $\times 1.00$, with a single-click reset).
@@ -170,6 +191,7 @@ Takeoff is decoded as an **event** rather than a continuous firing rate: in biol
 
 Higher priority states immediately interrupt lower states; state transitions enforce minimal durations and hysteresis to prevent jitter. 
 
+- **Two take-off modes:** an escape (`fly_short`) is always a Giant Fiber take-off; a foraging flight (`fly_long`) toward a food source does not use the Giant Fiber (see Hunger & Metabolism).
 - **Freezing:** Model has no single dedicated freeze neuron; freezing is an engineered behavioral rule (`BrainSpec.freeze_on = 0.7`). If looming rate exceeds 0.7/s without triggering escape or retreat, the fly freezes for $\ge 1.2\text{ s}$ until expansion drops below 0.3/s.
 - **Escape Direction:** DNp02/DNp11 encode lateral LC4 gradients. Escape trajectory is directed opposite to cursor heading (`fly.py`).
 - **Left-Right Symmetrization:** Synaptic weights and connection signs are bilaterally balanced (`flywire.py`, `lif_wgpu.py`) to eliminate unilateral steering biases under symmetrical stimuli.
@@ -242,6 +264,14 @@ The core simulation engine implements leaky integrate-and-fire dynamics with exa
 - `LIFEngine` (`neuropest/engine/lif.py`): Event-driven Numba CPU engine. Only updates active neurons each step; computational cost scales with active spikes rather than total network size.
 - `ReferenceEngine`: Dense NumPy implementation used as an oracle for unit test verification.
 - `WGPUEngine` (`neuropest/engine/lif_wgpu.py`): Cross-platform GPU acceleration via WebGPU (`wgpu`). Supports Vulkan, Metal, and DirectX on NVIDIA, AMD, Intel, and Apple Silicon without requiring CUDA.
+- **Silencing** (`set_silenced`, the lab's lesions) behaves the same on all three engines: a silenced neuron is held in
+  the refractory state (it integrates nothing and cannot cross threshold), its forced and current drive is dropped
+  (kept aside, so releasing it brings the drive back), and on release v and g return to rest so the input it collected
+  while clamped does not fire a burst (`engine/hostdrive.py`; tested against the reference engine, also on the GPU).
+- **GUI <-> worker link:** two shared double arrays of 64 slots, fresh on every engine start, one writer per slot.
+  Levels (cursor, pose, hunger, the food goal) are latest-value-wins; events (forget, meals, the learning sandbox's
+  injections) are counters the GUI only adds to, so none is lost between two reads; the lab's request is a block under a
+  sequence lock that the worker applies whole and acknowledges (`runner.py`, slot map at the top).
 
 ### GPU Acceleration
 

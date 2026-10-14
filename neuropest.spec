@@ -34,6 +34,7 @@ hidden_imports = [
     "neuropest.fly",
     "neuropest.flywire",
     "neuropest.engine",
+    "neuropest.engine.hostdrive",
     "neuropest.engine.lif_numba",
     "neuropest.engine.lif_ref",
     "neuropest.engine.lif_wgpu",

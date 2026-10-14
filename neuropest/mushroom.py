@@ -94,9 +94,11 @@ class MushroomBody:
         return kc
 
     # ------------------------------------------------------------------ step
-    def step(self, cues: np.ndarray, reward: float, punishment: float, dt: float) -> float:
+    def step(self, cues: np.ndarray, reward: float, punishment: float, dt: float, plastic: bool = True) -> float:
         """Advance `dt` seconds. reward / punishment: 0..1 drive of PAM / PPL1 (the unconditioned stimuli).
-        Returns the valence (-1..+1) read out for the current cues."""
+        Returns the valence (-1..+1) read out for the current cues. plastic=False: the cells fire and the readout and
+        the slow forgetting run, but no synapse learns (the lab pauses plasticity while it manipulates the circuit:
+        dopamine is a prediction error, so passing reward = punishment = 0 would still extinguish a learned cue)."""
         p = self.p
         self.kc = self.encode(cues)
         self.trace += (self.kc - self.trace) * (1.0 - math.exp(-dt / p.tau_trace_s))
@@ -108,6 +110,8 @@ class MushroomBody:
         pe_p = punishment - p.pred_gain * max(-v0, 0.0)
         dop_r, dop_p, ext_r, ext_p = max(pe_r, 0.0), max(pe_p, 0.0), max(-pe_r, 0.0), max(-pe_p, 0.0)
         self.pam, self.ppl1 = dop_r, dop_p
+        if not plastic:
+            dop_r = dop_p = ext_r = ext_p = 0.0
         # three-factor rule: eligibility (KC) x dopamine -> depression of that KC's output synapse
         self.dirty = self.dirty or dop_r > 0.0 or dop_p > 0.0 or (ext_r > 0.0 or ext_p > 0.0) and bool(self.trace.any())
         if dop_r > 0.0:
@@ -392,7 +396,7 @@ class FlywireMushroomBody(MushroomBody):
         return (dep_av - dep_app).astype(np.float32)
 
     # ------------------------------------------------------------------ step
-    def step(self, cues: np.ndarray, reward: float, punishment: float, dt: float) -> float:
+    def step(self, cues: np.ndarray, reward: float, punishment: float, dt: float, plastic: bool = True) -> float:
         p = self.p
         self.active = act = self._fire(cues)
         a = 1.0 - math.exp(-dt / p.tau_trace_s)
@@ -405,6 +409,8 @@ class FlywireMushroomBody(MushroomBody):
         pe_p = punishment - p.pred_gain * max(-v0, 0.0)
         dop_r, dop_p, ext_r, ext_p = max(pe_r, 0.0), max(pe_p, 0.0), max(-pe_r, 0.0), max(-pe_p, 0.0)
         self.pam, self.ppl1 = dop_r, dop_p
+        if not plastic:                                  # the lab's pause (see MushroomBody.step)
+            dop_r = dop_p = ext_r = ext_p = 0.0
         changed = False
         if dop_r > 0.0 or dop_p > 0.0 or ext_r > 0.0 or ext_p > 0.0:
             rows = np.flatnonzero(self.trace > LEARN_TRACE_MIN)

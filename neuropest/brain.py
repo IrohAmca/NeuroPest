@@ -18,7 +18,7 @@ import numpy as np
 
 from .engine import Network, create_engine
 from .mushroom import MushroomBody
-from .states import FLY, FREEZE, GROOM, RETREAT, STAND, STATES, WALK  # noqa: F401  (re-exported)
+from .states import FLY, FREEZE, GROOM, LAB_GROUPS, RETREAT, STAND, STATES, WALK  # noqa: F401  (re-exported)
 
 
 @dataclass(frozen=True)
@@ -78,6 +78,32 @@ def odor_gate(strength: float) -> float:
     """Sensitivity of the startle reflexes under a food odor of `strength` (phero_drive x hunger): 1 .. 0."""
     return max(0.0, 1.0 - float(strength) / ODOR_GATE_FULL)
 
+
+# The neuroscience lab (Brain.set_lab, the 3D view's tools) [DESIGNED]: silencing clamps a group's neurons in the engine
+# (they cannot spike, so nothing downstream hears them; an acute GtACR-like silencing), stimulation forces their spikes
+# (Poisson, like a light-gated channel). Whatever the fly does then comes from the circuit's own response.
+LAB_MAX_HZ = 300.0          # cap on a forced lab rate
+LAB_PULSE_MS = 300.0        # one click's light pulse
+LAB_HOLD_MS = 10_000.0      # every stimulation ends by itself after at most this (a held button included)
+LAB_TAIL_MS = 600.0         # plasticity stays paused this long after the last manipulation ends (7.5 rate EMAs)
+LAB_RATE_GROUPS = ("LC4", "LPLC2", "LPC1", "LC10_L", "LC10_R")   # read every chunk like the outputs (lab readouts)
+
+# Foraging flight toward a food source [DESIGNED]: a hungry fly that smells a source it is not getting closer to on foot
+# builds an urge to fly there and, at 1, takes off in long mode WITHOUT the Giant Fiber (von Reyn et al. 2014: long-mode
+# take-offs do not need it) and lands at the food (fly.py steers it there: the GUI tells where the source is, the same kind
+# of shortcut as the cursor bearing into LC10). Escape (a GF event) stays the only short-mode take-off.
+GOAL_REACH_PX = 180.0       # nearer than this the fly walks
+GOAL_MAX_PX = 650.0
+GOAL_ODOR_MIN = 0.015       # the goal's own odor at the fly x hunger
+GOAL_HUNGER_MIN = 0.45
+GOAL_URGE_RATE = 0.8        # urge per second at full pull (it takes off at 1)
+GOAL_WALK_PX_S = 70.0       # walking speed (fly.py): closing in this fast on foot means walking works (no urge)
+GOAL_LOST_MS = 400.0        # the goal gone this long: land
+GOAL_MAX_FLIGHT_MS = 5000.0
+GOAL_REFRACTORY_MS = 3000.0
+GOAL_MEAL_REFRACTORY_MS = 8000.0
+CUE_PULSE_MS = 800.0        # a learning-sandbox cue is shown to the mushroom body this long
+
 # Toy circuit: calibrated with tools/calibrate.py
 TOY = BrainSpec(loom_gain=10.0, loom_max_hz=250.0, vis_max_hz=60.0, rest_drive=(500.0, 3.0), bulk_hz=150.0,
                gf_event_spikes=0)
@@ -106,11 +132,15 @@ class Brain:
         self.net = net
         self.spec = spec or spec_for(net)
         self.engine = create_engine(net, dt=dt, seed=seed, backend=backend, adapter=adapter)
-        self.g = net.groups
+        self.g = dict(net.groups)                       # own dict: the lab names LPC1, the retreat input, as well
+        if "RETREAT_IN" in self.g:
+            self.g.setdefault("LPC1", self.g["RETREAT_IN"])
         self.ema_ms = ema_ms
         self.rates = {k: 0.0 for k in ("GF", "WALK", "REST", "MDN", "DNa02_L", "DNa02_R", "GROOM")}
+        self.lab_rates = {k: 0.0 for k in LAB_RATE_GROUPS if len(self.group(k))}   # visual inputs the lab reads
         # all output groups are read with one call per chunk (on a GPU every read waits for the device)
-        parts = [self.group(k) for k in self.rates]
+        self._mon_keys = list(self.rates) + list(self.lab_rates)
+        parts = [self.group(k) for k in self._mon_keys]
         self._mon_idx = np.concatenate(parts).astype(np.int32)
         self._mon_edges = np.cumsum([0] + [len(p) for p in parts])
         self._gf_slot = list(self.rates).index("GF")
@@ -160,7 +190,25 @@ class Brain:
         # state machine below, not its input: the state still comes from the spiking descending neurons.
         self.v_threat = self.v_desire = 0.0
         self.v_motor = 0.0
-        self.flight_mode = ""      # "short" (escape, Giant Fiber) or "long" (pursuit, non-GF) while in FLY
+        self.flight_mode = ""      # "short" (escape, Giant Fiber) or "long" (foraging flight, no GF) while in FLY
+        # the food the GUI says the fly would fly to (set_goal): gap to it (px, <= 0 at it), bearing, its odor here
+        self.goal_gap, self.goal_bearing, self.goal_odor = 1e6, 0.0, 0.0
+        self._gap_prev: float | None = None
+        self._gap_rate = 0.0                    # px/s, smoothed; negative while closing in
+        self._fed_events = 0                    # meals so far (note_fed)
+        self._goal_fed0 = 0                     # ... when the foraging flight took off
+        self._goal_lost_ms = 0.0
+        self._goal_refractory_ms = 0.0
+        # learning sandbox: a cue shown to the mushroom body for a moment (present_cue)
+        self._cue_food = self._cue_food_ms = 0.0
+        self._cue_near = self._cue_near_ms = 0.0
+        # the neuroscience lab (set_lab)
+        self._lab_sil: tuple[str, ...] = ()
+        self._lab_stim: dict[str, float] = {}
+        self._lab_fi = np.zeros(0, np.int32)
+        self._lab_fr = np.zeros(0, np.float32)
+        self._lab_left_ms = 0.0
+        self._lab_tail_ms = 0.0
         self._last_fi: np.ndarray | None = None
         self._last_fr: np.ndarray | None = None
         self._last_ci: np.ndarray | None = None
@@ -213,6 +261,97 @@ class Brain:
         self._vision = None
         self._vision_cues = None
         self._drive()
+
+    # ----------------------------------------------------------------- the lab
+    def set_lab(self, silenced=None, stimulated: dict | None = None, stim_ms: float = LAB_PULSE_MS):
+        """Silence groups and / or stimulate groups (names from states.LAB_GROUPS); None leaves that part as it is, an
+        empty one ends it.
+
+        silenced: the groups whose neurons are clamped (engine.set_silenced): they cannot spike, whatever drives them.
+        stimulated: {group: Hz}, forced Poisson spikes on every neuron of the group for stim_ms of simulated time (each
+            stimulation ends by itself, after LAB_HOLD_MS at most; a new one replaces it). Silence wins over it.
+        Groups this circuit does not have are dropped. Returns (silenced, stimulated) as applied."""
+        was = self.lab_on
+        if silenced is not None:
+            want = set(silenced)
+            sil = tuple(n for n in LAB_GROUPS if n in want and len(self.group(n)))
+            if sil != self._lab_sil:
+                idx = np.unique(np.concatenate([self.group(n) for n in sil])) if sil else np.zeros(0, np.int32)
+                self.engine.set_silenced(idx)
+                self._lab_sil = sil
+        if stimulated is not None:
+            stim = {n: min(float(hz), LAB_MAX_HZ) for n, hz in dict(stimulated).items()
+                    if n in LAB_GROUPS and float(hz) > 0.0 and len(self.group(n))}
+            if stim:
+                fi = np.concatenate([self.group(n) for n in stim]).astype(np.int32)
+                fr = np.concatenate([np.full(len(self.group(n)), hz, np.float32) for n, hz in stim.items()])
+                li = np.unique(fi)
+                lr = np.zeros(len(li), np.float32)
+                np.maximum.at(lr, np.searchsorted(li, fi), fr)
+                self._lab_fi, self._lab_fr = li.astype(np.int32), lr
+                self._lab_left_ms = min(stim_ms if stim_ms > 0 else LAB_HOLD_MS, LAB_HOLD_MS)
+            else:
+                self._lab_fi, self._lab_fr = np.zeros(0, np.int32), np.zeros(0, np.float32)
+                self._lab_left_ms = 0.0
+            self._lab_stim = stim
+            self._last_fi = None                        # the forced drive is rebuilt with (or without) it now
+            self._drive()
+        if was and not self.lab_on:
+            self._lab_tail_ms = LAB_TAIL_MS
+        return self._lab_sil, tuple(self._lab_stim)
+
+    @property
+    def lab_on(self) -> bool:
+        """A lab manipulation is applied now."""
+        return bool(self._lab_sil or self._lab_stim)
+
+    @property
+    def lab_active(self) -> bool:
+        """... or ended less than LAB_TAIL_MS ago: the mushroom body does not learn, nothing is punished."""
+        return self.lab_on or self._lab_tail_ms > 0.0
+
+    @property
+    def lab_left_ms(self) -> float:
+        return self._lab_left_ms
+
+    def lab_available(self) -> tuple[str, ...]:
+        """The lab groups this circuit has."""
+        return tuple(n for n in LAB_GROUPS if len(self.group(n)))
+
+    def _merge_lab(self, fi: np.ndarray, fr: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+        """The sensory drive with the lab's stimulation on top: one entry per stimulated neuron, at the larger of the
+        two rates (the CPU engines fire a neuron listed twice twice per step, the GPU once; one entry keeps them equal)."""
+        li, lr = self._lab_fi, self._lab_fr
+        fi = np.asarray(fi, np.int32)
+        fr = np.asarray(fr, np.float32)
+        hit = np.isin(fi, li)
+        if hit.any():
+            lr = lr.copy()
+            np.maximum.at(lr, np.searchsorted(li, fi[hit]), fr[hit])
+        return np.concatenate([fi[~hit], li]), np.concatenate([fr[~hit], lr])
+
+    # ----------------------------------------------------------------- goal, meals, sandbox
+    def set_goal(self, gap: float, bearing: float, odor: float) -> None:
+        """The food source the fly would fly to: gap = px to it minus its eating radius (<= 0: at it), bearing (rad, +
+        to the right), odor = that source's own odor at the fly (0: no goal). Stored only; the decision reads it."""
+        self.goal_gap, self.goal_bearing, self.goal_odor = float(gap), float(bearing), max(0.0, float(odor))
+
+    def note_fed(self, n: int = 1) -> None:
+        """n meals since the last call (a counter in the shared input, so none is lost): ends a foraging flight and is
+        the feeding reward even when the one-frame at_target was missed."""
+        if n > 0:
+            self._fed_events += int(n)
+            self._reward = max(self._reward, self.hunger)
+
+    def present_cue(self, kind: str, amount: float = 1.0, ms: float = CUE_PULSE_MS) -> None:
+        """Learning sandbox: show the mushroom body a cue for `ms` ("food": the food odor, "near": the cursor close) so a
+        reward or punishment given meanwhile is learned for it. Only the mushroom body sees it; the motor drive and the
+        reflexes do not change."""
+        amount = max(0.0, min(1.0, float(amount)))
+        if kind == "food":
+            self._cue_food, self._cue_food_ms = max(self._cue_food, amount), float(ms)
+        elif kind == "near":
+            self._cue_near, self._cue_near_ms = max(self._cue_near, amount), float(ms)
 
     @property
     def gear(self) -> str:
@@ -287,10 +426,6 @@ class Brain:
             alarm_takeoff_hz = min(s.loom_max_hz, (self.phero_repel - 0.6) * 200.0)
             loom = max(loom, alarm_takeoff_hz)
 
-        # High accumulated voluntary pursuit urge drives takeoff through the motor pathway
-        if self.flight_urge >= 1.0:
-            loom = max(loom, 80.0)
-
         vis = s.vis_max_hz / (1.0 + dist / s.vis_falloff_px)
         steer = s.steer_max_hz * max(0.0, 1.0 - dist / s.steer_range_px)
         side = math.sin(bearing)                         # >0: cursor to the right
@@ -334,6 +469,8 @@ class Brain:
                 self._cursor_fr[sl] = r
             new_fi = self._cursor_fi
             new_fr = self._cursor_fr
+        if len(self._lab_fi):                            # the lab's stimulation on top
+            new_fi, new_fr = self._merge_lab(new_fi, new_fr)
 
         drive_changed = True
         if self._last_fi is not None and self._last_fr is not None:
@@ -370,16 +507,18 @@ class Brain:
         counts = e.pop_counts(self._mon_idx)
         dt_s = ms / 1000.0
         gf_spikes = 0
-        for j, k in enumerate(self.rates):
+        for j, k in enumerate(self._mon_keys):
             lo, hi = self._mon_edges[j], self._mon_edges[j + 1]
             if hi > lo:
                 grp_sum = int(counts[lo:hi].sum())
                 if j == self._gf_slot:
                     gf_spikes = grp_sum
                 inst = grp_sum / ((hi - lo) * dt_s)
-                self.rates[k] += a * (inst - self.rates[k])
+                rates = self.rates if k in self.rates else self.lab_rates
+                rates[k] += a * (inst - rates[k])
         self.loom += a * (self._loom_in - self.loom)
         self._track_gf_spikes(ms, gf_spikes)
+        self._tick_timers(ms)
         # B3: decay defensive arousal
         if self.arousal > 1e-4:
             decay = math.exp(-ms / (self.tau_arousal_s * 1000.0))
@@ -392,14 +531,31 @@ class Brain:
             self._learn(ms)
         return self.state
 
+    def _tick_timers(self, ms: float) -> None:
+        """The lab's pulse (it ends by itself) and its tail, the sandbox cues."""
+        if self._lab_left_ms > 0.0:
+            self._lab_left_ms -= ms
+            if self._lab_left_ms <= 0.0:
+                self.set_lab(stimulated={})
+        elif self._lab_tail_ms > 0.0 and not self.lab_on:
+            self._lab_tail_ms = max(0.0, self._lab_tail_ms - ms)
+        if self._cue_food_ms > 0.0:
+            self._cue_food_ms -= ms
+            if self._cue_food_ms <= 0.0:
+                self._cue_food = 0.0
+        if self._cue_near_ms > 0.0:
+            self._cue_near_ms -= ms
+            if self._cue_near_ms <= 0.0:
+                self._cue_near = 0.0
+
     MB_STEP_MS = 50.0
 
     def _learn(self, ms: float):
         """Mushroom-body step every 50 ms: cues in, dopamine from the unconditioned stimuli, valence out.
 
         Reward (PAM) = feeding at a pheromone source. Punishment (PPL1) = threat read from the spiking outputs: Giant
-        Fiber (escape), MDN (backward retreat), touch. A chase (food odor / pursuit urge) is not a threat even though it
-        drives the Giant Fiber, so punishment is held off then."""
+        Fiber (escape), MDN (backward retreat), touch. A startle under food odor or during a chase / foraging flight is
+        not a threat, so punishment is held off then; while the lab manipulates the circuit nothing is learned at all."""
         s = self.spec
         h = self.hunger
         eff_phero_drive = self.phero_drive * h
@@ -409,10 +565,12 @@ class Brain:
         threat = max(self.rates["GF"] / (2.0 * s.gf_on_hz), self.rates["MDN"] / (3.0 * s.mdn_on_hz))
         if self.gf_window >= max(1, s.gf_event_spikes):
             threat = 1.0
-        if eff_phero_drive > ODOR_LEARN_GATE or self.flight_urge >= 0.5:
-            threat = 0.0      # a startle under food odor, or a chase, is not a punishment: it must not teach fear
+        goal_flight = self.state == FLY and self.flight_mode == "long"
+        lab = self.lab_active
+        if eff_phero_drive > ODOR_LEARN_GATE or self.flight_urge >= 0.5 or goal_flight or lab:
+            threat = 0.0      # a startle under food odor, a chase, or what the lab evoked is not a punishment
         # Physical wall collision delivers acute nociceptive punishment (PPL1 dopamine)
-        if self.wall_bump > 0.0:
+        if self.wall_bump > 0.0 and not goal_flight and not lab:
             threat = max(threat, min(1.0, self.wall_bump))
         punish_in = min(1.0, threat)
         self._punish = punish_in if punish_in > 0.05 else self._punish * math.exp(-ms / 800.0)
@@ -426,9 +584,12 @@ class Brain:
         else:
             near = 1.0 / (1.0 + dist / 250.0) if dist < 1e5 else 0.0      # numbers standing in for the same stimulus
             loom = min(1.0, self.loom / 3.0)
-        cues = (eff_phero_drive, self.phero_repel, near, loom, touch)
+        cues = (max(eff_phero_drive, self._cue_food), self.phero_repel, max(near, self._cue_near), loom, touch)
         self._last_cues = cues
-        self.valence = self.mb.step(cues, self._reward, self._punish, dt)
+        if lab:                                            # the lab's pause: the cells fire, no synapse learns
+            self.valence = self.mb.step(cues, self._reward, self._punish, dt, plastic=False)
+        else:
+            self.valence = self.mb.step(cues, self._reward, self._punish, dt)
         if abs(self.valence - self._valence_driven) > 0.05:
             self._drive()
 
@@ -474,24 +635,46 @@ class Brain:
         self.v_desire = min(1.5, eff_phero_drive + max(0.0, self.valence))
         self.v_motor = self.v_threat + self.v_desire + self.flight_urge
 
-        # Long-mode voluntary takeoff / goal-directed pursuit accumulation; learned desire speeds it up, a threat
-        # stops it (a chase does not start under attack)
-        if cur == WALK and eff_phero_drive > 0.25 and self.at_target < 0.5 and self.v_threat < 0.5:
-            pull = eff_phero_drive * (1.0 + max(0.0, self.valence))
-            self.flight_urge = min(1.2, self.flight_urge + (ms / 1000.0) * (pull * 0.85))
+        # Foraging flight (see GOAL_*): the urge builds while a hungry fly smells a food source within flying range that
+        # it is not closing in on by walking; learned desire speeds it up, and a threat, an alarm odor or fear stop it
+        dt_s = ms / 1000.0
+        if self._gap_prev is not None and abs(self.goal_gap - self._gap_prev) < 50.0:
+            v_gap = (self.goal_gap - self._gap_prev) / dt_s
         else:
-            self.flight_urge = max(0.0, self.flight_urge - (ms / 1000.0) * 0.35)
+            v_gap = self._gap_rate                       # a new goal (or none): no jump in the rate
+        self._gap_prev = self.goal_gap
+        self._gap_rate += (1.0 - math.exp(-ms / 300.0)) * (v_gap - self._gap_rate)
+        self._goal_refractory_ms = max(0.0, self._goal_refractory_ms - ms)
+        goal_ok = (cur in (WALK, STAND) and self.goal_odor > 0.0 and self.goal_odor * h >= GOAL_ODOR_MIN
+                   and h >= GOAL_HUNGER_MIN and GOAL_REACH_PX <= self.goal_gap <= GOAL_MAX_PX
+                   and self.v_threat < 0.5 and self.phero_repel < 0.25 and self.loom < s.freeze_off
+                   and self.valence > -0.2 and self._goal_refractory_ms <= 0.0)
+        if goal_ok:
+            progress = min(1.0, max(0.0, 1.0 + self._gap_rate / GOAL_WALK_PX_S))   # walking straight at it: no urge
+            self.flight_urge = min(1.2, self.flight_urge
+                                   + dt_s * GOAL_URGE_RATE * progress * (1.0 + max(0.0, self.valence)))
+        else:
+            self.flight_urge = max(0.0, self.flight_urge - dt_s * 0.35)
 
         # take-off is an event, not a rate: a few GF spikes in ~10 ms (the animal takes off on one or two);
         event = s.gf_event_spikes > 0 and self.gf_window >= s.gf_event_spikes
         if event or gf > s.gf_on_hz:
             new = FLY                                   # take-off: driven directly by Giant Fiber neural output
-            if cur != FLY:
-                self.flight_mode = "long" if self.flight_urge >= 0.5 and self.v_threat < 0.5 else "short"
+            if cur != FLY or self.flight_mode == "long":
+                if cur == FLY:                          # attacked on the way to food: the flight becomes an escape
+                    self._surge(0.5)
+                self.flight_mode = "short"              # a Giant Fiber take-off is always an escape
         elif cur == FLY:
             landing_ready = False
-            # Dynamic landing decision: not hardcoded time
-            if self._dwell >= 180.0:                    # min takeoff completion dwell
+            if self.flight_mode == "long":              # foraging flight: land at the food, or when the goal is lost
+                lost = self.goal_odor <= 0.0
+                self._goal_lost_ms = self._goal_lost_ms + ms if lost else 0.0
+                fed = self._fed_events != self._goal_fed0 or (not lost and self.goal_gap <= 0.0)
+                if self._dwell >= 150.0 and (fed or self._goal_lost_ms >= GOAL_LOST_MS
+                                             or self._dwell >= GOAL_MAX_FLIGHT_MS):
+                    landing_ready = True
+                    self._goal_refractory_ms = GOAL_MEAL_REFRACTORY_MS if fed else GOAL_REFRACTORY_MS
+            elif self._dwell >= 180.0:                  # escape: land once the threat has passed
                 if self.at_target > 0.5:                # arrived at target/nectar source -> land on target
                     landing_ready = True
                 elif gf < s.gf_off_hz and self.phero_repel < 0.25 and self.loom < 0.3 and self.flight_urge <= 0.2:
@@ -516,22 +699,26 @@ class Brain:
                 new = quiet
         elif groom_on:
             new = GROOM
+        elif goal_ok and self.flight_urge >= 1.0:       # foraging take-off: no Giant Fiber
+            new, self.flight_mode, self.flight_urge = FLY, "long", 0.0
+            self._goal_fed0, self._goal_lost_ms = self._fed_events, 0.0
         elif self._dwell >= s.min_dwell_ms:             # debounce stand <-> walk
             new = quiet
         if new != cur:
             self.state, self._dwell = new, 0.0
             if new != FLY:
                 self.flight_mode = ""
-            # B3: defensive arousal surge on threat
+            # B3: defensive arousal surge on threat (an escape; not a foraging flight, not what the lab evoked)
             if new == FLY:
-                self.arousal = min(1.0, self.arousal + 0.5)
-                self._last_arousal_drive = self.arousal
-                self._drive()
+                self._surge(0.5 if self.flight_mode == "short" else 0.0)
             elif new == RETREAT:
-                self.arousal = min(1.0, self.arousal + 0.05)
-                self._last_arousal_drive = self.arousal
-                self._drive()
+                self._surge(0.05)
             elif new == FREEZE:
-                self.arousal = min(1.0, self.arousal + 0.02)
-                self._last_arousal_drive = self.arousal
-                self._drive()
+                self._surge(0.02)
+
+    def _surge(self, amount: float) -> None:
+        """Defensive arousal up by `amount` (none while the lab drives the circuit), then the drive is rebuilt."""
+        if amount > 0.0 and not self.lab_active:
+            self.arousal = min(1.0, self.arousal + amount)
+            self._last_arousal_drive = self.arousal
+        self._drive()

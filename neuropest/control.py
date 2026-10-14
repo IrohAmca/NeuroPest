@@ -796,7 +796,8 @@ class Control(QWidget):
         v3d_lay.addWidget(self.mb_view3d)
 
         v3d_hint = _label(
-            "Mouse: Left-click to orbit • Right-click to pan • Scroll to zoom • Double-click to reset",
+            "Drag: left orbits, right pans • Scroll zooms • Home resets • Tools: Explore (click a neuron), "
+            "Stimulate (press a target: its neurons fire while held), Silence (click a target)",
             "Faint", wrap=True
         )
         v3d_lay.addWidget(v3d_hint)
@@ -834,11 +835,11 @@ class Control(QWidget):
         btn_punish.clicked.connect(lambda: self._inject_test_action("punish"))
 
         btn_cue_food = QPushButton("Food Odor Cue")
-        btn_cue_food.setToolTip("Stimulates food projection neurons (DM1-DM4) and olfactory Kenyon cells.")
+        btn_cue_food.setToolTip("Shows the mushroom body the food odor for 0.8 s (a designed cue; the fly smells nothing).")
         btn_cue_food.clicked.connect(lambda: self._inject_test_action("food"))
 
         btn_cue_near = QPushButton("Cursor Visual Cue")
-        btn_cue_near.setToolTip("Stimulates visual projection neurons driven by the mouse cursor.")
+        btn_cue_near.setToolTip("Shows the mushroom body the cursor-near cue for 0.8 s (a designed cue; nothing is seen).")
         btn_cue_near.clicked.connect(lambda: self._inject_test_action("cursor"))
 
         sim_btn_grid.addWidget(btn_reward, 0, 0)
@@ -847,6 +848,10 @@ class Control(QWidget):
         sim_btn_grid.addWidget(btn_cue_near, 1, 1)
 
         card_sim.body.addLayout(sim_btn_grid)
+        # while the 3D view's lab silences or stimulates neurons the mushroom body does not learn (Brain.lab_active)
+        self.lbl_lab_gate = _label("", "Warn", wrap=True)
+        self.lbl_lab_gate.setVisible(False)
+        card_sim.body.addWidget(self.lbl_lab_gate)
 
         # Telemetry stats grid
         grid = QGridLayout()
@@ -987,7 +992,15 @@ class Control(QWidget):
 
         pop_view = MushroomBody3DView(runner=self.runner, data=self.mb_view3d.data, parent=dialog)
         d_lay.addWidget(pop_view, 1)
-        dialog.exec()
+        # one live view at a time: the embedded one would keep painting behind the dialog on the same GUI thread
+        embedded = self.mb_view3d_container.isVisible()
+        if embedded:
+            self.mb_view3d.setVisible(False)
+        try:
+            dialog.exec()
+        finally:
+            if embedded:
+                self.mb_view3d.setVisible(True)
 
     def _inject_test_action(self, action: str):
         r = self.runner
@@ -1471,8 +1484,20 @@ class Control(QWidget):
         v = st.get("valence", 0.0)
         self.s_val.set(f"{v:+.2f} " + ("desire" if v > 0.05 else "fear" if v < -0.05 else "neutral"))
         self.s_vm.set(f"{st.get('v_motor', 0.0):.2f}")
-        self.s_gear.set({"stand": "stand", "walk": "walk", "fly_short": "escape flight",
-                         "fly_long": "foraging flight"}.get(st.get("gear", "stand"), "–"))
+        self.s_gear.set({"stand": "stand", "walk": "walk", "fly_short": "escape flight (GF)",
+                         "fly_long": "foraging flight (no GF)"}.get(st.get("gear", "stand"), "–"))
+        if hasattr(self, "lbl_lab_gate"):
+            lab = r.lab_status() if hasattr(r, "lab_status") else {}
+            parts = []
+            if lab.get("silenced"):
+                parts.append("silenced: " + ", ".join(lab["silenced"]))
+            if lab.get("stimulated"):
+                parts.append("stimulated: " + ", ".join(lab["stimulated"]))
+            gate = bool(lab.get("gate"))
+            self.lbl_lab_gate.setVisible(gate)
+            if gate:
+                self.lbl_lab_gate.setText("Lab is on (" + ("; ".join(parts) or "ending") + "): the mushroom body does "
+                                          "not learn meanwhile, so these buttons teach nothing until it is released.")
         self.active.setText(f"Active neurons: {st['active']:,.0f} / {st['n']:,}" if st["active"] >= 0
                             else f"Neurons: {st['n']:,} (GPU updates all every step)")
         where = "CPU"

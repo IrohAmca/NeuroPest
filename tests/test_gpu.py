@@ -128,3 +128,34 @@ def test_silent_network_stays_silent():
     e = WGPUEngine(Network.random(1000, seed=1), dt=0.5)
     e.advance(200.0)
     assert e.total_spikes == 0 and _counts(e, 1000).sum() == 0
+
+
+def test_silencing_matches_reference_and_release_has_no_burst():
+    net = Network.random(300, mean_deg=15, seed=3, gain=1.4)
+    drive, sil = np.arange(0, 300, 12), np.arange(5, 300, 9)
+    gpu, ref = WGPUEngine(net, dt=0.5), ReferenceEngine(net, dt=0.5)
+    for e in (gpu, ref):
+        e.set_silenced(np.concatenate([sil, drive[:3]]))     # three driven neurons silenced too: silence wins
+        _drive_schedule(e, drive, 300, 12)
+    g, r = _counts(gpu, 300), ref.counts
+    assert r.sum() > 300
+    assert g[sil].sum() == 0 and g[drive[:3]].sum() == 0 and r[drive[:3]].sum() == 0
+    assert abs(g.sum() - r.sum()) <= 0.05 * r.sum() and np.corrcoef(g, r)[0, 1] > 0.97
+
+    e = WGPUEngine(Network.from_coo([0], [1], [80.0], 2), dt=0.1)
+    e.set_silenced([1])
+    e.set_drive([0], 1e9)
+    e.advance(20.0)                                         # input piles up on the clamped neuron
+    e.set_drive([0], 0.0)
+    e.advance(5.0)
+    e.set_silenced([])
+    e.advance(30.0)
+    assert int(e.pop_counts([1])[0]) == 0                   # no burst on release
+    e.pop_counts([0])                                       # (its spikes so far)
+    e.set_silenced([0])
+    e.set_drive([0], 1e9)
+    e.advance(2.0)
+    assert int(e.pop_counts([0])[0]) == 0
+    e.set_silenced([])                                      # the drive set while silenced comes back
+    e.advance(2.0)
+    assert int(e.pop_counts([0])[0]) > 0

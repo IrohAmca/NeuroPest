@@ -8,6 +8,14 @@ from .states import FLY, FREEZE, GROOM, RETREAT, STAND, WALK
 
 Rect = tuple[float, float, float, float]   # left, top, right, bottom of the area the fly's center may use
 TURN_GAIN = 0.02                           # rad/s of turning per Hz of right-minus-left DNa02 rate
+# Foraging flight toward a food source (brain.GOAL_*) [DESIGNED]: turn toward it first, then fly, slowing on the way in so
+# the fly lands inside the eating radius instead of overshooting or orbiting it (the bearing settles while K > v/d:
+# v/d stays below ~2 at cruise and ~3.6 at the end for the smallest pet, and K x dt <= 0.25 at the 50 ms step cap)
+GOAL_V_MAX = 300.0                         # px/s cruising
+GOAL_V_MIN = 50.0                          # px/s at the food
+GOAL_BRAKE_PX = 120.0                      # starts slowing this far outside the eating radius
+GOAL_K_TURN = 5.0                          # 1/s of turning per rad of bearing
+GOAL_W_MAX = 7.0                           # rad/s
 FLY_RADIUS_PX: float = 22.0                # physical extent of body, folded wings (-22px) and legs
 FLY_MARGIN_PX: float = 24.0                # radius + 2px safety margin to never poke past the bezel
 
@@ -270,8 +278,11 @@ class Fly:
         """Angle of `cursor` relative to the heading, radians, positive when it is to the fly's right."""
         return _wrap(math.atan2(cursor[1] - self.y, cursor[0] - self.x) - self.heading)
 
-    def update(self, dt: float, state: str, cursor: tuple[float, float], rect: Rect | PlayArea, steer: float = 0.0):
-        """steer: right-minus-left DNa02 rate (Hz) from the brain; turns a walking or retreating fly."""
+    def update(self, dt: float, state: str, cursor: tuple[float, float], rect: Rect | PlayArea, steer: float = 0.0,
+               *, mode: str = "", goal: tuple[float, float, float] | None = None):
+        """steer: right-minus-left DNa02 rate (Hz) from the brain; turns a walking or retreating fly.
+        mode "long" is a foraging flight: goal = (x, y, eating radius) of the food it flies to (None: it hovers until the
+        brain lands it). An escape (any other flight) keeps its speed and DNa02 steering."""
         speed = {STAND: 0.0, WALK: 70.0, FLY: 420.0, RETREAT: -45.0, GROOM: 0.0, FREEZE: 0.0}[state]     # retreat = backward walking
 
         # Transient filter on DNa02 steer (Rayshubskiy et al. 2025 biphasic filter: persistent input adapts)
@@ -279,7 +290,17 @@ class Fly:
         self.steer_ema += a_steer * (steer - self.steer_ema)
         steer_eff = steer - self.alpha_steer * self.steer_ema
 
-        if state == FLY:
+        if state == FLY and mode == "long":
+            if goal is None:
+                speed = 0.0
+            else:
+                gx, gy, r = goal
+                d = math.hypot(gx - self.x, gy - self.y)
+                b = _wrap(math.atan2(gy - self.y, gx - self.x) - self.heading)
+                self.heading = _wrap(self.heading + max(-GOAL_W_MAX, min(GOAL_W_MAX, GOAL_K_TURN * b)) * dt)
+                v = GOAL_V_MIN + (GOAL_V_MAX - GOAL_V_MIN) * min(1.0, max(0.0, d - r) / GOAL_BRAKE_PX)
+                speed = min(v * max(0.0, math.cos(b)) ** 2, d / max(dt, 1e-3))   # turn first, then go; never past it
+        elif state == FLY:
             # Flight turning is driven purely by descending steering command neurons (DNa02 tropotaxis/pursuit)
             self.heading += (steer_eff * TURN_GAIN * 1.5) * dt
             self.heading = _wrap(self.heading)

@@ -86,6 +86,19 @@ class PheromoneField:
             self._spawn_one(screen_boxes)
         return consumed
 
+    def goal_for(self, x: float, y: float, screen=None) -> tuple[PheromoneSource | None, float]:
+        """The food source a fly at (x, y) would fly to, and its odor there: the one it smells most, on `screen` (a
+        ScreenBox) when given, so a flight never crosses to another monitor. The cursor is never a goal: in attract mode
+        the pet feeds at it every few seconds and would keep hopping to it. (None, 0.0) when it smells none."""
+        best, best_c = None, 0.0
+        for s in self.sources:
+            if s.kind != "attract" or (screen is not None and not screen.contains_point(s.x, s.y)):
+                continue
+            c = s.concentration_at(x, y)
+            if c > best_c:
+                best, best_c = s, c
+        return best, best_c
+
     def update_cursor(self, cx: float, cy: float, kind: str = "attract", enabled: bool = True) -> None:
         if not enabled:
             self.cursor_active = False
@@ -178,6 +191,43 @@ class PheromoneField:
             "total_rep": total_rep,
         }
 
+    def smell(self, x: float, y: float, heading: float, play_area=None, scale: float = 1.0) -> tuple[float, float, float]:
+        """What the fly's antennae give the brain: (steer, drive, repel) = the right-minus-left tropotaxis bias (Hz; an
+        attractant on the right turns it right, a repellent turns it away), the attractant and the repellent intensity."""
+        ant = self.sample_antennae(x, y, heading, play_area, antenna_dist=12.0 * scale)
+        return ant["delta_attr"] * 180.0 - ant["delta_rep"] * 220.0, ant["total_attr"], ant["total_rep"]
+
     def render(self, p, play_area=None, scale: float = 1.0) -> None:
         """Pheromones are invisible to the user: nothing is rendered."""
         pass
+
+
+class GoalTracker:
+    """The food source a foraging flight goes to (brain.GOAL_*): chosen again every tick while the fly is not flying to
+    it (PheromoneField.goal_for, on the fly's own screen), kept during the flight, dropped once it is eaten."""
+
+    def __init__(self):
+        self.source: PheromoneSource | None = None
+
+    def update(self, field: PheromoneField, x: float, y: float, play_area=None, flying_to_it: bool = False):
+        if flying_to_it:
+            if self.source is not None and not any(s is self.source for s in field.sources):
+                self.source = None                  # eaten: the brain lands the fly on the meal counter
+        else:
+            screen = play_area.get_screen(x, y) if play_area is not None and hasattr(play_area, "get_screen") else None
+            self.source, _ = field.goal_for(x, y, screen)
+        return self.source
+
+    def target(self, radius: float) -> tuple[float, float, float] | None:
+        """(x, y, eating radius) for fly.update, or None."""
+        return None if self.source is None else (self.source.x, self.source.y, radius)
+
+    def reading(self, x: float, y: float, heading: float, radius: float) -> tuple[float, float, float]:
+        """(gap, bearing, odor) for the brain: px past the eating radius (<= 0: at it), rad (+ to the right), the
+        source's own odor at (x, y). Without a goal: (1e6, 0, 0)."""
+        s = self.source
+        if s is None:
+            return 1e6, 0.0, 0.0
+        dx, dy = s.x - x, s.y - y
+        bearing = (math.atan2(dy, dx) - heading + math.pi) % math.tau - math.pi
+        return math.hypot(dx, dy) - radius, bearing, s.concentration_at(x, y)

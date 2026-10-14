@@ -15,6 +15,7 @@ from __future__ import annotations
 import numba as nb
 import numpy as np
 
+from .hostdrive import HostDrive
 from .network import Network
 from .params import LIFParams
 
@@ -121,8 +122,8 @@ def _advance(n_steps, dt, a, b, c, dly, v0, v_th, t_ref, eps,
     sc[3] += work
 
 
-class LIFEngine:
-    """Spiking engine over a `Network`. Interface shared with `ReferenceEngine`."""
+class LIFEngine(HostDrive):
+    """Spiking engine over a `Network`. Interface shared with `ReferenceEngine` (drive and silencing: HostDrive)."""
 
     def __init__(self, net: Network, params: LIFParams = LIFParams(), dt: float = 0.5,
                  seed: int = 0, eps: float = 0.1):
@@ -151,38 +152,7 @@ class LIFEngine:
         self._seed = seed
         self._rem = 0.0
         self.steps = 0
-        self.f_idx = np.zeros(0, np.int32)
-        self.f_p = np.zeros(0, np.float32)
-        self.c_idx = np.zeros(0, np.int32)
-        self.c_p = np.zeros(0, np.float32)
-        self.c_w = np.zeros(0, np.float32)
-
-    # -------------------------------------------------------------- input
-    def set_drive(self, idx: np.ndarray, rate_hz: np.ndarray | float) -> None:
-        """Neurons `idx` emit Poisson spikes at `rate_hz` (forced, like Shiu's PoissonInput)."""
-        idx = np.asarray(idx, np.int32)
-        rate = np.broadcast_to(np.asarray(rate_hz, np.float32), idx.shape)
-        keep = rate > 0
-        self.f_idx = np.ascontiguousarray(idx[keep])
-        self.f_p = np.ascontiguousarray(1.0 - np.exp(-rate[keep] * self.dt / 1000.0), dtype=np.float32)
-
-    def add_drive(self, idx: np.ndarray, rate_hz: np.ndarray | float) -> None:
-        """Like `set_drive` but keeps the drive already set (for several stimulated groups)."""
-        prev_i, prev_p = self.f_idx, self.f_p
-        self.set_drive(idx, rate_hz)
-        self.f_idx = np.concatenate([prev_i, self.f_idx])
-        self.f_p = np.concatenate([prev_p, self.f_p])
-
-    def set_current_drive(self, idx: np.ndarray, rate_hz: np.ndarray | float,
-                          w_mv: np.ndarray | float) -> None:
-        """Poisson synaptic input: events at `rate_hz`, each adding `w_mv` to g of neurons `idx`."""
-        idx = np.asarray(idx, np.int32)
-        rate = np.broadcast_to(np.asarray(rate_hz, np.float32), idx.shape)
-        w = np.broadcast_to(np.asarray(w_mv, np.float32), idx.shape)
-        keep = rate > 0
-        self.c_idx = np.ascontiguousarray(idx[keep])
-        self.c_p = np.ascontiguousarray(1.0 - np.exp(-rate[keep] * self.dt / 1000.0), dtype=np.float32)
-        self.c_w = np.ascontiguousarray(w[keep])
+        self._init_drive()
 
     # ---------------------------------------------------------------- run
     def advance(self, ms: float) -> int:

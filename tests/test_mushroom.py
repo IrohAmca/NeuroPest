@@ -180,10 +180,10 @@ def test_escape_punishes_the_cue_but_a_chase_does_not():
     assert b.valence < -0.2
     c = _toy_brain()
     c.set_stimulus(900, 0, 0.0, phero_drive=0.9)
-    c.flight_urge = 1.0                                  # voluntary pursuit drives the Giant Fiber too
+    c.flight_urge = 1.0                                  # a strong urge to fly to food is not a threat either
     for _ in range(40):
         c.advance(50.0)
-    assert c._punish == 0.0
+    assert c._punish == 0.0 and c.rates["GF"] < 1.0     # (and it no longer drives the Giant Fiber)
 
 
 def test_runner_remembers_across_restarts_and_forgets_on_request(tmp_path):
@@ -236,11 +236,12 @@ def test_v_motor_adds_threat_desire_and_tension_and_names_the_gear():
     assert b.v_desire > 1.0
 
 
-def test_learned_desire_speeds_up_the_chase_and_a_threat_stops_it():
+def test_learned_desire_speeds_up_the_foraging_urge_and_a_threat_stops_it():
     def urge_after(valence, repel=0.0):
         b = _toy_brain(learning=False)
         b.state = "walk"
         b.set_stimulus(900, 0, 0.0, phero_drive=0.6, phero_repel=repel)
+        b.set_goal(300.0, 0.0, 0.6)                      # food 300 px away that the fly is not getting closer to
         b.valence = valence
         for _ in range(10):
             b.state = "walk"

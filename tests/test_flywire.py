@@ -403,3 +403,91 @@ def test_the_default_pet_does_not_startle_at_its_own_lure(tier):
     b.set_stimulus(40, 1500, 0.0, phero_drive=0.99, hunger=0.35)
     assert b._loom_in == 0.0
     assert not b._cursor_fr[b._cursor_slices[0]].any() and not b._cursor_fr[b._cursor_slices[1]].any()
+
+
+# ---------------------------------------------------------------------- the lab: silencing and stimulation (Brain.set_lab)
+def test_lab_silenced_giant_fiber_blocks_take_off_and_release_restores_it(tier):
+    b = Brain(tier)
+    assert b.set_lab(silenced=["GF"]) == (("GF",), ())
+    b.set_stimulus(150, 3000, 0.0)                          # a fast approach: an intact fly takes off
+    assert FLY not in {b.advance(4.0) for _ in range(150)}
+    assert b.rates["GF"] == 0.0 and b.lab_on
+    b.set_lab(silenced=[])
+    assert FLY in {b.advance(4.0) for _ in range(150)}      # the same approach, the GF back
+
+
+def test_lab_gf_pulse_takes_off_through_its_own_spikes_and_ends_by_itself(tier):
+    b = Brain(tier)
+    b.set_stimulus(900, 0, 0.0)
+    _settle(b, 200)
+    gf = set(tier.groups["GF"].tolist())
+    b.set_lab(stimulated={"GF": 150.0}, stim_ms=300.0)
+    assert gf <= set(b.engine.f_idx.tolist())
+    modes = set()
+    for _ in range(100):                                    # 400 ms
+        if b.advance(4.0) == FLY:
+            modes.add(b.flight_mode)
+        assert b.gf_window == sum(n for _, n in b._gf_hist) >= 0      # the window stays the sum of its history
+    assert modes == {"short"}                               # an escape take-off ...
+    assert not gf & set(b.engine.f_idx.tolist()) and not b._lab_stim   # ... and the light went off by itself
+    assert b.arousal == 0.0                                 # what the lab evoked is no defensive surge
+
+
+def test_lab_looming_neurons_take_off_through_the_circuit_unless_the_gf_is_silenced(tier):
+    b = Brain(tier)
+    b.set_stimulus(900, 0, 0.0)
+    b.set_lab(stimulated={"LC4": 80.0, "LPLC2": 80.0}, stim_ms=600.0)
+    assert FLY in {b.advance(4.0) for _ in range(150)}
+    c = Brain(tier)
+    c.set_stimulus(900, 0, 0.0)
+    c.set_lab(silenced=["GF"], stimulated={"LC4": 80.0, "LPLC2": 80.0}, stim_ms=600.0)
+    assert FLY not in {c.advance(4.0) for _ in range(150)}
+    assert c.lab_rates["LC4"] > 40.0                        # the looming cells did fire; the GF could not
+
+
+def test_lab_lpc1_drives_the_moonwalker_and_lc10_on_one_side_turns(tier):
+    b = Brain(tier)
+    b.set_stimulus(900, 0, 0.0)
+    b.set_lab(stimulated={"LPC1": 30.0}, stim_ms=800.0)
+    assert RETREAT in {b.advance(4.0) for _ in range(200)}
+    r = Brain(tier)
+    r.set_stimulus(900, 0, 0.0)
+    r.set_lab(stimulated={"LC10_R": 20.0}, stim_ms=1000.0)
+    _settle(r, 600)
+    assert r.steer > 5.0                                    # the right DNa02: a turn to the right
+
+
+def test_lab_stimulation_merges_with_the_sensory_drive_one_entry_per_neuron(tier):
+    loom, lc4 = tier.groups["LOOM"], tier.groups["LC4"]
+    p = {hz: 1.0 - np.exp(-hz * 0.5 / 1000.0) for hz in (50.0, 120.0, 200.0)}
+    for lab_hz, want in ((50.0, 120.0), (200.0, 200.0)):    # the larger of the two rates wins
+        b = Brain(tier)
+        b.set_vision(loom, np.full(len(loom), 120.0))
+        b.set_lab(stimulated={"LC4": lab_hz}, stim_ms=1000.0)
+        fi, fp = b.engine.f_idx, b.engine.f_p
+        assert len(fi) == len(np.unique(fi))
+        got = dict(zip(fi.tolist(), fp.tolist()))
+        assert all(abs(got[i] - p[want]) < 1e-6 for i in lc4.tolist())
+
+
+def test_the_lab_does_not_teach_but_a_real_threat_does(tier):
+    b = Brain(tier, learning=True)
+    b.set_stimulus(120, 0, 0.0)                             # the cursor close and still: a cue is present
+    _settle(b, 200)
+    b.mb.dirty = False
+    for _ in range(3):                                      # three GF pulses: three escape take-offs
+        b.set_lab(stimulated={"GF": 150.0}, stim_ms=300.0)
+        _settle(b, 800)
+    assert not b.mb.dirty and b._punish < 0.05 and b.valence == 0.0
+    c = Brain(tier, learning=True)
+    c.set_stimulus(150, 3000, 0.0)                          # the control: a real attack punishes
+    _settle(c, 600)
+    assert c.mb.dirty
+
+
+def test_the_lab_drops_groups_a_circuit_does_not_have():
+    from neuropest.toy_circuit import build
+
+    b = Brain(build(146, 1), learning=False)
+    assert b.lab_available() == ("GF", "WALK")
+    assert b.set_lab(silenced=["MDN", "GF"], stimulated={"LC4": 80.0, "WALK": 120.0}) == (("GF",), ("WALK",))

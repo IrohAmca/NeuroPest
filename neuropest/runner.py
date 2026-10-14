@@ -1,7 +1,12 @@
 """Runs the brain in a separate process so the overlay never stalls on a heavy circuit.
 
-GUI -> worker: stimulus in a shared double array (latest value wins).
-worker -> GUI: behavior state and telemetry in another shared array.
+GUI -> worker: stimulus in a shared double array; worker -> GUI: behavior state and telemetry in another one. Both are
+fresh on every start (both ends always run the same code), and every slot has exactly one writer. Three kinds of slot:
+- levels: the latest value wins (the cursor, the pose, hunger ...);
+- counters: the GUI only adds to them and the worker acts on the change (forget, meals, the sandbox's injections), so an
+  event can not be lost between two reads, as it could when the worker read and then cleared a pulse;
+- the lab block: several slots written under a sequence lock (I_LAB_SEQ odd while the GUI writes), so the worker never
+  applies half of a request; it acknowledges what it applied in O_LAB_SEQ.
 The worker paces itself to wall-clock time; if the circuit is too heavy it falls
 behind, and `lag_ms` / `rt` in the telemetry say so (the fly then moves in slow motion).
 """
@@ -18,9 +23,9 @@ import numpy as np
 
 from .eyeview import PREVIEW_LEN, read_snapshot
 from .paths import CACHE
-from .states import GEARS, STAND, STATES
+from .states import GEARS, LAB_FULL_HZ, LAB_GROUPS, STAND, STATES, lab_mask, lab_names
 
-# input slots
+# ---- input slots (GUI writes, worker reads) ----
 I_DIST, I_CLOSING, I_BIAS, I_SKITTISH, I_BEARING, I_TOUCH = 0, 1, 2, 3, 4, 5
 I_X, I_Y, I_HEAD, I_CX, I_CY, I_VISION, I_HEIGHT = 6, 7, 8, 9, 10, 11, 12     # fly pose, cursor, vision switch
 I_STAMP = 13                # clock reading (s) of the frame the GUI sampled the cursor and pose at; 0 = not sent
@@ -28,23 +33,42 @@ I_PHERO_STEER, I_PHERO_DRIVE, I_PHERO_REPEL, I_AT_TARGET = 14, 15, 16, 17
 I_FORGET = 18               # counter: every increase makes the fly forget what it learned
 I_HUNGER = 19               # metabolic hunger drive [0, 1]
 I_WALL_BUMP = 20            # mechanical wall collision event [0, 1]
-I_INJECT_REWARD = 21        # injected reward pulse (PAM test trigger)
-I_INJECT_PUNISH = 22        # injected punishment pulse (PPL1 test trigger)
-I_INJECT_CUE_FOOD = 23      # injected food cue pulse
-I_INJECT_CUE_NEAR = 24      # injected cursor near cue pulse
+I_INJECT_REWARD = 21        # counter (sum of amounts): learning sandbox, reward (PAM)
+I_INJECT_PUNISH = 22        # counter: learning sandbox, punishment (PPL1)
+I_INJECT_CUE_FOOD = 23      # counter: learning sandbox, the food odor shown to the mushroom body for a moment
+I_INJECT_CUE_NEAR = 24      # counter: learning sandbox, the cursor-near cue shown to the mushroom body for a moment
 I_PREVIEW = 25              # 1 = the GUI shows the fly's-eye preview: publish a snapshot every vision frame
-I_INJECT_GF = 26            # injected optogenetic pulse: Giant Fiber (escape takeoff)
-I_INJECT_MDN = 27           # injected optogenetic pulse: Moonwalker DN (backward retreat)
-I_INJECT_WALK = 28          # injected optogenetic pulse: walking command neurons
-INP_LEN = 32
-# output slots
+I_GOAL_GAP = 26             # px from the fly to the food it would fly to, minus the eating radius (<= 0: at it)
+I_GOAL_BEARING = 27         # rad, + = to the fly's right
+I_GOAL_ODOR = 28            # that source's own odor at the fly; 0 = no goal
+I_FED = 29                  # counter: one per meal (the GUI ate a source or fed at the cursor)
+# 30, 31: free
+I_LAB_SEQ = 32              # the lab block's sequence lock: odd while the GUI writes it, even when it is whole
+I_LAB_SILENCE = 33          # bit mask over states.LAB_GROUPS: the groups to keep silenced (level)
+I_LAB_STIM_ID = 34          # bumped by every stimulation request (a stop too): the worker (re)arms only on a new id
+I_LAB_STIM_MS = 35          # how long the stimulation lasts, simulated ms from when the worker applies it
+I_LAB_RATE0 = 36            # Hz per lab group: I_LAB_RATE0 + k for LAB_GROUPS[k]
+I_LAB_RATE_END = 52         # (reserved up to here)
+INP_LEN = 64
+# ---- output slots (worker writes, GUI reads) ----
 (O_READY, O_STATE, O_GF, O_WALK, O_REST, O_RT, O_ACTIVE, O_N, O_CPU, O_LAG, O_SIM_S, O_BEAT, O_MDN, O_STEER,
  O_SPIKES, O_GROOM, O_VISION, O_VALENCE, O_VMOTOR, O_GEAR,
  O_PAM, O_PPL1, O_MBON_APP, O_MBON_AV, O_KC_ACTIVE,
  O_CUE_FOOD, O_CUE_ALARM, O_CUE_NEAR, O_CUE_LOOM, O_CUE_TOUCH,
  O_MB_WEIGHTS_DIRTY) = range(31)
 O_KC_N = 31                 # Kenyon cells of the running mushroom-body model = valid length of the shared `mb_active` mask
-OUT_LEN = 36
+O_URGE = 32                 # the foraging-flight urge (takes off at 1)
+O_LAB_SEQ = 33              # the lab request (I_LAB_SEQ) the worker applied last
+O_LAB_AVAIL = 34            # bit mask: the lab groups this circuit has
+O_LAB_SILENCED = 35         # bit mask: silenced now
+O_LAB_STIM = 36             # bit mask: stimulated now (0 again after the pulse)
+O_LAB_LEFT_MS = 37          # simulated ms of stimulation left
+O_LAB_GATE = 38             # 1 while plasticity is paused by the lab
+O_RATE_LC4, O_RATE_LPLC2, O_RATE_LPC1, O_RATE_LC10_L, O_RATE_LC10_R = 39, 40, 41, 42, 43   # spiking rates, Hz
+O_RATE_DNA02_L, O_RATE_DNA02_R = 44, 45
+OUT_LEN = 64
+LAB_RATE_SLOTS = {"LC4": O_RATE_LC4, "LPLC2": O_RATE_LPLC2, "LPC1": O_RATE_LPC1, "LC10_L": O_RATE_LC10_L,
+                  "LC10_R": O_RATE_LC10_R, "DNa02_L": O_RATE_DNA02_L, "DNa02_R": O_RATE_DNA02_R}
 
 MB_WEIGHTS_LEN = 8192       # shared per-Kenyon-cell valence buffer, one slot per KC (random model 2,000; real cells 5,177)
 CHUNK_MS = 4.0              # simulated time advanced per loop iteration
@@ -189,15 +213,20 @@ def _loop(cfg: EngineConfig, brain, net, inp, out, stop, cap_frame=None, cap_met
     act_view = np.frombuffer(mb_active, dtype=np.int8) if mb_active is not None else None
     last_in = None
     forget_seen = 0.0
+    counters = _Counters()
+    lab = _Lab()
     last_save = time.perf_counter()
     t0 = time.perf_counter()
     sim_ms = 0.0
     spikes0 = brain.engine.total_spikes
     w_wall, w_cpu, w_comp, w_sim, w_active, w_iters = t0, time.process_time(), 0.0, 0.0, 0.0, 0
     out[O_N] = net.n
+    out[O_LAB_AVAIL] = float(lab_mask(brain.lab_available()))
+    lab.update(brain, inp, out)                    # a lesion carried over from the previous worker is there from the start
     out[O_READY] = 1.0
     while not stop.is_set():
         t = time.perf_counter()
+        lab.update(brain, inp, out)
         eye.update(brain, inp, out, sim_ms)
         closing = approach.update(inp)
         raw_closing = inp[I_CLOSING] if closing is None else closing
@@ -218,30 +247,18 @@ def _loop(cfg: EngineConfig, brain, net, inp, out, stop, cap_frame=None, cap_met
         if inp[I_FORGET] != forget_seen and brain.mb is not None:
             forget_seen = inp[I_FORGET]
             brain.mb.reset()
-        if inp[I_INJECT_REWARD] > 0.0:
-            brain._reward = max(brain._reward, float(inp[I_INJECT_REWARD]))
-            inp[I_INJECT_REWARD] = 0.0
-        if inp[I_INJECT_PUNISH] > 0.0:
-            brain._punish = max(brain._punish, float(inp[I_INJECT_PUNISH]))
-            inp[I_INJECT_PUNISH] = 0.0
-        if inp[I_INJECT_CUE_FOOD] > 0.0:
-            brain.phero_drive = max(brain.phero_drive, float(inp[I_INJECT_CUE_FOOD]))
-            inp[I_INJECT_CUE_FOOD] = 0.0
-        if inp[I_INJECT_CUE_NEAR] > 0.0:
-            dist, closing, b_bias, b_skit = brain._stim
-            brain._stim = (40.0, closing, b_bias, b_skit)
-            inp[I_INJECT_CUE_NEAR] = 0.0
-        if inp[I_INJECT_GF] > 0.0:
-            brain.rates["GF"] = max(brain.rates["GF"], 40.0 * float(inp[I_INJECT_GF]))
-            brain._gf_hist.append((chunk, int(4 * float(inp[I_INJECT_GF]))))
-            inp[I_INJECT_GF] = 0.0
-        if inp[I_INJECT_MDN] > 0.0:
-            brain.rates["MDN"] = max(brain.rates["MDN"], 25.0 * float(inp[I_INJECT_MDN]))
-            inp[I_INJECT_MDN] = 0.0
-        if inp[I_INJECT_WALK] > 0.0:
-            brain.rates["WALK"] = max(brain.rates["WALK"], 20.0 * float(inp[I_INJECT_WALK]))
-            brain.walk_smoothed = max(brain.walk_smoothed, 15.0 * float(inp[I_INJECT_WALK]))
-            inp[I_INJECT_WALK] = 0.0
+        # the learning sandbox (control panel / 3D view): counters, so a click is never lost between two reads
+        if (d := counters.take(inp, I_INJECT_REWARD)) > 0.0:
+            brain._reward = max(brain._reward, min(1.0, d))
+        if (d := counters.take(inp, I_INJECT_PUNISH)) > 0.0:
+            brain._punish = max(brain._punish, min(1.0, d))
+        if (d := counters.take(inp, I_INJECT_CUE_FOOD)) > 0.0:
+            brain.present_cue("food", d)
+        if (d := counters.take(inp, I_INJECT_CUE_NEAR)) > 0.0:
+            brain.present_cue("near", d)
+        if (d := counters.take(inp, I_FED)) > 0.0:
+            brain.note_fed(int(round(d)))
+        brain.set_goal(inp[I_GOAL_GAP], inp[I_GOAL_BEARING], inp[I_GOAL_ODOR])
         state = brain.advance(chunk)
         spent = time.perf_counter() - t
         w_comp += spent
@@ -251,11 +268,16 @@ def _loop(cfg: EngineConfig, brain, net, inp, out, stop, cap_frame=None, cap_met
             w_active = -1.0                         # GPU engine: every neuron is updated every step
         w_iters += 1
         sim_ms += chunk
+        out[O_GEAR] = float(GEARS.index(brain.gear))   # before the state: the GUI must not read FLY with the old gear
         out[O_STATE] = float(STATES.index(state))
         out[O_GF], out[O_WALK], out[O_REST] = (brain.rates["GF"], brain.rates["WALK"], brain.rates["REST"])
         out[O_MDN], out[O_STEER], out[O_GROOM] = brain.rates["MDN"], brain.steer, brain.rates["GROOM"]
         out[O_VALENCE] = brain.valence
-        out[O_VMOTOR], out[O_GEAR] = brain.v_motor, float(GEARS.index(brain.gear))
+        out[O_VMOTOR] = brain.v_motor
+        out[O_URGE] = brain.flight_urge
+        for name, slot in LAB_RATE_SLOTS.items():
+            out[slot] = brain.lab_rates.get(name, brain.rates.get(name, 0.0))
+        lab.publish(brain, out)
         if brain.mb is not None:
             out[O_PAM] = float(brain.mb.pam)
             out[O_PPL1] = float(brain.mb.ppl1)
@@ -286,7 +308,8 @@ def _loop(cfg: EngineConfig, brain, net, inp, out, stop, cap_frame=None, cap_met
                     n_cp = min(len(mb_view), len(v_vec))
                     mb_view[:n_cp] = v_vec[:n_cp]
                     out[O_MB_WEIGHTS_DIRTY] += 1.0
-        if memory is not None and brain.mb is not None and brain.mb.dirty and time.perf_counter() - last_save > MEMORY_SAVE_S:
+        if (memory is not None and brain.mb is not None and brain.mb.dirty and not brain.lab_active
+                and time.perf_counter() - last_save > MEMORY_SAVE_S):
             last_save = time.perf_counter()
             try:
                 brain.mb.save(memory)
@@ -313,6 +336,50 @@ def _loop(cfg: EngineConfig, brain, net, inp, out, stop, cap_frame=None, cap_met
             out[O_SIM_S] = sim_ms / 1000.0
             out[O_BEAT] += 1
             w_wall, w_cpu, w_comp, w_sim, w_active, w_iters = now, cpu, 0.0, 0.0, 0.0, 0
+
+
+class _Counters:
+    """Worker side of the counter slots: the GUI only adds to them, an event is the change since the last read."""
+
+    def __init__(self):
+        self.seen: dict[int, float] = {}
+
+    def take(self, inp, slot: int) -> float:
+        v = float(inp[slot])
+        d = v - self.seen.get(slot, 0.0)            # the arrays are fresh on every start: nothing is pending at 0
+        self.seen[slot] = v
+        return d
+
+
+class _Lab:
+    """Worker side of the lab block (I_LAB_*): applies a whole request once, under the sequence lock."""
+
+    def __init__(self):
+        self.applied = 0.0                          # I_LAB_SEQ of the request applied last (0: none, a fresh array)
+        self.stim_id = 0.0
+
+    def update(self, brain, inp, out) -> None:
+        seq = inp[I_LAB_SEQ]
+        if seq == self.applied or int(seq) % 2:
+            return                                  # nothing new, or the GUI is writing it right now
+        mask, stim_id, ms = inp[I_LAB_SILENCE], inp[I_LAB_STIM_ID], inp[I_LAB_STIM_MS]
+        rates = [inp[I_LAB_RATE0 + k] for k in range(len(LAB_GROUPS))]
+        if inp[I_LAB_SEQ] != seq:
+            return                                  # torn: written while read; the next iteration gets it whole
+        stim = None
+        if stim_id != self.stim_id:                 # a new stimulation (or stop): otherwise only the silencing changed
+            stim = {n: r for n, r in zip(LAB_GROUPS, rates) if r > 0.0}
+            self.stim_id = stim_id
+        brain.set_lab(silenced=lab_names(mask), stimulated=stim, stim_ms=ms)
+        self.applied = seq
+        out[O_LAB_SEQ] = seq
+
+    @staticmethod
+    def publish(brain, out) -> None:
+        out[O_LAB_SILENCED] = float(lab_mask(brain._lab_sil))
+        out[O_LAB_STIM] = float(lab_mask(brain._lab_stim))
+        out[O_LAB_LEFT_MS] = max(0.0, brain.lab_left_ms)
+        out[O_LAB_GATE] = 1.0 if brain.lab_active else 0.0
 
 
 class _Approach:
@@ -542,8 +609,18 @@ class Runner:
         self.vision = False       # see the screen (funnel view, retinotopic detectors) instead of cursor numbers
         self.eye_height = 100.0
         self.preview = False      # the GUI shows the fly's-eye preview: the worker publishes a snapshot per vision frame
+        self._lab_init()
         self.cfg = cfg or default_config()
         self.start(self.cfg)
+
+    def _lab_init(self) -> None:
+        """The lab as the GUI asked for it (written into each new worker's arrays: a lesion outlives a restart, a
+        stimulation does not)."""
+        self._lab_silenced: set[str] = set()
+        self._lab_rates = [0.0] * len(LAB_GROUPS)
+        self._lab_ms = 0.0
+        self._lab_seq = 0.0
+        self._lab_stim_id = 0.0
 
     def start(self, cfg: EngineConfig) -> None:
         self.cfg = cfg
@@ -558,6 +635,11 @@ class Runner:
         self.inp, self.out, self.mb_weights, self.eye_preview = inp, out, mb_weights, eye_preview
         self.mb_active = mb_active
         self.send(1e6, 0.0)
+        self._lab_seq = 0.0                         # a fresh array: the sequence starts again
+        self._lab_rates = [0.0] * len(LAB_GROUPS)   # a stimulation does not carry over (it would fire whenever the
+        self._lab_ms = 0.0                          # new worker happens to become ready); the silencing does
+        if self._lab_silenced:
+            self._write_lab()
         self._starting = True
         threading.Thread(target=self._swap, args=(gen, cfg, inp, out, old, mb_weights, eye_preview, mb_active),
                          daemon=True, name="neuropest-swap").start()
@@ -595,11 +677,13 @@ class Runner:
              capture_pos=None,
              phero_steer: float = 0.0, phero_drive: float = 0.0,
              phero_repel: float = 0.0, at_target: bool = False,
-             hunger: float = 1.0, wall_bump: bool = False) -> None:
+             hunger: float = 1.0, wall_bump: bool = False,
+             goal_gap: float = 1e6, goal_bearing: float = 0.0, goal_odor: float = 0.0) -> None:
         """Per-frame input. pose = fly (x, y, heading) and cursor = (x, y) in screen px feed the visual input.
 
         stamp: `time.perf_counter()` of the frame. With it the worker measures the cursor's closing speed itself from
-        pose and cursor (`closing` is then ignored); without it (0) `closing` is used as given."""
+        pose and cursor (`closing` is then ignored); without it (0) `closing` is used as given.
+        goal_*: the food source the fly would fly to (Brain.set_goal); the defaults say there is none."""
         inp = self.inp
         inp[I_DIST], inp[I_CLOSING], inp[I_BIAS], inp[I_SKITTISH] = dist, closing, self.bias, self.skittish
         inp[I_BEARING], inp[I_TOUCH] = bearing, touch
@@ -614,6 +698,7 @@ class Runner:
         inp[I_AT_TARGET] = 1.0 if at_target else 0.0
         inp[I_HUNGER] = float(hunger)
         inp[I_WALL_BUMP] = (1.0 if wall_bump else 0.0) * getattr(self, "wall_pain", 1.0)
+        inp[I_GOAL_GAP], inp[I_GOAL_BEARING], inp[I_GOAL_ODOR] = goal_gap, goal_bearing, goal_odor
 
         if hasattr(self, "capture") and self.capture is not None:
             cx, cy = capture_pos if capture_pos is not None else (pose[0], pose[1])
@@ -636,6 +721,15 @@ class Runner:
     def forget(self) -> None:
         """Amnesia: the worker resets the learned weights (and saves the empty memory soon after)."""
         self.inp[I_FORGET] += 1.0
+
+    def note_fed(self) -> None:
+        """One meal (a counter: the worker lands a foraging flight on it and takes it as the feeding reward)."""
+        self.inp[I_FED] += 1.0
+
+    @property
+    def urge(self) -> float:
+        """The foraging-flight urge, 0..1.2 (takes off at 1)."""
+        return self.out[O_URGE] if self.ready else 0.0
 
     @property
     def steer(self) -> float:
@@ -684,58 +778,121 @@ class Runner:
         """Active Kenyon cell count during current frame."""
         return int(self.out[O_KC_ACTIVE]) if self.ready else 0
 
+    # ---------------------------------------------------------------- the learning sandbox (designed signals)
     def inject_reward(self, amount: float = 1.0) -> None:
-        """Inject unconditioned reward pulse (PAM dopamine) for training sandbox."""
+        """Reward (PAM dopamine, the designed mushroom-body layer) for the cue present now."""
         if self.ready:
-            self.inp[I_INJECT_REWARD] = float(amount)
+            self.inp[I_INJECT_REWARD] += float(amount)
 
     def inject_punish(self, amount: float = 1.0) -> None:
-        """Inject unconditioned punishment pulse (PPL1 dopamine) for training sandbox."""
+        """Punishment (PPL1 dopamine, the designed mushroom-body layer) for the cue present now."""
         if self.ready:
-            self.inp[I_INJECT_PUNISH] = float(amount)
+            self.inp[I_INJECT_PUNISH] += float(amount)
 
     def inject_cue_food(self, amount: float = 1.0) -> None:
-        """Activate food odor projection neurons / cue channel."""
+        """Show the mushroom body the food odor for a moment (Brain.present_cue); the fly does not smell it."""
         if self.ready:
-            self.inp[I_INJECT_CUE_FOOD] = float(amount)
+            self.inp[I_INJECT_CUE_FOOD] += float(amount)
 
     def inject_cue_near(self, amount: float = 1.0) -> None:
-        """Simulate near cursor proximity cue."""
+        """Show the mushroom body the cursor-near cue for a moment (Brain.present_cue); nothing is seen."""
         if self.ready:
-            self.inp[I_INJECT_CUE_NEAR] = float(amount)
+            self.inp[I_INJECT_CUE_NEAR] += float(amount)
+
+    # ---------------------------------------------------------------- the lab (spiking neurons of the circuit)
+    def stimulate(self, group: str | dict, intensity: float = 1.0, ms: float = 300.0) -> bool:
+        """Forced spiking of a lab group (states.LAB_GROUPS) at intensity x its LAB_FULL_HZ for `ms` simulated ms (it
+        ends by itself, after 10 s at most), or of several at once: {group: intensity}. Replaces a stimulation still on.
+        False (nothing sent) while the worker is not ready or no group is known."""
+        want = group if isinstance(group, dict) else {group: intensity}
+        rates = [0.0] * len(LAB_GROUPS)
+        for name, level in want.items():
+            if name in LAB_GROUPS and level > 0.0:
+                rates[LAB_GROUPS.index(name)] = LAB_FULL_HZ[name] * min(2.0, float(level))
+        if not self.ready or not any(rates):
+            return False
+        self._lab_rates, self._lab_ms = rates, float(ms)
+        self._lab_stim_id += 1.0
+        self._write_lab()
+        return True
+
+    def stop_stimulation(self) -> None:
+        """End a stimulation now (a held button released)."""
+        self._lab_rates, self._lab_ms = [0.0] * len(LAB_GROUPS), 0.0
+        self._lab_stim_id += 1.0
+        self._write_lab()
+
+    def silence(self, group: str, on: bool = True) -> None:
+        """Silence a lab group (its neurons can not spike) or release it. Kept across engine restarts, not saved."""
+        if group in LAB_GROUPS:
+            (self._lab_silenced.add if on else self._lab_silenced.discard)(group)
+            self._write_lab()
+
+    def clear_lab(self) -> None:
+        """Release every silenced group and end the stimulation."""
+        self._lab_silenced.clear()
+        self.stop_stimulation()
+
+    def _write_lab(self) -> None:
+        """The lab block under the sequence lock: odd while it is written, even when whole (the worker reads it only
+        then, and only once per value)."""
+        inp = self.inp
+        if inp is None:
+            return
+        self._lab_seq += 1.0
+        inp[I_LAB_SEQ] = self._lab_seq
+        inp[I_LAB_SILENCE] = float(lab_mask(self._lab_silenced))
+        inp[I_LAB_STIM_ID] = self._lab_stim_id
+        inp[I_LAB_STIM_MS] = self._lab_ms
+        for k, rate in enumerate(self._lab_rates):
+            inp[I_LAB_RATE0 + k] = rate
+        self._lab_seq += 1.0
+        inp[I_LAB_SEQ] = self._lab_seq
+
+    def lab_status(self) -> dict:
+        """What the worker really has applied (not what was asked): groups this circuit has, silenced, stimulated now,
+        ms of stimulation left, whether plasticity is paused, and whether the last request has been applied."""
+        o = self.out
+        if o is None or not self.ready:
+            return dict(available=(), silenced=(), stimulated=(), left_ms=0.0, gate=False, acked=False,
+                        asked_silenced=tuple(n for n in LAB_GROUPS if n in self._lab_silenced))
+        return dict(available=lab_names(o[O_LAB_AVAIL]), silenced=lab_names(o[O_LAB_SILENCED]),
+                    stimulated=lab_names(o[O_LAB_STIM]), left_ms=float(o[O_LAB_LEFT_MS]), gate=o[O_LAB_GATE] > 0.5,
+                    acked=o[O_LAB_SEQ] == self.inp[I_LAB_SEQ],
+                    asked_silenced=tuple(n for n in LAB_GROUPS if n in self._lab_silenced))
+
+    def lab_rates(self) -> dict:
+        """Spiking rates (Hz) of the lab's visual input groups and of DNa02 per side, for the 3D view's cards."""
+        if self.out is None or not self.ready:
+            return {}
+        return {name: float(self.out[slot]) for name, slot in LAB_RATE_SLOTS.items()}
+
+    # optogenetics names kept for callers of the old API: they now stimulate the real neurons
+    _OPTO = {"gf": "GF", "takeoff": "GF", "escape": "GF", "mdn": "MDN", "moonwalk": "MDN", "retreat": "MDN",
+             "walk": "WALK", "lc4": "LC4", "lplc2": "LPLC2", "lpc1": "LPC1", "lc10_l": "LC10_L", "lc10_r": "LC10_R",
+             "steer_l": "DNa02_L", "steer_r": "DNa02_R", "dna02_l": "DNa02_L", "dna02_r": "DNa02_R", "groom": "GROOM"}
 
     def inject_gf(self, amount: float = 1.0) -> None:
-        """Optogenetic excitation pulse to Giant Fiber (triggers escape takeoff)."""
-        if self.ready:
-            self.inp[I_INJECT_GF] = float(amount)
+        """Stimulate the Giant Fiber (DNp01) neurons for a pulse."""
+        self.stimulate("GF", amount)
 
     def inject_mdn(self, amount: float = 1.0) -> None:
-        """Optogenetic excitation pulse to Moonwalker DN (triggers backward retreat)."""
-        if self.ready:
-            self.inp[I_INJECT_MDN] = float(amount)
+        """Stimulate the moonwalker descending neurons (MDN) for a pulse."""
+        self.stimulate("MDN", amount)
 
     def inject_walk(self, amount: float = 1.0) -> None:
-        """Optogenetic excitation pulse to walking command neurons (triggers locomotion)."""
-        if self.ready:
-            self.inp[I_INJECT_WALK] = float(amount)
+        """Stimulate the walking command neurons (DNp09) for a pulse."""
+        self.stimulate("WALK", amount)
 
     def inject_optogenetic(self, target: str, amount: float = 1.0) -> None:
-        """Optogenetic micro-stimulation targeted to specific circuit or cell type."""
-        target_u = target.upper()
-        if "GF" in target_u or "ESCAPE" in target_u or "TAKEOFF" in target_u:
-            self.inject_gf(amount)
-        elif "MDN" in target_u or "RETREAT" in target_u or "MOONWALK" in target_u:
-            self.inject_mdn(amount)
-        elif "WALK" in target_u:
-            self.inject_walk(amount)
-        elif "PAM" in target_u or "REWARD" in target_u or "SUGAR" in target_u:
-            self.inject_reward(amount)
-        elif "PPL1" in target_u or "PUNISH" in target_u or "SHOCK" in target_u:
-            self.inject_punish(amount)
-        elif "FOOD" in target_u or "ALPN" in target_u or "ODOR" in target_u:
-            self.inject_cue_food(amount)
-        elif "NEAR" in target_u or "VIS" in target_u or "LOOM" in target_u or "LC" in target_u:
-            self.inject_cue_near(amount)
+        """A pulse on a lab group by name (see _OPTO), or a sandbox signal ("reward", "punish", "food", "near")."""
+        t = target.strip().lower()
+        sandbox = {"reward": self.inject_reward, "pam": self.inject_reward, "punish": self.inject_punish,
+                   "ppl1": self.inject_punish, "food": self.inject_cue_food, "near": self.inject_cue_near}
+        if t in sandbox:
+            sandbox[t](amount)
+        elif t in self._OPTO:
+            self.stimulate(self._OPTO[t], amount)
 
     def preview_snapshot(self):
         """Latest frame of the fly's-eye preview (eyeview.Snapshot), or None: not switched on, nothing yet, or torn."""
@@ -773,7 +930,7 @@ class Runner:
                     vision=o[O_VISION], valence=o[O_VALENCE], v_motor=o[O_VMOTOR], gear=GEARS[int(o[O_GEAR])],
                     pam=o[O_PAM], ppl1=o[O_PPL1], mbon_app=o[O_MBON_APP], mbon_av=o[O_MBON_AV],
                     kc_active=int(o[O_KC_ACTIVE]), cue_food=o[O_CUE_FOOD], cue_near=o[O_CUE_NEAR],
-                    weights_dirty=int(o[O_MB_WEIGHTS_DIRTY]),
+                    weights_dirty=int(o[O_MB_WEIGHTS_DIRTY]), urge=o[O_URGE], state=STATES[int(o[O_STATE])],
                     heading=float(self.inp[I_HEAD]))     # the fly's on-screen heading, rad (the 3D compass shows it)
 
 
