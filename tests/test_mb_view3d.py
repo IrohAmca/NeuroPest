@@ -730,16 +730,23 @@ def test_hovering_a_target_rings_its_group_and_says_what_a_press_does(app):
 
 
 def test_hud_controls_never_overlap_at_any_width(app):
+    inside_card = {"close_inspector", "card_stim", "card_silence", "card_sandbox"}
     for w in range(480, 1141, 60):
-        view = MushroomBody3DView(data=load_mushroom_3d())
-        view.resize(w, 410)
-        view._lab["silenced"] = view._lab["asked_silenced"] = ("GF", "LC4")
-        view.grab()
-        rects = list(view._btn_rects.items())
-        for i, (a, ra) in enumerate(rects):
-            assert ra.right() < w and ra.bottom() < 410, (w, a)
-            for b, rb in rects[i + 1:]:
-                assert not ra.intersects(rb), (w, a, b)
+        for silenced in (("GF", "LC4"), ("GF", "LC4", "MDN", "WALK", "LPC1")):
+            view = MushroomBody3DView(data=load_mushroom_3d())
+            view.resize(w, 410)
+            view._lab["silenced"] = view._lab["asked_silenced"] = silenced
+            x, y, _ = view._members_xy("GF")
+            view._pin(view._find_neuron_at(QPoint(int(x[0]), int(y[0])), 3.0, systems=("dn",)))
+            view.grab()
+            rects = list(view._btn_rects.items())
+            assert "card" in view._btn_rects and "release_all" in view._btn_rects
+            for i, (a, ra) in enumerate(rects):
+                assert ra.right() < w and ra.bottom() < 410, (w, a)
+                for b, rb in rects[i + 1:]:
+                    if {a, b} & inside_card and "card" in (a, b):
+                        continue                            # the card's own buttons sit on the card
+                    assert not ra.intersects(rb), (w, silenced, a, b)
 
 
 def test_vectorised_picking_matches_a_brute_force_search(app):
@@ -751,20 +758,22 @@ def test_vectorised_picking_matches_a_brute_force_search(app):
     for yaw in (-0.45, 0.8, 2.2):
         view.yaw = yaw
         systems = [(s, pts) for s, pts, vis in view._pick_sources() if vis and len(pts)]
-        for x, y in rng.uniform([0, 0], [800, 520], (60, 2)):
+        for fx, fy in rng.uniform([0, 0], [800, 520], (60, 2)):
+            x, y = int(fx), int(fy)                                 # the same point for both searches
             best = None
+            dist = {}
             for system, pts in systems:
                 sx, sy, _, _ = view._project_points(pts)
                 for i in range(len(pts)):
                     d = _m.hypot(x - sx[i], y - sy[i])
+                    dist[(system, i)] = d
                     if d <= 20.0 and (best is None or d < best[0]):
                         best = (d, system, i)
-            got = view._pick(QPoint(int(x), int(y)), 20.0)
-            want = None if best is None else (best[1], best[2])
-            if want != got:                                         # only a tie in distance may differ
-                assert got is not None and want is not None
+            got = view._pick(QPoint(x, y), 20.0)
+            if best is None:
+                assert got is None
             else:
-                assert got == want
+                assert got is not None and abs(dist[got] - best[0]) < 1e-6    # the nearest (a tie may pick either)
 
 
 def test_the_scene_at_rest_is_rendered_once_per_camera_pose(app):
@@ -1249,3 +1258,97 @@ def test_keyboard_switches_tools_and_home_resets_the_camera(app):
     view.yaw += 1.0
     view.keyPressEvent(QKeyEvent(QEvent.KeyPress, Qt.Key_Home, Qt.NoModifier))
     assert view.yaw == PRESET_ISOMETRIC[0]
+
+
+
+def test_the_open_guide_blocks_the_controls_under_it(app):
+    runner = _LabRunner()
+    view = _lab_view(runner)
+    view._pin(view._find_neuron_at(_soma_pos(view, "GF"), 3.0, systems=("dn",)))
+    view.grab()
+    stim = view._btn_rects["card_stim"].center()
+    tool = view._btn_rects["tool_silence"].center()
+    view._show_help = True
+    view.grab()
+    for pos in (stim, tool):
+        view.mousePressEvent(_Click(pos))
+        view.mouseReleaseEvent(_Click(pos))
+    assert runner.calls == [] and view.tool_mode == "camera" and view._show_help
+    view.mousePressEvent(_Click(view._btn_rects["close_help"].center()))
+    assert not view._show_help
+
+
+def test_the_card_takes_the_clicks_on_it(app):
+    runner = _LabRunner()
+    view = _lab_view(runner)
+    for g in ("GF", "LC4", "MDN"):
+        runner.silence(g, True)
+    runner.calls.clear()
+    view._fetch_telemetry()
+    view._pin(view._find_neuron_at(_soma_pos(view, "GF"), 3.0, systems=("dn",)))
+    view.grab()
+    card = view._btn_rects["card"]
+    pos = QPoint(card.left() + 20, card.top() + 12)         # the card's header
+    view.mousePressEvent(_Click(pos))
+    view.mouseReleaseEvent(_Click(pos))
+    assert runner.calls == [] and view._inspected_neuron is not None   # no chip under it fired, the card stayed
+
+
+def test_switching_tool_mid_hold_ends_the_light_and_the_press(app):
+    runner = _LabRunner()
+    view = _lab_view(runner)
+    view.set_tool_mode("opto")
+    pos = _soma_pos(view, "GF")
+    view.mousePressEvent(_Click(pos))
+    view._held = ("GF", view._held[1] - 1.0)
+    view.set_tool_mode("silence")                           # key 3 while the button is down
+    view.mouseReleaseEvent(_Click(pos))
+    assert ("silence", "GF", True) not in runner.calls and runner.calls[-1] == ("stop",)
+
+
+def test_a_deferred_stop_does_not_end_a_newer_pulse(app):
+    runner = _LabRunner()
+    view = _lab_view(runner)
+    view.set_tool_mode("opto")
+    scheduled = []
+    import neuropest.mb_view3d as mv
+
+    real = mv.QTimer.singleShot
+    mv.QTimer.singleShot = lambda ms, fn: scheduled.append(fn)
+    try:
+        pos = _soma_pos(view, "GF")
+        view.mousePressEvent(_Click(pos))
+        view.mouseReleaseEvent(_Click(pos))                 # a quick click: its stop is deferred
+        assert view.stimulate_target("MDN")                 # a new pulse meanwhile
+        n = len(runner.calls)
+        for fn in scheduled:
+            fn()
+        assert len(runner.calls) == n                       # the old deferred stop did not end MDN
+    finally:
+        mv.QTimer.singleShot = real
+
+
+def test_a_quick_second_click_on_a_target_is_a_click(app):
+    runner = _LabRunner()
+    view = _lab_view(runner)
+    view.set_tool_mode("silence")
+    pos = _soma_pos(view, "LC4")
+    view.mousePressEvent(_Click(pos))
+    view.mouseReleaseEvent(_Click(pos))
+    view._fetch_telemetry()
+    view.mouseDoubleClickEvent(_Click(pos))                 # Qt sends the second press as a double-click
+    view.mouseReleaseEvent(_Click(pos))
+    assert runner.calls == [("silence", "LC4", True), ("silence", "LC4", False)]
+
+
+def test_a_view_hidden_mid_drag_does_not_orbit_on_plain_moves_later(app):
+    view = _lab_view()
+    view.show()
+    app.processEvents()
+    view.mousePressEvent(_Click(QPoint(30, view.height() - 30)))
+    view.hide()                                             # the release never comes
+    view.show()
+    app.processEvents()
+    yaw = view.yaw
+    view.mouseMoveEvent(_Click(QPoint(90, view.height() - 30)))
+    assert view.yaw == yaw and view._press is None

@@ -212,8 +212,9 @@ class Overlay(QWidget):
         # Physical bearing of cursor relative to fly heading
         bearing = _wrap(math.atan2(pdy, pdx) - self.fly.heading)
 
-        # state and gear read once: the worker may change them between two reads (it writes the gear first)
-        state, gear = self.runner.state, self.runner.gear
+        # state and gear of the same worker step, from one shared slot (two separate reads can straddle a landing)
+        state_gear = getattr(self.runner, "state_gear", None)
+        state, gear = state_gear() if state_gear is not None else (self.runner.state, self.runner.gear)
         long_flight = state == FLY and gear == "fly_long"
 
         # Update pheromone field, cursor attractant and sample bilateral antennae

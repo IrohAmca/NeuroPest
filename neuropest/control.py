@@ -858,7 +858,8 @@ class Control(QWidget):
         grid.setHorizontalSpacing(16)
         self.s_val = Stat("Valence", "Learned affective response to current cue: + desire, − fear")
         self.s_vm = Stat("V_motor", "Combined drive: threat + desire + frustration")
-        self.s_gear = Stat("Locomotion Mode", "Stand, walk, escape flight, or pursuit flight")
+        self.s_gear = Stat("Locomotion Mode", "Stand, walk, escape flight (Giant Fiber) or foraging flight to a food "
+                                              "source (no Giant Fiber)")
         for i, s in enumerate((self.s_val, self.s_vm, self.s_gear)):
             grid.addWidget(s, 0, i)
         card_sim.body.addLayout(grid)
@@ -1456,6 +1457,8 @@ class Control(QWidget):
                   self.s_val, self.s_vm, self.s_gear):
             s.set("–")
         self.active.setText("")
+        if hasattr(self, "lbl_lab_gate"):       # starting / failed: no lab state to report (a restart drops the light)
+            self.lbl_lab_gate.setVisible(False)
 
     def _refresh(self):
         r = self.runner

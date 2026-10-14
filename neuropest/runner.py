@@ -66,6 +66,7 @@ O_LAB_LEFT_MS = 37          # simulated ms of stimulation left
 O_LAB_GATE = 38             # 1 while plasticity is paused by the lab
 O_RATE_LC4, O_RATE_LPLC2, O_RATE_LPC1, O_RATE_LC10_L, O_RATE_LC10_R = 39, 40, 41, 42, 43   # spiking rates, Hz
 O_RATE_DNA02_L, O_RATE_DNA02_R = 44, 45
+O_MOTION = 46               # state index + len(STATES) * gear index, in ONE slot: the GUI reads both with one load
 OUT_LEN = 64
 LAB_RATE_SLOTS = {"LC4": O_RATE_LC4, "LPLC2": O_RATE_LPLC2, "LPC1": O_RATE_LPC1, "LC10_L": O_RATE_LC10_L,
                   "LC10_R": O_RATE_LC10_R, "DNa02_L": O_RATE_DNA02_L, "DNa02_R": O_RATE_DNA02_R}
@@ -268,7 +269,9 @@ def _loop(cfg: EngineConfig, brain, net, inp, out, stop, cap_frame=None, cap_met
             w_active = -1.0                         # GPU engine: every neuron is updated every step
         w_iters += 1
         sim_ms += chunk
-        out[O_GEAR] = float(GEARS.index(brain.gear))   # before the state: the GUI must not read FLY with the old gear
+        gear = GEARS.index(brain.gear)
+        out[O_MOTION] = float(STATES.index(state) + len(STATES) * gear)   # what Runner.state_gear reads
+        out[O_GEAR] = float(gear)
         out[O_STATE] = float(STATES.index(state))
         out[O_GF], out[O_WALK], out[O_REST] = (brain.rates["GF"], brain.rates["WALK"], brain.rates["REST"])
         out[O_MDN], out[O_STEER], out[O_GROOM] = brain.rates["MDN"], brain.steer, brain.rates["GROOM"]
@@ -372,6 +375,7 @@ class _Lab:
             self.stim_id = stim_id
         brain.set_lab(silenced=lab_names(mask), stimulated=stim, stim_ms=ms)
         self.applied = seq
+        self.publish(brain, out)                    # the status first, then the acknowledgement that it is current
         out[O_LAB_SEQ] = seq
 
     @staticmethod
@@ -716,7 +720,14 @@ class Runner:
 
     @property
     def gear(self) -> str:
-        return GEARS[int(self.out[O_GEAR])] if self.ready else GEARS[0]
+        return self.state_gear()[1]
+
+    def state_gear(self) -> tuple[str, str]:
+        """(state, gear) from one shared slot: both belong to the same worker step (two reads could straddle one)."""
+        if not self.ready:
+            return STAND, GEARS[0]
+        m = int(self.out[O_MOTION])
+        return STATES[m % len(STATES)], GEARS[m // len(STATES)]
 
     def forget(self) -> None:
         """Amnesia: the worker resets the learned weights (and saves the empty memory soon after)."""
@@ -751,7 +762,7 @@ class Runner:
 
     @property
     def state(self) -> str:
-        return STATES[int(self.out[O_STATE])] if self.ready else STAND
+        return self.state_gear()[0]
 
     @property
     def pam(self) -> float:
@@ -865,7 +876,8 @@ class Runner:
         """Spiking rates (Hz) of the lab's visual input groups and of DNa02 per side, for the 3D view's cards."""
         if self.out is None or not self.ready:
             return {}
-        return {name: float(self.out[slot]) for name, slot in LAB_RATE_SLOTS.items()}
+        have = set(lab_names(self.out[O_LAB_AVAIL]))
+        return {name: float(self.out[slot]) for name, slot in LAB_RATE_SLOTS.items() if name in have}
 
     # optogenetics names kept for callers of the old API: they now stimulate the real neurons
     _OPTO = {"gf": "GF", "takeoff": "GF", "escape": "GF", "mdn": "MDN", "moonwalk": "MDN", "retreat": "MDN",
@@ -924,13 +936,14 @@ class Runner:
 
     def stats(self) -> dict:
         o = self.out
+        motion = int(o[O_MOTION])                 # state and gear of the same worker step
         return dict(ready=self.ready, n=int(o[O_N]), rt=o[O_RT], active=o[O_ACTIVE], cpu=o[O_CPU],
                     lag_ms=o[O_LAG], gf=o[O_GF], walk=o[O_WALK], rest=o[O_REST], mdn=o[O_MDN],
                     steer=o[O_STEER], groom=o[O_GROOM], sim_s=o[O_SIM_S], spikes=o[O_SPIKES],
-                    vision=o[O_VISION], valence=o[O_VALENCE], v_motor=o[O_VMOTOR], gear=GEARS[int(o[O_GEAR])],
+                    vision=o[O_VISION], valence=o[O_VALENCE], v_motor=o[O_VMOTOR], gear=GEARS[motion // len(STATES)],
                     pam=o[O_PAM], ppl1=o[O_PPL1], mbon_app=o[O_MBON_APP], mbon_av=o[O_MBON_AV],
                     kc_active=int(o[O_KC_ACTIVE]), cue_food=o[O_CUE_FOOD], cue_near=o[O_CUE_NEAR],
-                    weights_dirty=int(o[O_MB_WEIGHTS_DIRTY]), urge=o[O_URGE], state=STATES[int(o[O_STATE])],
+                    weights_dirty=int(o[O_MB_WEIGHTS_DIRTY]), urge=o[O_URGE], state=STATES[motion % len(STATES)],
                     heading=float(self.inp[I_HEAD]))     # the fly's on-screen heading, rad (the 3D compass shows it)
 
 

@@ -71,7 +71,7 @@ FREEZE_ON = 0.7         # see BrainSpec.freeze_on; tools/vision_calibrate.py (im
 # approach from outside the plume still startles: calibrated against the old hard 0.05 gate in tools/probe_odor_gate.py
 # (0.3 and 0.5 let the pet retreat from or take off at its own attractive cursor when it is only a little hungry).
 ODOR_GATE_FULL = 0.2
-ODOR_LEARN_GATE = 0.05  # below this odor strength an escape still teaches fear; above it a chase is not punished
+ODOR_LEARN_GATE = 0.05  # below this odor strength an escape still teaches fear; above it a startle is not punished
 
 
 def odor_gate(strength: float) -> float:
@@ -184,7 +184,7 @@ class Brain:
         self.phero_repel = 0.0     # repulsive warning/border intensity (0..1)
         self.at_target = 0.0       # 1.0 if arrived at attractive source
         self.hunger = 1.0          # internal hunger drive in [0, 1]
-        self.flight_urge = 0.0     # accumulated motivation to initiate long-mode pursuit flight
+        self.flight_urge = 0.0     # accumulated motivation to fly to a food source (foraging flight, see GOAL_*)
         self.wall_bump = 0.0       # mechanical wall collision impact [0, 1]
         # central motor pool (diagram): V_motor = threat + desire + unreachability tension. A READOUT of what drives the
         # state machine below, not its input: the state still comes from the spiking descending neurons.
@@ -554,8 +554,9 @@ class Brain:
         """Mushroom-body step every 50 ms: cues in, dopamine from the unconditioned stimuli, valence out.
 
         Reward (PAM) = feeding at a pheromone source. Punishment (PPL1) = threat read from the spiking outputs: Giant
-        Fiber (escape), MDN (backward retreat), touch. A startle under food odor or during a chase / foraging flight is
-        not a threat, so punishment is held off then; while the lab manipulates the circuit nothing is learned at all."""
+        Fiber (escape), MDN (backward retreat), touch. A startle under food odor or during a foraging flight is not a
+        threat, so punishment is held off then; while the lab manipulates the circuit nothing is learned at all, and no
+        reinforcement given meanwhile (a sandbox click, a meal) is carried past the pause."""
         s = self.spec
         h = self.hunger
         eff_phero_drive = self.phero_drive * h
@@ -567,13 +568,15 @@ class Brain:
             threat = 1.0
         goal_flight = self.state == FLY and self.flight_mode == "long"
         lab = self.lab_active
-        if eff_phero_drive > ODOR_LEARN_GATE or self.flight_urge >= 0.5 or goal_flight or lab:
-            threat = 0.0      # a startle under food odor, a chase, or what the lab evoked is not a punishment
+        if eff_phero_drive > ODOR_LEARN_GATE or goal_flight or lab:
+            threat = 0.0      # a startle under food odor, a foraging flight, or what the lab evoked is not a punishment
         # Physical wall collision delivers acute nociceptive punishment (PPL1 dopamine)
         if self.wall_bump > 0.0 and not goal_flight and not lab:
             threat = max(threat, min(1.0, self.wall_bump))
         punish_in = min(1.0, threat)
         self._punish = punish_in if punish_in > 0.05 else self._punish * math.exp(-ms / 800.0)
+        if lab:                         # dropped, not decayed: it would teach the cues of the first step after the pause
+            self._reward = self._punish = 0.0
         self._mb_ms += ms
         if self._mb_ms < self.MB_STEP_MS:
             return
@@ -661,9 +664,11 @@ class Brain:
         if event or gf > s.gf_on_hz:
             new = FLY                                   # take-off: driven directly by Giant Fiber neural output
             if cur != FLY or self.flight_mode == "long":
-                if cur == FLY:                          # attacked on the way to food: the flight becomes an escape
+                if cur == FLY:                          # attacked on the way to food: the flight becomes an escape,
+                    self._dwell = 0.0                   # timed from the attack (not from the foraging take-off)
                     self._surge(0.5)
                 self.flight_mode = "short"              # a Giant Fiber take-off is always an escape
+                self.flight_urge = 0.0                  # (the urge to fly to food is gone with the attack)
         elif cur == FLY:
             landing_ready = False
             if self.flight_mode == "long":              # foraging flight: land at the food, or when the goal is lost
@@ -677,7 +682,7 @@ class Brain:
             elif self._dwell >= 180.0:                  # escape: land once the threat has passed
                 if self.at_target > 0.5:                # arrived at target/nectar source -> land on target
                     landing_ready = True
-                elif gf < s.gf_off_hz and self.phero_repel < 0.25 and self.loom < 0.3 and self.flight_urge <= 0.2:
+                elif gf < s.gf_off_hz and self.phero_repel < 0.25 and self.loom < 0.3:
                     landing_ready = True                # threat has dissipated -> land on safe surface
                 elif self._dwell >= 4500.0:             # flight fatigue safeguard
                     landing_ready = True

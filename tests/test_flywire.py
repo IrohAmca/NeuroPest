@@ -491,3 +491,47 @@ def test_the_lab_drops_groups_a_circuit_does_not_have():
     b = Brain(build(146, 1), learning=False)
     assert b.lab_available() == ("GF", "WALK")
     assert b.set_lab(silenced=["MDN", "GF"], stimulated={"LC4": 80.0, "WALK": 120.0}) == (("GF",), ("WALK",))
+
+
+def test_a_sandbox_punishment_given_during_the_lab_is_not_learned_after_it(tier):
+    b = Brain(tier, learning=True)
+    b.set_stimulus(120, 0, 0.0)                             # a cue is present
+    _settle(b, 200)
+    b.mb.dirty = False
+    b.set_lab(stimulated={"GF": 150.0}, stim_ms=300.0)
+    _settle(b, 200)
+    b._punish = 1.0                                         # the user clicks "punish" mid-pulse
+    _settle(b, 3000)                                        # past the pulse, the tail and the 0.8 s decay
+    assert not b.mb.dirty and b.valence == 0.0
+
+
+def test_an_escape_lands_once_the_threat_is_gone_whatever_the_urge_to_forage(tier):
+    b = Brain(tier)
+    b.set_stimulus(900, 0, 0.0, phero_drive=0.06, hunger=0.6)
+    b.set_goal(300.0, 0.0, 0.06)
+    b.flight_urge = 0.9                                     # about to fly to the food ...
+    b.set_stimulus(150, 3000, 0.0, phero_drive=0.06, hunger=0.6)   # ... when the cursor attacks
+    seen = [b.advance(4.0) for _ in range(60)]
+    assert FLY in seen and b.flight_urge == 0.0 and b.flight_mode == "short"
+    b.set_stimulus(900, 0, 0.0, phero_drive=0.06, hunger=0.6)
+    landed = next((i for i in range(400) if b.advance(4.0) != FLY), None)
+    assert landed is not None and landed * 4.0 < 1000.0     # within a second of the threat passing (was ~2 s more)
+
+
+def test_an_attack_under_a_faint_food_odor_still_teaches_fear(tier):
+    b = Brain(tier, learning=True)
+    b.set_stimulus(900, 0, 0.0, phero_drive=0.06, hunger=0.6)      # odor x hunger 0.036 < ODOR_LEARN_GATE
+    b.set_goal(300.0, 0.0, 0.06)
+    _settle(b, 800)
+    assert b.flight_urge >= 0.5                             # an urge to forage has built up
+    b.set_stimulus(150, 3000, 0.0, phero_drive=0.06, hunger=0.6)
+    _settle(b, 600)
+    assert b.mb.dirty and b.valence < 0.0                   # a real attack is still punished
+
+
+def test_an_escape_from_a_foraging_flight_is_timed_from_the_attack(tier):
+    b = Brain(tier)
+    b.state, b.flight_mode, b._dwell = FLY, "long", 4600.0  # late in a foraging flight
+    b.rates["GF"] = 50.0
+    b._decode(4.0)
+    assert b.flight_mode == "short" and b._dwell < 10.0

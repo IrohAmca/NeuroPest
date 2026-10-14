@@ -354,7 +354,8 @@ def test_a_silenced_group_survives_an_engine_restart_and_a_stimulation_does_not(
         r.silence("GF")
         r.stimulate("WALK", 1.0, ms=10_000)
         assert _wait(lambda: r.lab_status()["acked"] and r.lab_status()["silenced"] == ("GF",), 5.0)
-        assert r.lab_status()["stimulated"] == ("WALK",) and r.lab_status()["gate"]
+        assert r.lab_status()["stimulated"] == ("WALK",) and r.lab_status()["gate"]     # acked: the status is current
+        assert r.lab_rates() == {}                          # the toy circuit has none of the visual / DNa02 groups
         r.start(EngineConfig(n=2_000, dt=0.5, seed=2))
         assert _wait(lambda: r.ready, 90), "restarted worker did not become ready"
         assert _wait(lambda: r.lab_status()["acked"] and r.lab_status()["silenced"] == ("GF",), 5.0)
@@ -513,3 +514,19 @@ def test_a_damaged_wiring_file_runs_the_designed_model(monkeypatch, tmp_path):
     monkeypatch.setattr(paths, "MUSHROOM", bad)
     monkeypatch.delenv("NEUROPEST_MB", raising=False)
     assert runner.effective_mb_wiring("flywire") == "random"
+
+
+def test_state_and_gear_come_from_one_slot_and_rates_only_for_simulated_groups():
+    from neuropest.runner import O_LAB_AVAIL, O_MOTION, O_RATE_LC4
+    from neuropest.states import GEARS, STATES, lab_mask
+
+    r = _bare_runner()
+    r.out[O_MOTION] = STATES.index("fly") + len(STATES) * GEARS.index("fly_long")
+    assert r.state_gear() == ("fly", "fly_long") and r.state == "fly" and r.gear == "fly_long"
+    assert r.stats()["state"] == "fly" and r.stats()["gear"] == "fly_long"
+    r.out[O_LAB_AVAIL] = float(lab_mask(["GF", "WALK"]))
+    r.out[O_RATE_LC4] = 0.0
+    assert r.lab_rates() == {}                              # no "0.0 Hz" for LC4 cells that are not simulated
+    r.out[O_LAB_AVAIL] = float(lab_mask(["LC4"]))
+    r.out[O_RATE_LC4] = 12.0
+    assert r.lab_rates() == {"LC4": 12.0}

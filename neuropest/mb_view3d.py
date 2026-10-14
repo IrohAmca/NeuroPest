@@ -311,6 +311,7 @@ class MushroomBody3DView(QWidget):
         self._press: tuple[QPoint, object, float] | None = None     # where / which button / when the mouse went down
         self._dragging = False
         self._held: tuple[str, float] | None = None   # the lab group lit by a held button, and since when
+        self._stim_token = 0                          # bumped by every light sent (see _release_held)
         self._hover_pos: QPoint | None = None
         self._hover_target: str | None = None         # lab group or sandbox action under the cursor
         self._hover_card: dict | None = None
@@ -407,6 +408,7 @@ class MushroomBody3DView(QWidget):
         if mode in ("camera", "opto", "silence"):
             if self._held is not None:
                 self._release_held()
+                self._drop_press()
             self.tool_mode = mode
             self.setCursor(Qt.ArrowCursor)
             self._hover_target = None
@@ -480,6 +482,7 @@ class MushroomBody3DView(QWidget):
         if fn is None or not fn(target, 1.0, 10_000.0 if hold else LAB_PULSE_S * 1000.0):
             self._set_status(f"{label}: not sent, the engine is not running", warn=True)
             return False
+        self._stim_token += 1                   # a deferred stop of an older pulse must not end this one
         hz = LAB_FULL_HZ.get(target, 0.0)
         self._set_status(f"Light on {label}, {hz:.0f} Hz{' while held' if hold else f', {LAB_PULSE_S * 1000:.0f} ms'}"
                          f"  (known effect: {effect})")
@@ -500,7 +503,15 @@ class MushroomBody3DView(QWidget):
         if left <= 0.0:
             fn()
         else:
-            QTimer.singleShot(int(left * 1000), lambda: self._held is None and fn())
+            token = self._stim_token
+            QTimer.singleShot(int(left * 1000), lambda: self._held is None and self._stim_token == token and fn())
+
+    def _drop_press(self) -> None:
+        """Forget the button that is down (its release must do nothing): a tool switch mid-hold, the view hidden."""
+        self._press = None
+        self._dragging = False
+        self._last_mouse_pos = None
+        self._is_panning = False
 
     def toggle_silence(self, target: str) -> bool:
         if target not in LAB_TARGETS:
@@ -895,6 +906,7 @@ class MushroomBody3DView(QWidget):
         self._timer.stop()
         if self._held is not None:      # a light held while the view goes away (popout closed, panel hidden)
             self._release_held()
+        self._drop_press()              # the button's release may never reach a hidden view
         if self._kc_from_model:          # no ticks while hidden: the glow would come back stale when shown again
             self._kc_glow[:] = 0.0
             self._set_active_kc_mask(np.zeros(self.data.n_kc, dtype=bool))
@@ -960,9 +972,10 @@ class MushroomBody3DView(QWidget):
             if card is not None:
                 self._refresh_card(card)
 
-        # Frame pacing. The view shares the GUI thread with the pet (a 16 ms tick): it repaints at 30 FPS while
-        # something moves, slower when only the telemetry changes and a frame is expensive, so it never takes more than
-        # about a third of that thread (interval >= 3 x the measured paint time); 5 FPS when nothing happens.
+        # Frame pacing. The view shares the GUI thread with the pet (a 16 ms tick): on its own timer it repaints at
+        # 30 FPS while something moves, slower when only the telemetry changes and a frame is expensive, so it takes at
+        # most about a third of that thread (interval >= 3 x the measured paint time); 5 FPS when nothing happens.
+        # (A drag repaints on the mouse moves themselves: the user is busy with the view then.)
         moving = (self.auto_rotate or self._dragging or bool(self._ripples) or self._held is not None
                   or bool(self._lab.get("stimulated")))
         live = (dirty or self.pam > 0.02 or self.ppl1 > 0.02 or self.kc_active_count > 0 or self.rate_gf > 1.5
@@ -972,7 +985,7 @@ class MushroomBody3DView(QWidget):
         if moving or live or pinned:
             want = 33.0 if moving or (live and self._paint_ms < 11.0) else 66.0
             want = max(want, 3.0 * self._paint_ms)
-            interval = next(v for v in (33, 66, 120, 250) if want <= v * 1.2 or v == 250)
+            interval = next((v for v in (33, 66, 120, 250) if v >= want), int(math.ceil(want)))
             if self._timer.interval() != interval:
                 self._timer.setInterval(interval)
             self._pulse_phase = (self._pulse_phase + dt * 1.5) % 1.0
@@ -1940,6 +1953,7 @@ class MushroomBody3DView(QWidget):
         f = self._fonts()
         r = self._card_rect(w, h)
         cx, cy, cw, ch = r.x(), r.y(), r.width(), r.height()
+        self._btn_rects["card"] = r             # before its buttons, which are hit-tested first (drawn later)
         p.save()
         bg = QLinearGradient(cx, cy, cx, cy + ch)
         bg.setColorAt(0.0, QColor(14, 16, 24, 240))
@@ -2108,6 +2122,7 @@ class MushroomBody3DView(QWidget):
         # the tools: a column at the left edge
         tool_w = max(fm["btn"].horizontalAdvance(t) for _, t in TOOLS) + 18
         ty = y + 4
+        self._tools_top, self._tools_right = ty, margin + tool_w
         for tid, _ in TOOLS:
             rects[f"tool_{tid}"] = QRect(margin, ty, tool_w, row_h + 2)
             ty += row_h + 6
@@ -2175,19 +2190,22 @@ class MushroomBody3DView(QWidget):
 
         # silenced groups: one chip each (up to three) and "release all"
         silenced = list(self._asked_silenced())
-        if silenced:
-            cy = self._hud_bottom + 4
+        if silenced:                            # a column right of the tools, down to the card or the telemetry bar
+            cx_chip, cy = self._tools_right + 8, self._tools_top
+            limit = (self._card_rect(w, h).top() if self._inspected_neuron is not None else h - 66) - 4
             p.setFont(f["pill"])
             fmp = QFontMetrics(f["pill"])
-            shown = silenced[:3]
-            chips = [(f"chip_{g}", f"{g} ⊘  ×") for g in shown]
+            chips = [(f"chip_{g}", f"{g} ⊘  ×") for g in silenced[:3]]
             if len(silenced) > 3:
-                chips.append(("chip_more", f"+{len(silenced) - 3}"))
+                chips.append(("chips_more", f"+{len(silenced) - 3}"))
             chips.append(("release_all", "Release all"))
+            if cy + 23 * len(chips) - 4 > limit:            # no room: one chip says it all
+                chips = [("release_all", f"Release all ({len(silenced)} silenced)")]
+                if cy + 19 > limit:
+                    chips = []
             for cid, text in chips:
-                rect = QRect(12, cy, fmp.horizontalAdvance(text) + 14, 19)
-                if cid != "chip_more":
-                    self._btn_rects[cid] = rect
+                rect = QRect(cx_chip, cy, fmp.horizontalAdvance(text) + 14, 19)
+                self._btn_rects[cid] = rect
                 p.setBrush(QColor(71, 85, 105, 120))
                 p.setPen(QPen(QColor(148, 163, 184, 200), 1))
                 p.drawRoundedRect(rect, 4, 4)
@@ -2196,6 +2214,7 @@ class MushroomBody3DView(QWidget):
                 cy += 23
 
         # bottom: telemetry bar, then the card above it on the left and the status line on the right
+        self._btn_rects["telemetry"] = QRect(16, h - 66, w - 32, 52)
         self._draw_bottom_telemetry(p, w, h, f["bar"], f["mono"])
         if self._inspected_neuron is not None:
             self._draw_inspector_card(p, w, h)
@@ -2220,6 +2239,7 @@ class MushroomBody3DView(QWidget):
         shown = fm.elidedText(text, Qt.ElideRight, avail - 20)
         tw = fm.horizontalAdvance(shown) + 20
         rect = QRect(w - 16 - tw, h - 66 - 8 - 24, tw, 24)
+        self._btn_rects["status"] = rect
         acc = QColor(245, 158, 11) if warn else QColor(76, 201, 240)
         p.setBrush(QColor(12, 14, 20, int(225 * fade)))
         p.setPen(QPen(QColor(acc.red(), acc.green(), acc.blue(), int(200 * fade)), 1))
@@ -2471,9 +2491,10 @@ class MushroomBody3DView(QWidget):
     }
 
     def _hud_hit(self, pos: QPoint) -> str | None:
-        """The HUD control under pos, topmost (drawn last) first."""
+        """The HUD control under pos, topmost (drawn last) first. While the guide is open only its Close button counts:
+        everything else is under the guide."""
         for bid, rect in reversed(list(self._btn_rects.items())):
-            if rect.contains(pos):
+            if rect.contains(pos) and (not self._show_help or bid == "close_help"):
                 return bid
         return None
 
@@ -2535,6 +2556,9 @@ class MushroomBody3DView(QWidget):
 
     def mouseMoveEvent(self, event):
         pos = event.pos()
+        buttons = getattr(event, "buttons", None)
+        if self._press is not None and self._held is None and buttons is not None and buttons() == Qt.NoButton:
+            self._drop_press()                  # its release never came
         if self._press is not None and self._held is None:
             if not self._dragging and (pos - self._press[0]).manhattanLength() > 4:
                 self._dragging = True
@@ -2610,6 +2634,7 @@ class MushroomBody3DView(QWidget):
         menu.addSeparator()
         menu.addAction("Reset camera", self.reset_camera)
         menu.exec(self.mapToGlobal(pos))
+        menu.deleteLater()
 
     def _pin(self, card: dict) -> None:
         self._inspected_neuron, self._inspected_pinned = card, True
@@ -2622,9 +2647,12 @@ class MushroomBody3DView(QWidget):
         self.update()
 
     def mouseDoubleClickEvent(self, event):
-        """Reset the camera, in Explore only (quick clicks on a lab target must not move the view)."""
-        if self.tool_mode == "camera" and self._hud_hit(event.pos()) is None:
+        """Reset the camera in Explore (off the controls). Anywhere else the second click of a quick pair is an ordinary
+        press (a second pulse, a silence then a release, a pill toggled back)."""
+        if self.tool_mode == "camera" and not self._show_help and self._hud_hit(event.pos()) is None:
             self.reset_camera()
+        else:
+            self.mousePressEvent(event)
 
     def keyPressEvent(self, event):
         key = event.key()

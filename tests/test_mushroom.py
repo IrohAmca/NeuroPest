@@ -179,11 +179,14 @@ def test_escape_punishes_the_cue_but_a_chase_does_not():
     b.advance(50.0)
     assert b.valence < -0.2
     c = _toy_brain()
-    c.set_stimulus(900, 0, 0.0, phero_drive=0.9)
-    c.flight_urge = 1.0                                  # a strong urge to fly to food is not a threat either
-    for _ in range(40):
+    c.set_stimulus(900, 0, 0.0)
+    loom = c.group("LOOM")
+    for _ in range(40):                                  # a full urge to fly to food, the drive rebuilt each step:
+        c.flight_urge = 1.0
+        c._drive()
+        assert not np.isin(loom, c.engine.f_idx).any()  # it drives no looming input (the old pursuit drove the GF)
         c.advance(50.0)
-    assert c._punish == 0.0 and c.rates["GF"] < 1.0     # (and it no longer drives the Giant Fiber)
+    assert c.rates["GF"] < 1.0 and c._punish == 0.0
 
 
 def test_runner_remembers_across_restarts_and_forgets_on_request(tmp_path):
