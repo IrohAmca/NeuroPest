@@ -11,22 +11,24 @@ A desktop fly pet that roams your screen and reacts dynamically to your mouse cu
   <img src="assets/demo.gif" alt="NeuroPest Desktop Pet & 3D Connectome Demo" width="760"/>
 </p>
 
-**Current State (v0.6.0):** The mouse cursor is converted into three primary sensory streams, transformed into motor behaviors by the biological connectome:
+**Current State (v0.7.0):** The mouse cursor is converted into three primary sensory streams, transformed into motor behaviors by the biological connectome:
 - **Looming / approach velocity** $\rightarrow$ backward walking (MDN) when approached gently; explosive escape takeoff (Giant Fiber / DNp01) when approached rapidly.
 - **Cursor bearing / proximity** $\rightarrow$ left/right steering turns (DNa02).
 - **Motility & foraging drive** $\rightarrow$ tonic current into walking command neurons (DNp09 / P9).
 - **Touch / hover on head** $\rightarrow$ antennal and head grooming (aDN1 / aDN2) via cephalic mechanosensory bristles and Johnston's organ.
 - **Metabolism & Hunger** $\rightarrow$ state-dependent energy consumption; starvation drives DNp09 hyperactivity, increased foraging, and proboscis extension feeding.
+- **Foraging flight** $\rightarrow$ a hungry fly flies to a food source it smells but does not reach on foot, in long mode without the Giant Fiber, and lands on the food.
 - **Physical boundaries & Nociception** $\rightarrow$ strict screen clamping with elastic bounce; collisions trigger PPL1 dopaminergic punishment signals that teach the Mushroom Body to avoid screen edges.
 - **Visual Skin Customization** $\rightarrow$ selectable visual themes (Classic Vector, Chubby Chibi, Cyborg, Pastel Fairy, Cartoon Retro) with smooth 16-frame dorsal locomotion cycles.
 - **Real Screen Vision (optional)** $\rightarrow$ the fly perceives the desktop through ommatidia and medulla column receptive fields, with hardware-isolated screen capture (`BitBlt`).
+- **3D Neural Map & Lab** $\rightarrow$ stimulate or silence real groups of the spiking circuit (Giant Fiber, MDN, DNp09, DNa02, grooming DNs, LC4, LPLC2, LPC1, LC10) from the 3D view and watch the pet respond; the mushroom body does not learn while an experiment runs.
 
 ---
 
 ## Quickstart
 
 ### Option 1: Standalone Windows App (No Python Needed)
-Download the latest pre-packaged `NeuroPest-v0.6.0-windows-x64.zip` from [Releases](https://github.com/IrohAmca/NeuroPest/releases), extract, and double-click `NeuroPest.exe`.
+Download the latest pre-packaged `NeuroPest-v0.7.0-windows-x64.zip` from [Releases](https://github.com/IrohAmca/NeuroPest/releases), extract, and double-click `NeuroPest.exe`.
 
 ### Option 2: Run from Source with uv
 ```bash
@@ -94,8 +96,9 @@ uv run neuropest
   - While the lab is on (and 0.6 s after) the mushroom body does not learn and nothing is punished, so an experiment
     never teaches the pet fear; the status line says when the engine applied a request and what the fly did.
   - The view renders the scene at rest once per camera pose and only the live layer per frame (~9 ms a frame at
-    700x410, was 150-350 ms), and slows its own frame rate when frames get expensive, so it never takes more than about
-    a third of the GUI thread the pet runs on. Opening it in its own window pauses the embedded copy.
+    700x410, was 150-350 ms), and slows its own frame rate when frames get expensive, so on its own timer it takes at
+    most about a third of the GUI thread the pet runs on (a drag repaints on every mouse move). Opening it in its own
+    window pauses the embedded copy.
 - **Control Panel:**
   - Dark-themed card interface displaying real-time telemetry (Giant Fiber, MDN, Steering, real-time factor, CPU load, active neuron count, valence, hunger).
   - Collapsible **Advanced Behavior Settings** (Motility at 65%, Skittishness $\times 1.00$, Wall Pain $\times 1.00$, with a single-click reset).
@@ -133,6 +136,7 @@ uv run python tools/build_eye.py         # eye models: data/circuits/eye.npz and
 uv run python tools/build_mushroom.py    # optional: biological Mushroom Body (KC/MBON/DAN/PN), data/circuits/mushroom_flywire.npz (~200 kB)
 uv run python tools/fidelity.py          # ~5min: data/circuits/tiers.json (fidelity and speed metrics)
 # optional probes: tools/fidelity.py 5000 15000 30000 --dt 0.1 0.5 1.0 | --image | --mirror
+# behavior probes (closed loop, headless): tools/probe_goal_flight.py, tools/probe_odor_gate.py
 ```
 
 > **Note on shallow clones:** Standard shallow cloning is sufficient; files in these repos are regular git objects, not Git LFS. `sez_neurons.pickle` is deliberately omitted because pickle can execute arbitrary code and is not needed for circuit construction.
@@ -172,6 +176,7 @@ The full connectome consists of **138,639 neurons** and **15.1 million synaptic 
 | Motility slider | Tonic current | DNp09 / P9 | Forward walking | Bidaye 2020 |
 | Head hover / touch | Cephalic bristles (BM_*) + JO-C/E | DNg62 (aDN1) + DNge078 (aDN2) | Head & antenna grooming | Hampel 2015; Shiu 2024 |
 | Hunger state | Metabolic deficit tonic drive | DNp09 | Hyperactivity & foraging | Krashes 2009 |
+| Food in flying range, not reached on foot | Food odor x hunger + source position (designed) | none (no Giant Fiber) | Foraging flight, landing on the food | von Reyn 2014 |
 | Boundary collision | Border impact | PPL1 dopaminergic cluster | Nociceptive pain conditioning | Claridge-Chang 2009 |
 
 ### Motor Control & Latency
@@ -253,7 +258,8 @@ The Mushroom Body mediates associative learning via three-factor synaptic plasti
   - Negative valence ($V < 0$): heightens skittishness, reverses steering away from the cursor, and triggers defensive takeoff.
 - **Visual Learning from Connectome PNs:** When visual input is active, visual projection neurons reaching Kenyon cells (aMe12, MTe32, MTe30, LTe25, MTe40 for cursor; aMe26, LTe72, MTe37 for looming) directly stimulate KCs through connectome receptive fields (`tools/probe_mb_vision.py`).
 - **Real FlyWire Wiring Mode (Opt-in):** Learning > *Mushroom Body Model* switches between the designed layer (2,000 Kenyon cells, default) and the real anatomical connectivity (`data/circuits/mushroom_flywire.npz`, built by `tools/build_mushroom.py` or the in-app download) with 5,177 Kenyon cells, 96 MBONs (35 types), and biological PAM/PPL1 innervation. The choice is saved as `mb_wiring` (`random` / `flywire`) in `data/preferences.json`; each model keeps its own memory file. The environment variable `NEUROPEST_MB=flywire|random` overrides the saved choice and locks the selector; without a usable npz the designed model runs.
-- **Persistence:** Learned memories persist between launches in `data/memory/fly_memory.npz` (or `fly_memory_flywire.npz`), with a one-click "Forget" button in the Behavior tab.
+- **Persistence:** Learned memories persist between launches in `data/memory/fly_memory.npz` (or `fly_memory_flywire.npz`), with a one-click "Reset Memory (Amnesia)" button in the Learning tab.
+- **Lab pause:** while the 3D lab stimulates or silences neurons (and 0.6 s after), plasticity is paused (`MushroomBody.step(plastic=False)`), nothing is punished and no memory is saved, so an experiment never becomes part of what the pet learned. The learning sandbox's buttons (reward, punishment, food odor and cursor cues) are designed signals for the mushroom body; they do not drive spiking neurons.
 
 ---
 
@@ -261,7 +267,7 @@ The Mushroom Body mediates associative learning via three-factor synaptic plasti
 
 The core simulation engine implements leaky integrate-and-fire dynamics with exact exponential integration and 1.8 ms synaptic delay:
 
-- `LIFEngine` (`neuropest/engine/lif.py`): Event-driven Numba CPU engine. Only updates active neurons each step; computational cost scales with active spikes rather than total network size.
+- `LIFEngine` (`neuropest/engine/lif_numba.py`): Event-driven Numba CPU engine. Only updates active neurons each step; computational cost scales with active spikes rather than total network size.
 - `ReferenceEngine`: Dense NumPy implementation used as an oracle for unit test verification.
 - `WGPUEngine` (`neuropest/engine/lif_wgpu.py`): Cross-platform GPU acceleration via WebGPU (`wgpu`). Supports Vulkan, Metal, and DirectX on NVIDIA, AMD, Intel, and Apple Silicon without requiring CUDA.
 - **Silencing** (`set_silenced`, the lab's lesions) behaves the same on all three engines: a silenced neuron is held in
@@ -301,23 +307,31 @@ NeuroPest/
 │   ├── brain.py            # Neural network coordinator, sensory encoding & motor decoding
 │   ├── capture.py          # Isolated BitBlt screen capture worker with shared memory
 │   ├── control.py          # Dark-themed control panel & telemetry window
+│   ├── data_manager.py     # One-click connectome download & first-run setup
 │   ├── eyebuild.py         # Medulla column alignment & ommatidial cone projection
-│   ├── fly.py              # Kinematics, heading, tripod gait phase, screen boundary physics
+│   ├── eyeview.py          # Shared-memory snapshots for the fly's-eye preview
+│   ├── fly.py              # Kinematics, heading, tripod gait phase, screen boundary physics, foraging-flight steering
 │   ├── flywire.py          # FlyWire connectome loader, ranking, tiers & symmetrization
+│   ├── mb_geometry.py      # 3D coordinates of the mushroom body and whole-brain circuits
+│   ├── mb_view3d.py        # 3D neural map: cached rendering, inspector cards, the lab tools
+│   ├── mbbuild.py          # Extraction of the real mushroom-body wiring (KC/MBON/DAN/PN)
 │   ├── metabolism.py       # Energy consumption, hunger states & proboscis extension
 │   ├── mushroom.py         # Mushroom Body RL (3-factor plasticity, prediction error, MBONs)
 │   ├── paths.py            # Standard dataset, cache, and asset directory paths
-│   ├── pheromone.py        # Odor diffusion field modeling & bilateral antennal tropotaxis
+│   ├── pheromone.py        # Odor field, bilateral antennal tropotaxis & the foraging goal
+│   ├── preferences.py      # Saved user settings (data/preferences.json)
 │   ├── render.py           # Procedural vector fly & multi-skin sprite renderer
-│   ├── runner.py           # Background simulation worker process & rate controller
-│   ├── states.py           # Fly behavioral state constants (FLY, WALK, RETREAT, GROOM, etc.)
+│   ├── runner.py           # Background simulation worker, shared-memory slot map & lab protocol
+│   ├── states.py           # Behavioral states, gears and the lab's neuron groups
 │   ├── theme.py            # Modern UI styling, color palettes & tray icons
+│   ├── toy_circuit.py      # Small synthetic circuit (runs without the connectome)
+│   ├── tray.py             # System tray icon & menu
 │   ├── vision.py           # Retinotopic feature detectors (looming & small target)
 │   ├── visual.py           # Optical projection neuron drive & visual learning cues
 │   ├── assets/skins/       # Sprite animations (idle, walk, fly) and UI thumbnails
-│   └── engine/             # LIF engines (Numba CPU, WGPU WebGPU, NumPy reference)
-├── tools/                  # Connectome builders, fidelity probes, vision calibration & benchmarks
-└── tests/                  # Pytest verification test suite (150+ unit and integration tests)
+│   └── engine/             # LIF engines (Numba CPU, WGPU WebGPU, NumPy reference) & shared silencing
+├── tools/                  # Connectome builders, fidelity & behavior probes, vision calibration, benchmarks
+└── tests/                  # Pytest verification test suite (~300 unit and integration tests)
 ```
 
 ---
@@ -330,7 +344,7 @@ Run the full automated test suite:
 uv run pytest
 ```
 
-Tests validate engine equivalence, connectome tier indexing, screen capture memory isolation, Mushroom Body learning dynamics, metabolism states, pheromone tropotaxis, multi-skin rendering, and physical margin reflections.
+Tests validate engine equivalence (including silencing on the CPU, reference and GPU engines), connectome tier indexing, the shared-memory slot map and lab protocol, screen capture memory isolation, Mushroom Body learning dynamics and the lab's plasticity pause, the foraging flight (decision, steering, landing), the 3D view (picking, HUD layout, lab tools, render caching), metabolism states, pheromone tropotaxis, multi-skin rendering, and physical margin reflections. GPU tests are skipped without a GPU adapter.
 
 ---
 
