@@ -22,7 +22,8 @@ import numba as nb
 import numpy as np
 
 from .engine import LIFParams, Network
-from .paths import CACHE, CACHE_SYM, RAW_DIR, TIER_DIR
+from .paths import CACHE, CACHE_SYM, CACHE_VERSION, RAW_DIR, TIER_DIR, cache_version  # noqa: F401  (re-exported)
+from .states import LC10_MAX_HZ
 
 SOURCE = "FlyWire v783 (Dorkenwald et al. 2024; Schlegel et al. 2024), CC BY-NC 4.0, via Shiu et al. 2024"
 
@@ -37,7 +38,9 @@ SOURCE = "FlyWire v783 (Dorkenwald et al. 2024; Schlegel et al. 2024), CC BY-NC 
 #        -- Rayshubskiy et al., eLife 2025
 #   GROOM (FlyWire DNg62 = aDN1, DNge078 = aDN2): antennal / anterior grooming -- Hampel et al. 2015;
 #        named by root id in Shiu et al. 2024 (figures.ipynb)
-ANCHOR_GROUPS = ("GF", "WALK", "MDN", "DNa01_L", "DNa01_R", "DNa02_L", "DNa02_R", "GROOM")
+#   MN9  (FlyWire type CB0701, a pair): the proboscis motor neuron; sugar receptor neurons drive it in the model as in
+#        the animal (proboscis extension) -- Shiu et al. 2024 (root id 720575940660219265 in its example.ipynb)
+ANCHOR_GROUPS = ("GF", "WALK", "MDN", "DNa01_L", "DNa01_R", "DNa02_L", "DNa02_R", "GROOM", "MN9")
 
 
 # --------------------------------------------------------------------------- loading
@@ -77,8 +80,10 @@ def load_annotations(ids: np.ndarray, raw_dir: Path = RAW_DIR) -> pd.DataFrame:
     """Annotation rows aligned to neuron index (NaN rows for the few ids without annotation)."""
     import pandas as pd
 
-    cols = ["root_id", "flow", "super_class", "cell_class", "cell_type", "hemibrain_type", "side"]
-    ann = pd.read_csv(raw_dir / "Supplemental_file1_neuron_annotations.tsv", sep="\t", usecols=cols,
+    path = raw_dir / "Supplemental_file1_neuron_annotations.tsv"
+    cols = ["root_id", "flow", "super_class", "cell_class", "cell_sub_class", "cell_type", "hemibrain_type", "side"]
+    have = set(pd.read_csv(path, sep="\t", nrows=0).columns)
+    ann = pd.read_csv(path, sep="\t", usecols=[c for c in cols if c in have],
                       low_memory=False).drop_duplicates("root_id").set_index("root_id")
     return ann.reindex(ids)
 
@@ -124,6 +129,12 @@ def make_groups(meta: pd.DataFrame) -> dict[str, np.ndarray]:
     g["TOUCH_L"] = idx(touch & (side == "left"))
     g["TOUCH_R"] = idx(touch & (side == "right"))
     g["GROOM"] = idx(ct.isin(["DNg62", "DNge078"]))
+    # Taste: the labellar sugar receptor neurons (cell_sub_class "sugar", type LB3c, both sides) and the proboscis motor
+    # neuron MN9 they drive (Shiu et al. 2024; tools/probe_sugar.py). "sugar/low_salt" (LB3b) is left out: driven at
+    # 100 Hz it starts the olfactory / mushroom-body runaway of this model, LB3c does not.
+    sugar = meta["cell_sub_class"].fillna("") == "sugar" if "cell_sub_class" in meta.columns else ct == "\0"
+    g["SUGAR"] = idx(sugar)
+    g["MN9"] = idx(ct == "CB0701")
     return g
 
 
@@ -198,19 +209,23 @@ def _spread_backward(indptr, indices, data, row_sum, y):
 
 
 # Stimulus protocols the activity ranking is measured at: {group: Poisson rate in Hz}. The cursor
-# produces looming input, retreat input and a left/right bearing input, alone or together.
-INPUT_GROUPS = ("LOOM", "RETREAT_IN", "LC10_L", "LC10_R", "TOUCH_L", "TOUCH_R")
+# produces looming input, retreat input and a left/right bearing input, alone or together; food under the fly drives
+# the sugar receptor neurons. The LC10 levels stay within states.LC10_MAX_HZ, the most the brain ever drives them with:
+# at 100 Hz (an earlier protocol) the full brain falls into the olfactory / mushroom-body runaway, and the ~9,400
+# neurons of that runaway were then ranked "active" and filled most of the 15,000-neuron tier.
+INPUT_GROUPS = ("LOOM", "RETREAT_IN", "LC10_L", "LC10_R", "TOUCH_L", "TOUCH_R", "SUGAR")
 
 
 def train_protocols() -> list[dict[str, float]]:
     p = [{"LOOM": r} for r in (2.0, 5.0, 10.0, 25.0, 50.0, 100.0, 150.0)]
     p += [{"RETREAT_IN": r} for r in (5.0, 10.0, 25.0, 50.0, 80.0)]
     for side in ("LC10_L", "LC10_R"):
-        p += [{side: r} for r in (5.0, 10.0, 25.0, 50.0, 100.0)]
+        p += [{side: r} for r in (5.0, 10.0, 20.0, 30.0, LC10_MAX_HZ)]
     for side in ("TOUCH_L", "TOUCH_R"):
         p += [{side: r} for r in (25.0, 50.0, 100.0, 150.0)]
-    p += [{"LOOM": 3.0, "RETREAT_IN": 20.0, "LC10_L": 30.0}, {"LOOM": 6.0, "RETREAT_IN": 40.0, "LC10_R": 60.0}]
-    p += [{"TOUCH_L": 100.0, "LOOM": 10.0}, {"TOUCH_R": 80.0, "RETREAT_IN": 20.0}]
+    p += [{"SUGAR": r} for r in (30.0, 50.0, 70.0, 100.0, 120.0, 150.0)]   # the brain drives it at 0-120 Hz
+    p += [{"LOOM": 3.0, "RETREAT_IN": 20.0, "LC10_L": 30.0}, {"LOOM": 6.0, "RETREAT_IN": 40.0, "LC10_R": LC10_MAX_HZ}]
+    p += [{"TOUCH_L": 100.0, "LOOM": 10.0}, {"TOUCH_R": 80.0, "RETREAT_IN": 20.0}, {"SUGAR": 100.0, "LOOM": 25.0}]
     return p
 
 
@@ -219,11 +234,12 @@ def test_protocols() -> list[dict[str, float]]:
     p = [{"LOOM": r} for r in (3.0, 7.0, 18.0, 35.0, 75.0, 125.0)]
     p += [{"RETREAT_IN": r} for r in (7.0, 18.0, 35.0, 65.0)]
     for side in ("LC10_L", "LC10_R"):
-        p += [{side: r} for r in (7.0, 18.0, 35.0, 75.0)]
+        p += [{side: r} for r in (7.0, 15.0, 25.0, 35.0)]
     for side in ("TOUCH_L", "TOUCH_R"):
         p += [{side: r} for r in (40.0, 75.0, 125.0)]
-    p += [{"LOOM": 4.0, "RETREAT_IN": 30.0, "LC10_R": 40.0}, {"LOOM": 2.0, "RETREAT_IN": 12.0, "LC10_L": 20.0}]
-    p += [{"TOUCH_R": 100.0, "LOOM": 20.0}]
+    p += [{"SUGAR": r} for r in (75.0, 125.0)]
+    p += [{"LOOM": 4.0, "RETREAT_IN": 30.0, "LC10_R": 35.0}, {"LOOM": 2.0, "RETREAT_IN": 12.0, "LC10_L": 20.0}]
+    p += [{"TOUCH_R": 100.0, "LOOM": 20.0}, {"SUGAR": 75.0, "RETREAT_IN": 20.0}]
     return p
 
 
@@ -256,7 +272,7 @@ def build(raw_dir: Path = RAW_DIR, with_activity: bool = True) -> Network:
     meta = load_annotations(ids, raw_dir)
     groups = make_groups(meta)
     net = Network(indptr, indices, data, ids=ids, groups=groups,
-                  meta={"kind": "flywire", "source": SOURCE, "w_syn": LIFParams().w_syn})
+                  meta={"kind": "flywire", "source": SOURCE, "w_syn": LIFParams().w_syn, "version": CACHE_VERSION})
     anchors = np.unique(np.concatenate([groups[k] for k in ANCHOR_GROUPS]))
     pinned = np.unique(np.concatenate([anchors] + [groups[k] for k in INPUT_GROUPS]))
     structural = rank_by_pathway(net, groups["VPN"], anchors, pinned)
@@ -333,23 +349,33 @@ def symmetrize(net: Network, raw_dir: Path = RAW_DIR) -> Network:
 
 
 def load_cache(path: Path = CACHE, symmetry: str = "individual", raw_dir: Path = RAW_DIR) -> Network:
-    actual_path = CACHE_SYM if symmetry == "symmetric" else path
+    if symmetry != "symmetric":
+        if not path.exists():
+            raise FileNotFoundError(f"{path} yok. Once: uv run python tools/build_flywire.py")
+        return Network.load(path)
+    # the symmetric copy is derived from the base cache: tied to it by its size and mtime, so a rebuilt base never
+    # serves a stale copy (as for the tiers)
+    actual_path = CACHE_SYM if path == CACHE else path.with_name(f"{path.stem}_sym.npz")
+    stamp = _stamp(path) if path.exists() else None
     if actual_path.exists():
-        return Network.load(actual_path)
+        try:
+            sym = Network.load(actual_path)
+            if stamp is None or sym.meta.get("cache_stamp") == stamp:
+                return sym
+        except (OSError, ValueError, KeyError):
+            pass
     if not path.exists():
         raise FileNotFoundError(f"{path} yok. Once: uv run python tools/build_flywire.py")
-    base = Network.load(path)
-    if symmetry == "symmetric":
-        sym = symmetrize(base, raw_dir)
-        try:
-            actual_path.parent.mkdir(parents=True, exist_ok=True)
-            tmp = actual_path.with_name(f"{actual_path.stem}.{os.getpid()}.tmp.npz")
-            sym.save(tmp)
-            os.replace(tmp, actual_path)
-        except OSError:
-            pass
-        return sym
-    return base
+    sym = symmetrize(Network.load(path), raw_dir)
+    sym.meta["cache_stamp"] = stamp
+    try:
+        actual_path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = actual_path.with_name(f"{actual_path.stem}.{os.getpid()}.tmp.npz")
+        sym.save(tmp)
+        os.replace(tmp, actual_path)
+    except OSError:
+        pass
+    return sym
 
 
 TIER_SIZES = (2_000, 5_000, 10_000, 15_000, 20_000, 50_000)      # sizes the control window offers below the full brain

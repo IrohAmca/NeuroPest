@@ -401,7 +401,9 @@ class Control(QWidget):
         self.s_rt = Stat("Real-time", "Ratio of simulation speed to real time; below 1× means slow motion")
         self.s_cpu = Stat("CPU Usage", "Single-core CPU utilization of the engine process")
         self.s_spk = Stat("Spikes / s")
-        for i, s in enumerate([self.s_gf, self.s_mdn, self.s_steer, self.s_rt, self.s_cpu, self.s_spk]):
+        self.s_mn9 = Stat("MN9 (proboscis)", "Firing rate of the proboscis motor neuron: food under the fly drives the "
+                          "sugar receptor neurons, they drive MN9, and the fly feeds while it fires (hunger raises it)")
+        for i, s in enumerate([self.s_gf, self.s_mdn, self.s_steer, self.s_mn9, self.s_rt, self.s_cpu, self.s_spk]):
             grid.addWidget(s, i // 3, i % 3)
         card.body.addLayout(grid)
         self.active = _label("", "Muted")
@@ -728,8 +730,12 @@ class Control(QWidget):
             "• Dual-Antenna Olfactory Steering (Tropotaxis): The fly compares odor concentration between "
             "its left and right antennae, steering toward attractive scents or away from repellent scents "
             "via DNa02 steering neurons.\n\n"
-            "• Invisible Food Sources: Invisible nectar/food sources spawn randomly across the screen. "
-            "The fly follows the scent trail to food, consumes it upon arrival, and pauses to feed.\n\n"
+            "• Invisible Food Sources: three invisible nectar/food sources of different sizes lie on the screen; a "
+            "bigger one smells stronger and further. On food the fly's sugar receptor neurons fire, they drive the "
+            "proboscis motor neuron MN9, and while MN9 fires the fly stands and eats (about ten seconds for a "
+            "hungry fly; a sated fly's MN9 stays low and it does not eat). A food eaten up appears again elsewhere.\n\n"
+            "• Local Search: after a meal the fly circles the place for a while (longer when still hungry), as real "
+            "flies do (a designed steering drive on the DNa02 neurons).\n\n"
             "• Boundary Repulsion: A subtle invisible repellent field at the outer 18 px screen margin "
             "prevents the fly from leaving or getting lost outside the display bounds.\n\n"
             "• Cursor Attraction/Repulsion: Set to attractive to make the fly chase and land on your cursor; "
@@ -1453,7 +1459,7 @@ class Control(QWidget):
         self.warn.setVisible(bool(text))
 
     def _clear_stats(self):
-        for s in (self.s_gf, self.s_mdn, self.s_steer, self.s_rt, self.s_cpu, self.s_spk,
+        for s in (self.s_gf, self.s_mdn, self.s_steer, self.s_mn9, self.s_rt, self.s_cpu, self.s_spk,
                   self.s_val, self.s_vm, self.s_gear):
             s.set("–")
         self.active.setText("")
@@ -1481,6 +1487,7 @@ class Control(QWidget):
         self.s_gf.set(f"{st['gf']:.0f} Hz")
         self.s_mdn.set(f"{st['mdn']:.0f} Hz")
         self.s_steer.set(f"{st['steer']:+.0f}")
+        self.s_mn9.set(f"{st.get('mn9', 0.0):.0f} Hz")
         self.s_rt.set(f"×{st['rt']:.1f}")
         self.s_cpu.set(f"%{100 * st['cpu']:.0f}")
         self.s_spk.set(f"{st['spikes']:,.0f}")

@@ -7,6 +7,7 @@ left/right bearing input, and mixtures), drive the input groups in the full netw
   MDN err    retreat protocols:  same for MDN                                         (backward walking)
   DNa02 err  bearing protocols:  same for the DNa02 on the driven side                (steering)
   groom err  touch protocols:    same for the grooming DNs aDN1/aDN2 (GROOM)          (grooming)
+  feed err   sugar protocols:    same for the proboscis motor neuron MN9               (feeding)
   mix err    mixed protocols:    mean over GF, MDN and both DNa02
   DN corr    Pearson correlation of per-DN rates, DNs present in the tier, all protocols pooled
   DN kept    share of the full network's descending-neuron spiking that lies on retained DNs
@@ -44,7 +45,7 @@ from neuropest.engine import LIFEngine
 
 DEFAULT_TIERS = (1000, 2000, 3000, 5000, 7500, 10000, 15000, 20000, 30000, 50000, 100000)
 DT = 0.5
-ANCHORS = ("GF", "MDN", "DNa02_L", "DNa02_R", "GROOM")
+ANCHORS = ("GF", "MDN", "DNa02_L", "DNa02_R", "GROOM", "MN9")
 
 
 def machine_name() -> str:
@@ -91,7 +92,7 @@ def rel_err(tier, full):
 
 def families(protocols):
     fam = {k: [i for i, p in enumerate(protocols) if list(p) == [k]]
-           for k in ("LOOM", "RETREAT_IN", "LC10_L", "LC10_R", "TOUCH_L", "TOUCH_R")}
+           for k in ("LOOM", "RETREAT_IN", "LC10_L", "LC10_R", "TOUCH_L", "TOUCH_R", "SUGAR")}
     return fam, [i for i, p in enumerate(protocols) if len(p) > 1]
 
 
@@ -102,6 +103,7 @@ def errors(a_tier, a_full, fam, mixed):
         mdn_err=100 * float(e[fam["RETREAT_IN"], 1].mean()),
         steer_err=100 * float(np.mean([e[fam["LC10_L"], 2].mean(), e[fam["LC10_R"], 3].mean()])),
         groom_err=100 * float(e[fam["TOUCH_L"] + fam["TOUCH_R"], 4].mean()),
+        feed_err=100 * float(e[fam["SUGAR"], 5].mean()) if fam["SUGAR"] else 0.0,
         mix_err=100 * float(e[mixed].mean()))
 
 
@@ -287,11 +289,11 @@ def main():
     out = [dict(n=full.n, pinned=pinned, free=full.n - pinned, edges=int(full.nnz), **errors(a_full, a_full, fam, mixed),
                 dn_corr=1.0, dn_kept=1.0, active=float(np.mean([r["active"] for r in ref])), realtime=float(np.mean(rts)),
                 rt_min=float(min(rts)))]
-    head = (f"{'neurons':>8} {'free':>8} {'edges':>9} | {'GF %':>6} {'MDN %':>6} {'DNa02 %':>7} {'groom %':>7} {'mix %':>6} | "
+    head = (f"{'neurons':>8} {'free':>8} {'edges':>9} | {'GF %':>6} {'MDN %':>6} {'DNa02 %':>7} {'groom %':>7} {'feed %':>6} {'mix %':>6} | "
             f"{'DN corr':>7} {'DN kept %':>9} | {'active %':>8} {'x mean':>7} {'x worst':>7}")
     print(f"pinned (stimulus inputs + anchor outputs, in every tier): {pinned}")
     print(head)
-    print(f"{full.n:>8} {full.n - pinned:>8} {full.nnz:>9} | {0:>6.1f} {0:>6.1f} {0:>7.1f} {0:>7.1f} {0:>6.1f} | {1:>7.3f} {100:>9.1f} | "
+    print(f"{full.n:>8} {full.n - pinned:>8} {full.nnz:>9} | {0:>6.1f} {0:>6.1f} {0:>7.1f} {0:>7.1f} {0:>6.1f} {0:>6.1f} | {1:>7.3f} {100:>9.1f} | "
           f"{out[0]['active']:>8.1f} {out[0]['realtime']:>7.2f} {out[0]['rt_min']:>7.2f}  (full brain)", flush=True)
     for n in tiers:
         sub = full.prefix(n)
@@ -308,7 +310,7 @@ def main():
         row = dict(n=n, pinned=min(pinned, n), free=max(n - pinned, 0), edges=int(sub.nnz), **err, dn_corr=corr, dn_kept=kept,
                    active=float(np.mean([r["active"] for r in res])), realtime=float(np.mean(rts)), rt_min=float(min(rts)))
         out.append(row)
-        print(f"{n:>8} {row['free']:>8} {sub.nnz:>9} | {err['gf_err']:>6.1f} {err['mdn_err']:>6.1f} {err['steer_err']:>7.1f} {err['groom_err']:>7.1f} {err['mix_err']:>6.1f} | "
+        print(f"{n:>8} {row['free']:>8} {sub.nnz:>9} | {err['gf_err']:>6.1f} {err['mdn_err']:>6.1f} {err['steer_err']:>7.1f} {err['groom_err']:>7.1f} {err['feed_err']:>6.1f} {err['mix_err']:>6.1f} | "
               f"{corr:>7.3f} {100 * kept:>9.1f} | {row['active']:>8.1f} {row['realtime']:>7.2f} {row['rt_min']:>7.2f}", flush=True)
     paths.TIERS.write_text(json.dumps(dict(dt=DT, machine=machine_name(), pinned=pinned, protocols=protocols,
                                            tiers=sorted(out, key=lambda r: r["n"])), indent=1))

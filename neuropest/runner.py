@@ -42,13 +42,15 @@ I_GOAL_GAP = 26             # px from the fly to the food it would fly to, minus
 I_GOAL_BEARING = 27         # rad, + = to the fly's right
 I_GOAL_ODOR = 28            # that source's own odor at the fly; 0 = no goal
 I_FED = 29                  # counter: one per meal (the GUI ate a source or fed at the cursor)
-# 30, 31: free
+I_SUGAR = 30                # 0..1: food under the fly (drives the sugar receptor neurons)
+I_MEAL_DIST = 31            # px from the fly to where its last meal was (>= 1e6: none); the local search circles it
 I_LAB_SEQ = 32              # the lab block's sequence lock: odd while the GUI writes it, even when it is whole
 I_LAB_SILENCE = 33          # bit mask over states.LAB_GROUPS: the groups to keep silenced (level)
 I_LAB_STIM_ID = 34          # bumped by every stimulation request (a stop too): the worker (re)arms only on a new id
 I_LAB_STIM_MS = 35          # how long the stimulation lasts, simulated ms from when the worker applies it
 I_LAB_RATE0 = 36            # Hz per lab group: I_LAB_RATE0 + k for LAB_GROUPS[k]
 I_LAB_RATE_END = 52         # (reserved up to here)
+I_MEAL_BEARING = 53         # rad, + = the last meal's spot is to the fly's right
 INP_LEN = 64
 # ---- output slots (worker writes, GUI reads) ----
 (O_READY, O_STATE, O_GF, O_WALK, O_REST, O_RT, O_ACTIVE, O_N, O_CPU, O_LAG, O_SIM_S, O_BEAT, O_MDN, O_STEER,
@@ -67,6 +69,8 @@ O_LAB_GATE = 38             # 1 while plasticity is paused by the lab
 O_RATE_LC4, O_RATE_LPLC2, O_RATE_LPC1, O_RATE_LC10_L, O_RATE_LC10_R = 39, 40, 41, 42, 43   # spiking rates, Hz
 O_RATE_DNA02_L, O_RATE_DNA02_R = 44, 45
 O_MOTION = 46               # state index + len(STATES) * gear index, in ONE slot: the GUI reads both with one load
+O_MN9 = 47                  # spiking rate of the proboscis motor neuron MN9, Hz
+O_FEED = 48                 # 0..1: how far the proboscis is out (Brain.feed_level); the GUI eats by it
 OUT_LEN = 64
 LAB_RATE_SLOTS = {"LC4": O_RATE_LC4, "LPLC2": O_RATE_LPLC2, "LPC1": O_RATE_LPC1, "LC10_L": O_RATE_LC10_L,
                   "LC10_R": O_RATE_LC10_R, "DNa02_L": O_RATE_DNA02_L, "DNa02_R": O_RATE_DNA02_R}
@@ -239,9 +243,9 @@ def _loop(cfg: EngineConfig, brain, net, inp, out, stop, cap_frame=None, cap_met
                round(inp[I_BEARING], 2), inp[I_TOUCH],
                round(inp[I_PHERO_STEER], 1), round(inp[I_PHERO_DRIVE], 2),
                round(inp[I_PHERO_REPEL], 2), inp[I_AT_TARGET],
-               round(hunger, 2), round(wall_bump, 2))
+               round(hunger, 2), round(wall_bump, 2), round(inp[I_SUGAR], 2))
         if eye.on:                                      # the image, not cursor numbers, drives the looming inputs;
-            cur = (1e6, 0.0, cur[2], cur[3], cur[4] if cur[5] else 0.0, cur[5], cur[6], cur[7], cur[8], cur[9], cur[10], cur[11])
+            cur = (1e6, 0.0, cur[2], cur[3], cur[4] if cur[5] else 0.0) + cur[5:]
         if cur != last_in:
             brain.set_stimulus(*cur)
             last_in = cur
@@ -260,6 +264,7 @@ def _loop(cfg: EngineConfig, brain, net, inp, out, stop, cap_frame=None, cap_met
         if (d := counters.take(inp, I_FED)) > 0.0:
             brain.note_fed(int(round(d)))
         brain.set_goal(inp[I_GOAL_GAP], inp[I_GOAL_BEARING], inp[I_GOAL_ODOR])
+        brain.set_meal_spot(inp[I_MEAL_DIST], inp[I_MEAL_BEARING])
         state = brain.advance(chunk)
         spent = time.perf_counter() - t
         w_comp += spent
@@ -278,6 +283,7 @@ def _loop(cfg: EngineConfig, brain, net, inp, out, stop, cap_frame=None, cap_met
         out[O_VALENCE] = brain.valence
         out[O_VMOTOR] = brain.v_motor
         out[O_URGE] = brain.flight_urge
+        out[O_MN9], out[O_FEED] = brain.rates["MN9"], brain.feed_level
         for name, slot in LAB_RATE_SLOTS.items():
             out[slot] = brain.lab_rates.get(name, brain.rates.get(name, 0.0))
         lab.publish(brain, out)
@@ -682,12 +688,14 @@ class Runner:
              phero_steer: float = 0.0, phero_drive: float = 0.0,
              phero_repel: float = 0.0, at_target: bool = False,
              hunger: float = 1.0, wall_bump: bool = False,
-             goal_gap: float = 1e6, goal_bearing: float = 0.0, goal_odor: float = 0.0) -> None:
+             goal_gap: float = 1e6, goal_bearing: float = 0.0, goal_odor: float = 0.0, sugar: float = 0.0,
+             meal_dist: float = 1e6, meal_bearing: float = 0.0) -> None:
         """Per-frame input. pose = fly (x, y, heading) and cursor = (x, y) in screen px feed the visual input.
 
         stamp: `time.perf_counter()` of the frame. With it the worker measures the cursor's closing speed itself from
         pose and cursor (`closing` is then ignored); without it (0) `closing` is used as given.
-        goal_*: the food source the fly would fly to (Brain.set_goal); the defaults say there is none."""
+        goal_*: the food source the fly would fly to (Brain.set_goal); the defaults say there is none.
+        sugar: 0..1, food under the fly (the taste input). meal_*: where the last meal was (Brain.set_meal_spot)."""
         inp = self.inp
         inp[I_DIST], inp[I_CLOSING], inp[I_BIAS], inp[I_SKITTISH] = dist, closing, self.bias, self.skittish
         inp[I_BEARING], inp[I_TOUCH] = bearing, touch
@@ -703,6 +711,8 @@ class Runner:
         inp[I_HUNGER] = float(hunger)
         inp[I_WALL_BUMP] = (1.0 if wall_bump else 0.0) * getattr(self, "wall_pain", 1.0)
         inp[I_GOAL_GAP], inp[I_GOAL_BEARING], inp[I_GOAL_ODOR] = goal_gap, goal_bearing, goal_odor
+        inp[I_SUGAR] = float(sugar)
+        inp[I_MEAL_DIST], inp[I_MEAL_BEARING] = float(meal_dist), float(meal_bearing)
 
         if hasattr(self, "capture") and self.capture is not None:
             cx, cy = capture_pos if capture_pos is not None else (pose[0], pose[1])
@@ -736,6 +746,16 @@ class Runner:
     def note_fed(self) -> None:
         """One meal (a counter: the worker lands a foraging flight on it and takes it as the feeding reward)."""
         self.inp[I_FED] += 1.0
+
+    @property
+    def mn9(self) -> float:
+        """Spiking rate of the proboscis motor neuron MN9, Hz (0 in a circuit without it)."""
+        return self.out[O_MN9] if self.ready else 0.0
+
+    @property
+    def feed_level(self) -> float:
+        """0..1: how far the proboscis is out; the fly eats in proportion to it while it feeds."""
+        return self.out[O_FEED] if self.ready else 0.0
 
     @property
     def urge(self) -> float:
@@ -944,6 +964,7 @@ class Runner:
                     pam=o[O_PAM], ppl1=o[O_PPL1], mbon_app=o[O_MBON_APP], mbon_av=o[O_MBON_AV],
                     kc_active=int(o[O_KC_ACTIVE]), cue_food=o[O_CUE_FOOD], cue_near=o[O_CUE_NEAR],
                     weights_dirty=int(o[O_MB_WEIGHTS_DIRTY]), urge=o[O_URGE], state=STATES[motion % len(STATES)],
+                    mn9=o[O_MN9], feed=o[O_FEED],
                     heading=float(self.inp[I_HEAD]))     # the fly's on-screen heading, rad (the 3D compass shows it)
 
 

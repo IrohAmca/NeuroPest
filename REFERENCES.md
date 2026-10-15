@@ -163,6 +163,33 @@ Energy depletion and satiety modulate sensory salience, dopamine release, and mo
   **Cell**, 139(2), 416–427. [doi:10.1016/j.cell.2009.08.035](https://doi.org/10.1016/j.cell.2009.08.035)  
   *Implementation:* Hunger state strictly gates PAM dopamine reward neurons and enhances sensitivity to food-related cues. Satiated feeding produces no associative reinforcement, while starved states trigger DNp09-driven foraging hyperactivity (`neuropest/metabolism.py`, `neuropest/brain.py`).
 
+- **Inagaki, H. K., et al. (2012)**  
+  *Visualizing neuromodulation in vivo: TANGO-mapping of dopamine signaling reveals appetite control of sugar sensing.*  
+  **Cell**, 148(3), 583–595. [doi:10.1016/j.cell.2011.12.022](https://doi.org/10.1016/j.cell.2011.12.022)  
+  *Implementation:* Hunger raises the sensitivity of the sugar receptor neurons: the `SUGAR` drive on food is scaled by `brain.sugar_gain(hunger)` (the curve is designed), so a sated fly's MN9 stays under the feeding threshold.
+
+- **Sapkal, N., Mancini, N., Kumar, D. S., Spiller, N., Murakami, K., Vitelli, G., Bargeron, B., Maier, K., Eichler, K., Jefferis, G. S. X. E., Shiu, P. K., Sterne, G. R., & Bidaye, S. S. (2024)**  
+  *Neural circuit mechanisms underlying context-specific halting in Drosophila.*  
+  **Nature**, 634(8032), 191–200. [doi:10.1038/s41586-024-07854-7](https://doi.org/10.1038/s41586-024-07854-7)  
+  *Implementation:* Sugar halts walking through GABAergic SEZ neurons (FG) that inhibit the walking DNs below P9, not P9 itself (shown with the Shiu model). NeuroPest reads walking from P9, so standing still while feeding (`FEED`, read from MN9) is the decoder's stand-in for that halt.
+
+- **Kim, I. S., & Dickinson, M. H. (2017)**  
+  *Idiothetic path integration in the fruit fly Drosophila melanogaster.*  
+  **Current Biology**, 27(15), 2227–2238.e3. [doi:10.1016/j.cub.2017.06.026](https://doi.org/10.1016/j.cub.2017.06.026)
+
+- **Corfas, R. A., Sharma, T., & Dickinson, M. H. (2019)**  
+  *Diverse food-sensing neurons trigger idiothetic local search in Drosophila.*  
+  **Current Biology**, 29(10), 1660–1668.e4. [doi:10.1016/j.cub.2019.03.004](https://doi.org/10.1016/j.cub.2019.03.004)
+
+- **Behbahani, A. H., Palmer, E. H., Corfas, R. A., & Dickinson, M. H. (2021)**  
+  *Drosophila re-zero their path integrator at the center of a fictive food patch.*  
+  **Current Biology**, 31(20), 4534–4546.e5. [doi:10.1016/j.cub.2021.08.006](https://doi.org/10.1016/j.cub.2021.08.006)  
+  *Implementation (these three):* After a meal the fly circles the place, longer when still hungry (`brain.SEARCH_*`, designed): a forced DNa02 drive on the side where the meal spot lies; the GUI gives that bearing as the path integrator's stand-in.
+
+- **Kazama, H., & Wilson, R. I. (2008)** *Homeostatic matching and nonlinear amplification at identified central synapses.* **Neuron**, 58(3), 401–413. [doi:10.1016/j.neuron.2008.02.030](https://doi.org/10.1016/j.neuron.2008.02.030)
+- **Olsen, S. R., & Wilson, R. I. (2008)** *Lateral presynaptic inhibition mediates gain control in an olfactory circuit.* **Nature**, 452(7190), 956–960. [doi:10.1038/nature06864](https://doi.org/10.1038/nature06864)  
+  *Relevance (these two):* the mechanisms that keep the real antennal lobe graded (synaptic depression, gain control) are absent from the LIF model; without them strong olfactory (or LC10) drive starts a self-sustained runaway, hence `states.LC10_MAX_HZ` and the ranking protocols under it (`tools/probe_runaway.py`).
+
 ---
 
 ## 5. Visual Perception & Retinotopic Feature Detectors

@@ -9,7 +9,7 @@ from PySide6.QtWidgets import QApplication
 
 from pathlib import Path
 
-from .states import FLY, FREEZE, GROOM, RETREAT, STAND, WALK
+from .states import FEED, FLY, FREEZE, GROOM, RETREAT, STAND, WALK
 
 ASSETS = (Path(__file__).resolve().parent / "assets").as_posix()
 
@@ -33,6 +33,7 @@ STATE_STYLE = {
     FLY: (ERROR, "Escaping"),
     GROOM: ("#7dd3fc", "Grooming"),
     FREEZE: ("#c4b5fd", "Freezing"),
+    FEED: ("#fbbf24", "Feeding"),
 }
 
 QSS = f"""

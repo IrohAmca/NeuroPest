@@ -61,7 +61,22 @@ uv run neuropest
     - Walking: $\approx 0.015 / \text{s}$
     - Flight: $\approx 0.080 / \text{s}$ (~$16\times$ basal consumption!)
   - Satiated flies groom and rest. Hungry flies experience internal walking drive (DNp09 hyperactivity) and increased food odor sensitivity.
-  - Approaching food spots triggers proboscis extension, emerald crop glow, and floating "+Reward" effects.
+  - **Feeding through the taste circuit.** Three invisible food sources of different sizes lie on the screen (was
+    seven); a bigger one smells stronger and further (odor radius and strength grow with the square root of the size).
+    Food under the fly drives the labellar sugar receptor neurons (FlyWire `cell_sub_class` "sugar", LB3c, 32
+    neurons); in the connectome they drive the proboscis motor neuron MN9 (Shiu et al. 2024), and while MN9 fires the
+    fly is in the `FEED` state: it stands with its proboscis out (drawn as far out as MN9 fires) and eats in proportion
+    to it. Hunger raises the sugar neurons' sensitivity (Inagaki et al. 2012; the curve is designed), so a hungry fly
+    eats a food of size 1 in about ten seconds, a half-fed one stops by itself when its MN9 falls below the threshold,
+    and a sated one does not start. A food eaten up appears again elsewhere. Standing still while MN9 fires is the
+    decoder's stand-in for the halt of real flies (Sapkal et al. 2024: sugar recruits GABAergic neurons that inhibit
+    the walking descending neurons below P9; in this model sugar does not reach P9, the neuron read for walking).
+    Measured on the 15k tier (`tools/probe_sugar.py`): SUGAR at 50 / 100 / 120 Hz drives MN9 to 14-16 / 56-59 / 60-67 Hz,
+    ~400 neurons spike, nothing keeps firing afterwards.
+  - **Local search after a meal** [designed]: a fly that leaves a meal circles the place for up to 40 s (longer the
+    hungrier it still is), as real flies do (Kim & Dickinson 2017; Corfas, Sharma & Dickinson 2019): a forced drive on
+    the DNa02 of the side the meal spot lies on (the GUI gives its bearing, a path-integrator stand-in), tight circles at
+    first that widen. Headless measurement: the fly spends 60-99% of the search within 200 px of the meal spot.
   - **Foraging flight.** A hungry fly (hunger >= 0.45) that smells a food source 180-~400 px away, and is not getting
     closer to it on foot, builds an urge to fly there; at full urge it takes off in long mode **without the Giant Fiber**
     (von Reyn et al. 2014: long-mode take-offs do not need it), turns toward the source first, slows on the way in and
@@ -100,7 +115,7 @@ uv run neuropest
     most about a third of the GUI thread the pet runs on (a drag repaints on every mouse move). Opening it in its own
     window pauses the embedded copy.
 - **Control Panel:**
-  - Dark-themed card interface displaying real-time telemetry (Giant Fiber, MDN, Steering, real-time factor, CPU load, active neuron count, valence, hunger).
+  - Dark-themed card interface displaying real-time telemetry (Giant Fiber, MDN, Steering, MN9, real-time factor, CPU load, active neuron count, valence, hunger).
   - Collapsible **Advanced Behavior Settings** (Motility at 65%, Skittishness $\times 1.00$, Wall Pain $\times 1.00$, with a single-click reset).
   - Closing the control window minimizes it to the system tray; click the tray icon to restore.
 - **System Tray Icon:**
@@ -137,7 +152,12 @@ uv run python tools/build_mushroom.py    # optional: biological Mushroom Body (K
 uv run python tools/fidelity.py          # ~5min: data/circuits/tiers.json (fidelity and speed metrics)
 # optional probes: tools/fidelity.py 5000 15000 30000 --dt 0.1 0.5 1.0 | --image | --mirror
 # behavior probes (closed loop, headless): tools/probe_goal_flight.py, tools/probe_odor_gate.py
+# taste and runaway probes: tools/probe_sugar.py, tools/probe_runaway.py
 ```
+
+The circuit cache carries a version (`paths.CACHE_VERSION`): its neuron groups live inside the file, so a cache built
+by an older version (without the `SUGAR` / `MN9` groups) is offered for a rebuild at startup (the raw files are
+downloaded only if missing); kept, the pet feeds by a designed rule on the sugar input instead.
 
 > **Note on shallow clones:** Standard shallow cloning is sufficient; files in these repos are regular git objects, not Git LFS. `sez_neurons.pickle` is deliberately omitted because pickle can execute arbitrary code and is not needed for circuit construction.
 
@@ -175,6 +195,8 @@ The full connectome consists of **138,639 neurons** and **15.1 million synaptic 
 | Bearing & Proximity | LC10a/c-2/d (ipsilateral) | DNa02 (ipsilateral) | Ipsilateral steering turn | Rayshubskiy et al. |
 | Motility slider | Tonic current | DNp09 / P9 | Forward walking | Bidaye 2020 |
 | Head hover / touch | Cephalic bristles (BM_*) + JO-C/E | DNg62 (aDN1) + DNge078 (aDN2) | Head & antenna grooming | Hampel 2015; Shiu 2024 |
+| Food under the fly (x hunger) | Labellar sugar receptor neurons (LB3c, `SUGAR`) | MN9 (CB0701) | Feeding: proboscis out, the fly stands and eats | Shiu 2024; Inagaki 2012; Sapkal 2024 |
+| A meal just ended (designed) | Forced DNa02 drive toward the meal spot | DNa02 | Local search: circles around the place | Kim & Dickinson 2017; Corfas 2019 |
 | Hunger state | Metabolic deficit tonic drive | DNp09 | Hyperactivity & foraging | Krashes 2009 |
 | Food in flying range, not reached on foot | Food odor x hunger + source position (designed) | none (no Giant Fiber) | Foraging flight, landing on the food | von Reyn 2014 |
 | Boundary collision | Border impact | PPL1 dopaminergic cluster | Nociceptive pain conditioning | Claridge-Chang 2009 |
@@ -191,8 +213,9 @@ Takeoff is decoded as an **event** rather than a continuous firing rate: in biol
 1. **Takeoff / Fly** (`FLY`)
 2. **Retreat / Backward Walk** (`RETREAT`)
 3. **Freeze** (`FREEZE`)
-4. **Groom** (`GROOM`)
-5. **Walk** (`WALK`) / **Stand** (`STAND`)
+4. **Feed** (`FEED`): while the smoothed MN9 rate is above 15 Hz (until it falls below 5 Hz)
+5. **Groom** (`GROOM`)
+6. **Walk** (`WALK`) / **Stand** (`STAND`)
 
 Higher priority states immediately interrupt lower states; state transitions enforce minimal durations and hysteresis to prevent jitter. 
 
@@ -200,6 +223,15 @@ Higher priority states immediately interrupt lower states; state transitions enf
 - **Freezing:** Model has no single dedicated freeze neuron; freezing is an engineered behavioral rule (`BrainSpec.freeze_on = 0.7`). If looming rate exceeds 0.7/s without triggering escape or retreat, the fly freezes for $\ge 1.2\text{ s}$ until expansion drops below 0.3/s.
 - **Escape Direction:** DNp02/DNp11 encode lateral LC4 gradients. Escape trajectory is directed opposite to cursor heading (`fly.py`).
 - **Left-Right Symmetrization:** Synaptic weights and connection signs are bilaterally balanced (`flywire.py`, `lif_wgpu.py`) to eliminate unilateral steering biases under symmetrical stimuli.
+- **The olfactory / mushroom-body runaway and the LC10 ceiling:** the LIF model has no spike-frequency adaptation and no
+  short-term synaptic depression, which keep the real antennal lobe graded (Kazama & Wilson 2008; Olsen & Wilson 2008).
+  Driven hard (food-odor projection neurons at 10 Hz, the "sugar/low_salt" taste neurons at 100 Hz, LC10 on one side
+  from ~55-70 Hz), the brain falls into a self-sustained state of ~9,500 neurons (Kenyon cells, ALPNs, olfactory
+  receptor neurons, antennal-lobe and lateral-horn local neurons, DANs) that keeps firing after the input ends, with
+  DNa02 locked to one side. An earlier ranking protocol (LC10 at 100 Hz) fell into it, so that network filled most of
+  the 15,000 tier, and a well-trained pet lured by the cursor (learned desire x2.5 on the bearing drive, ~75 Hz on
+  LC10) circled to the left at ~30x the CPU. `states.LC10_MAX_HZ` (40 Hz) now caps the brain's LC10 drive, the ranking
+  protocols stay under it, and the 15,000 tier no longer holds that network (`tools/probe_runaway.py`).
 
 ---
 

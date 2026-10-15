@@ -4,7 +4,7 @@ Simulates biological energy depletion and hunger-driven foraging:
 - Stand / Groom: Basal metabolic rate (slow digestion, ~3-4 min to empty).
 - Walk: Moderate rate (~65 s of continuous walking).
 - Fly: High expenditure (aerodynamic flight burns ~16x resting rate, ~12 s).
-- Feeding: Increases energy (+0.35 per consumed source, up to 1.0).
+- Feeding: Increases energy while the fly eats (eat: +0.35 per unit of food, a whole food of size 1; up to 1.0).
 
 Hunger gates olfactory perception, voluntary foraging locomotion (DNp09 tonic drive),
 and Mushroom Body PAM dopamine reward.
@@ -21,7 +21,7 @@ class MetabolicConfig:
     burn_stand: float = 0.005    # energy / second at rest (~200 s to empty from 100%)
     burn_walk: float = 0.015     # energy / second while walking (~65 s)
     burn_fly: float = 0.080      # energy / second during flight (~12.5 s, 16x rest)
-    feed_amount: float = 0.35    # energy gained per food item consumed
+    feed_amount: float = 0.35    # energy gained per food item consumed (feed) and per unit of food eaten (eat)
     rate_mult: float = 1.0       # user speed multiplier (0.2x to 3.0x)
 
 
@@ -65,6 +65,11 @@ class MetabolicState:
     def feed(self, amount: float | None = None) -> None:
         gain = self.cfg.feed_amount if amount is None else amount
         self.energy = min(1.0, self.energy + gain)
+
+    def eat(self, units: float) -> None:
+        """Energy from `units` of food eaten (pheromone sizes: a food of size 1 is one unit)."""
+        if units > 0.0:
+            self.energy = min(1.0, self.energy + self.cfg.feed_amount * float(units))
 
     def starve(self) -> None:
         self.energy = 0.0

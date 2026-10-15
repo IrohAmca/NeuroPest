@@ -530,3 +530,28 @@ def test_state_and_gear_come_from_one_slot_and_rates_only_for_simulated_groups()
     r.out[O_LAB_AVAIL] = float(lab_mask(["LC4"]))
     r.out[O_RATE_LC4] = 12.0
     assert r.lab_rates() == {"LC4": 12.0}
+
+
+def test_food_under_the_fly_reaches_the_brain_and_the_feeding_comes_back():
+    from neuropest.runner import I_DIST, I_HUNGER, I_MEAL_BEARING, I_MEAL_DIST, I_SUGAR, INP_LEN, O_FEED, O_STATE, OUT_LEN
+    from neuropest.states import FEED, STATES
+
+    inp, out = np.zeros(INP_LEN), np.zeros(OUT_LEN)
+    inp[I_DIST], inp[I_HUNGER], inp[I_SUGAR] = 1e6, 1.0, 1.0
+    inp[I_MEAL_DIST], inp[I_MEAL_BEARING] = 1e6, 0.0
+    brain = _toy_loop(inp, out, 150)                         # 0.6 s of brain
+    assert brain.sugar == 1.0 and STATES[int(out[O_STATE])] == FEED and out[O_FEED] > 0.0
+    inp[I_MEAL_DIST], inp[I_MEAL_BEARING] = 80.0, -0.5
+    _toy_loop(inp, out, 2, brain=brain)
+    assert (brain.meal_dist, brain.meal_bearing) == (80.0, -0.5)
+
+
+def test_send_writes_the_taste_input_and_the_meal_spot():
+    from neuropest.runner import I_MEAL_BEARING, I_MEAL_DIST, I_SUGAR
+
+    r = _bare_runner()
+    r.vision, r.preview, r.eye_height, r.bias, r.skittish, r.capture = False, False, 100.0, 0.65, 1.0, None
+    r.send(500.0, 0.0, sugar=1.0, meal_dist=120.0, meal_bearing=0.3)
+    assert (r.inp[I_SUGAR], r.inp[I_MEAL_DIST], r.inp[I_MEAL_BEARING]) == (1.0, 120.0, 0.3)
+    r.send(500.0, 0.0)
+    assert (r.inp[I_SUGAR], r.inp[I_MEAL_DIST]) == (0.0, 1e6)

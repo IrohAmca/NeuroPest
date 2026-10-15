@@ -20,9 +20,9 @@ from PySide6.QtWidgets import QApplication, QWidget
 
 from .control import Control
 from .fly import FLY_MARGIN_PX, Fly, PlayArea, _wrap
-from .states import FLY
+from .states import FEED, FLY
 from .metabolism import MetabolicState
-from .pheromone import GoalTracker, PheromoneField
+from .pheromone import FOOD_COUNT, GoalTracker, PheromoneField
 from .preferences import Preferences
 from .render import RewardEffect, draw_fly, draw_reward_plus
 from .runner import EngineConfig, Runner, default_config, effective_mb_wiring
@@ -31,6 +31,9 @@ from .tray import Tray
 
 TOUCH_RADIUS_PX = 14.0     # cursor this close to the fly center (times its scale) touches it
 OVERLAY_INSET_PX = 1       # keep the overlay strictly inside the desktop, see overlay_rect()
+EAT_RATE = 0.14            # food eaten per second with the proboscis fully out: a food of size 1 in ~10 s for a hungry fly,
+                           # whose proboscis is out ~0.7 on average while it eats (MN9 falls as it fills up; pheromone.FOOD_*)
+PROBOSCIS_TAU_S = 0.15     # the drawn proboscis follows the brain's feed level (MN9) this fast
 
 
 def overlay_rect(x: int, y: int, w: int, h: int, inset: int = OVERLAY_INSET_PX) -> QRect:
@@ -74,13 +77,14 @@ class Overlay(QWidget):
         cy = float(pg.y()) + float(pg.height()) * pdpr / 2.0
         self.fly = Fly(cx, cy)
         self.pheromone = PheromoneField(border_margin=30.0 * self.scale, border_strength=0.4)
-        self.pheromone.spawn_random_sources(self.play_area().screens, count=7)
+        self.pheromone.spawn_random_sources(self.play_area().screens, count=FOOD_COUNT)
         self.pheromone_enabled = bool(self.prefs.pheromone_enabled)
         self.cursor_phero_mode = self.prefs.cursor_phero_mode
         self.goal = GoalTracker()  # the food source the fly would fly to (fixed during the flight)
         self.feed_effects: list[RewardEffect] = []
-        self.feed_glow: float = 0.0
-        self._last_cursor_reward: float = 0.0
+        self.feed_glow: float = 0.0       # how far the drawn proboscis is out (follows the brain's MN9)
+        self._was_feeding = False
+        self._meal_spot: tuple[float, float] | None = None   # where the fly last ate: its local search circles it
         self.touch_groom_enabled = bool(self.prefs.touch_groom_enabled)
         self.metabolism = MetabolicState(enabled=bool(self.prefs.hunger_enabled))
         self.metabolism.cfg.rate_mult = float(self.prefs.metabolic_rate)
@@ -141,7 +145,7 @@ class Overlay(QWidget):
         self._update_geometry()
         self.fly.clamp(self.play_area())
         if not self.pheromone.sources:
-            self.pheromone.spawn_random_sources(self.play_area().screens, count=7)
+            self.pheromone.spawn_random_sources(self.play_area().screens, count=FOOD_COUNT)
 
     def _get_fly_rect(self, g) -> QRect:
         lx = int(self.fly.x - g.left())
@@ -168,7 +172,7 @@ class Overlay(QWidget):
             self.fly.x, self.fly.y = cx, cy
         self.fly.clamp(self.play_area())
         if hasattr(self, "pheromone"):
-            self.pheromone.spawn_random_sources(self.play_area().screens, count=7)
+            self.pheromone.spawn_random_sources(self.play_area().screens, count=FOOD_COUNT)
 
     def play_area(self) -> PlayArea:
         """Playable domain: all screens (multi-monitor roaming) or the chosen monitor."""
@@ -229,31 +233,24 @@ class Overlay(QWidget):
             phero_steer, phero_drive, phero_repel = self.pheromone.smell(self.fly.x, self.fly.y, self.fly.heading,
                                                                          area, self.scale)
 
-            # Check if arrived at any attractive source/nectar
-            at_target = False
-            for src in self.pheromone.sources:
-                if math.hypot(src.x - self.fly.x, src.y - self.fly.y) < target_radius:
-                    at_target = True
-                    break
+            # Food under the fly is its taste input (the sugar receptor neurons). Whether it feeds is the brain's: MN9
+            # fires and it stands in FEED; meanwhile it eats in proportion to how far the proboscis is out, a food bit by
+            # bit (gone once eaten up), the attractive cursor without end. A sated fly's MN9 stays low: it does not eat.
+            src = self.pheromone.food_at(self.fly.x, self.fly.y, target_radius)
             at_cursor = (self.pheromone.cursor_active and cursor_kind == "attract" and dist < target_radius)
-            if not at_target and at_cursor:
-                at_target = True
-
-            # When fly lands or arrives at food source, consume it so it disappears!
-            if at_target:
-                consumed = self.pheromone.consume_at(self.fly.x, self.fly.y, consume_radius=target_radius,
-                                                     screen_boxes=area.screens if hasattr(area, "screens") else None)
-                if consumed:
-                    self.metabolism.feed()
+            at_target = src is not None or at_cursor
+            feeding = state == FEED and at_target
+            if feeding:
+                amount = EAT_RATE * self.runner.feed_level * dt
+                if src is not None:
+                    amount = self.pheromone.eat_at(self.fly.x, self.fly.y, amount, radius=target_radius,
+                                                   screen_boxes=area.screens if hasattr(area, "screens") else None)
+                self.metabolism.eat(amount)
+                self._meal_spot = (self.fly.x, self.fly.y)
+                if not self._was_feeding:               # a meal starts: the counter lands a foraging flight on it
                     self.runner.note_fed()
                     self.feed_effects.append(RewardEffect(self.fly.x, self.fly.y))
-                    self.feed_glow = 1.0
-                elif at_cursor and (now - self._last_cursor_reward > 3.0):
-                    self._last_cursor_reward = now
-                    self.metabolism.feed()
-                    self.runner.note_fed()
-                    self.feed_effects.append(RewardEffect(self.fly.x, self.fly.y))
-                    self.feed_glow = 1.0
+            self._was_feeding = feeding
 
             # the food the fly would fly to: the brain decides whether to; during the flight it stays the same source
             self.goal.update(self.pheromone, self.fly.x, self.fly.y, area, flying_to_it=long_flight)
@@ -262,6 +259,7 @@ class Overlay(QWidget):
             phero_drive = 0.0
             phero_repel = 0.0
             at_target = False
+            self._was_feeding = False
             self.goal.source = None
 
         # Update metabolic energy depletion based on active state (fly burns ~16x rest)
@@ -274,8 +272,13 @@ class Overlay(QWidget):
         effective_cursor = (cur_x, cur_y)
         self.fly.update(dt, state, effective_cursor, area, self.runner.steer,
                         mode="long" if long_flight else "", goal=self.goal.target(target_radius))
-        # the goal as the fly has it after this step
+        # the goal as the fly has it after this step; where it last ate (the local search's path-integrator stand-in)
         goal_gap, goal_bearing, goal_odor = self.goal.reading(self.fly.x, self.fly.y, self.fly.heading, target_radius)
+        if self._meal_spot is not None:
+            meal_dist = math.hypot(self._meal_spot[0] - self.fly.x, self._meal_spot[1] - self.fly.y)
+            meal_bearing = self.fly.bearing_of(self._meal_spot)
+        else:
+            meal_dist, meal_bearing = 1e6, 0.0
 
         self.runner.send(dist, closing, bearing, touch,
                          (self.fly.x, self.fly.y, self.fly.heading), (cur_x, cur_y), stamp=now,
@@ -284,11 +287,14 @@ class Overlay(QWidget):
                          phero_repel=phero_repel, at_target=at_target,
                          hunger=self.metabolism.hunger,
                          wall_bump=self.fly.hit_wall,
-                         goal_gap=goal_gap, goal_bearing=goal_bearing, goal_odor=goal_odor)
+                         goal_gap=goal_gap, goal_bearing=goal_bearing, goal_odor=goal_odor,
+                         sugar=1.0 if at_target else 0.0, meal_dist=meal_dist, meal_bearing=meal_bearing)
 
-        # Update feeding animation and floating reward effects
-        if self.feed_glow > 0.0:
-            self.feed_glow = max(0.0, self.feed_glow - dt / 0.8)
+        # The drawn proboscis follows MN9 (the brain's feed level) while the fly feeds; floating reward effects
+        want = self.runner.feed_level if state == FEED else 0.0
+        self.feed_glow += (1.0 - math.exp(-dt / PROBOSCIS_TAU_S)) * (want - self.feed_glow)
+        if self.feed_glow < 0.01:
+            self.feed_glow = 0.0
         if self.feed_effects:
             self.feed_effects = [e for e in self.feed_effects if e.update(dt)]
 
@@ -344,9 +350,9 @@ def main():
     from .theme import fly_icon
     app.setWindowIcon(fly_icon())
 
-    # Prompt user to download FlyWire connectome if missing on startup
-    from .paths import CACHE
-    if not CACHE.exists() and "--toy" not in sys.argv:
+    # Prompt user to download FlyWire connectome if missing on startup, or to rebuild one built by an older version
+    from .data_manager import is_connectome_ready
+    if not is_connectome_ready() and "--toy" not in sys.argv:
         from .data_manager import prompt_startup_data
         prompt_startup_data()
 
