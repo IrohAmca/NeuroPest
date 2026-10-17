@@ -14,7 +14,7 @@ A desktop fly pet that roams your screen and reacts dynamically to your mouse cu
 **Current State (v0.8.0):** The mouse cursor is converted into three primary sensory streams, transformed into motor behaviors by the biological connectome:
 - **Looming / approach velocity** $\rightarrow$ backward walking (MDN) when approached gently; explosive escape takeoff (Giant Fiber / DNp01) when approached rapidly.
 - **Cursor bearing / proximity** $\rightarrow$ left/right steering turns (DNa02).
-- **Motility & foraging drive** $\rightarrow$ tonic current into walking command neurons (DNp09 / P9).
+- **Spontaneous bouts, food odor, searches** $\rightarrow$ drive on the walking command neurons (DNp09 / P9); no constant drive.
 - **Touch / hover on head** $\rightarrow$ antennal and head grooming (aDN1 / aDN2) via cephalic mechanosensory bristles and Johnston's organ.
 - **Metabolism & Hunger** $\rightarrow$ state-dependent energy consumption; starvation drives DNp09 hyperactivity, increased foraging, and proboscis extension feeding.
 - **Foraging flight** $\rightarrow$ a hungry fly flies to a food source it smells but does not reach on foot, in long mode without the Giant Fiber, and lands on the food.
@@ -60,7 +60,21 @@ uv run neuropest
     - Resting / grooming: $\approx 0.005 / \text{s}$ (basal rate)
     - Walking: $\approx 0.015 / \text{s}$
     - Flight: $\approx 0.080 / \text{s}$ (~$16\times$ basal consumption!)
-  - Satiated flies groom and rest. Hungry flies experience internal walking drive (DNp09 hyperactivity) and increased food odor sensitivity.
+  - **What sets the fly walking** [designed inputs on real neurons; the model makes no spontaneous activity, and in this
+    engine odor does not reach the walking neurons through the olfactory pathway]. There is no constant walking drive;
+    P9 gets the largest of three:
+    - *Spontaneous bouts:* the fly alternates rest and walking bouts. Hunger makes bouts longer and rests shorter
+      (starvation-induced hyperactivity: Lee & Park 2004; Yang et al. 2015); the Activity setting scales how often a bout
+      starts (0%: no spontaneous walking).
+    - *Food odor:* a clear odor x hunger sets the fly walking whatever the bouts do, so near food the odor moves it.
+    - *Searches:* after a meal (see below) and when the plume is lost: odor x hunger falling under half its recent peak
+      starts 3-10 s of loops toward the side the odor was last stronger on (DNa02 drive), until the fly smells it again
+      (Álvarez-Salvado et al. 2018). The antennae are too close for the left-right difference to steer well; the fly finds
+      the source by losing it and turning back.
+    - `tools/probe_foraging.py` (15k tier, 3 foods, 90 s; "old" = always walking, no odor-loss search): a hungry fly
+      (0.7) ate in 13/16 trials, 1.2 meals each, first meal median 32 s (old: 9/16, 0.9, 26 s); a nearly sated one (0.1)
+      walks 31% of the time (old: 96%); brain CPU unchanged (~40-55 ms per simulated second).
+  - Satiated flies groom and rest. Hungry flies walk more and smell food more strongly.
   - **Feeding through the taste circuit.** Three invisible food sources of different sizes lie on the screen (was
     seven); a bigger one smells stronger and further (odor radius and strength grow with the square root of the size).
     Food under the fly drives the labellar sugar receptor neurons (FlyWire `cell_sub_class` "sugar", LB3c, 32
@@ -116,7 +130,7 @@ uv run neuropest
     window pauses the embedded copy.
 - **Control Panel:**
   - Dark-themed card interface displaying real-time telemetry (Giant Fiber, MDN, Steering, MN9, real-time factor, CPU load, active neuron count, valence, hunger).
-  - Collapsible **Advanced Behavior Settings** (Motility at 65%, Skittishness $\times 1.00$, Wall Pain $\times 1.00$, with a single-click reset).
+  - Collapsible **Advanced Behavior Settings** (Activity at 65%, Skittishness $\times 1.00$, Wall Pain $\times 1.00$, with a single-click reset).
   - Closing the control window minimizes it to the system tray; click the tray icon to restore.
 - **System Tray Icon:**
   - Dynamic fly eye color reflects internal state: Green = Walking, Orange = Retreating, Red = Escape Flight.
@@ -193,7 +207,7 @@ The full connectome consists of **138,639 neurons** and **15.1 million synaptic 
 | Approach speed (looming) | LPLC2 (size) + LC4 (velocity) | DNp01 (Giant Fiber) | Escape flight / takeoff | Ache 2019; von Reyn 2017 |
 | Approach speed (mild) | LPC1 (functional surrogate) | MDN | Backward walking | Bidaye 2014 |
 | Bearing & Proximity | LC10a/c-2/d (ipsilateral) | DNa02 (ipsilateral) | Ipsilateral steering turn | Rayshubskiy et al. |
-| Motility slider | Tonic current | DNp09 / P9 | Forward walking | Bidaye 2020 |
+| Spontaneous bouts (Activity setting, hunger), food odor, searches (designed) | Drive on the walking command neurons | DNp09 / P9 | Forward walking | Bidaye 2020; Yang 2015; Álvarez-Salvado 2018 |
 | Head hover / touch | Cephalic bristles (BM_*) + JO-C/E | DNg62 (aDN1) + DNge078 (aDN2) | Head & antenna grooming | Hampel 2015; Shiu 2024 |
 | Food under the fly (x hunger) | Labellar sugar receptor neurons (LB3c, `SUGAR`) | MN9 (CB0701) | Feeding: proboscis out, the fly stands and eats | Shiu 2024; Inagaki 2012; Sapkal 2024 |
 | A meal just ended (designed) | Forced DNa02 drive toward the meal spot | DNa02 | Local search: circles around the place | Kim & Dickinson 2017; Corfas 2019 |

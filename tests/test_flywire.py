@@ -660,3 +660,51 @@ def test_a_circuit_without_the_taste_pathway_feeds_by_the_sugar_input():
     assert FEED in _on_food(b)
     assert b.feed_level > 0.0
     assert FEED not in _on_food(Brain(build(146, seed=42)), hunger=0.1)
+
+
+# ------------------------------------------------------------------ what sets the fly walking (brain.ACTIVITY_REF)
+def _walk_drive(b):
+    return float(b._curr_cr[b._walk_slice].max())
+
+
+def test_without_activity_odor_or_search_nothing_drives_walking(tier):
+    b = Brain(tier)
+    b.set_stimulus(1e6, 0.0, walk_bias=0.0, hunger=1.0)
+    _settle(b, 3000)
+    assert not b._bout and _walk_drive(b) == 0.0 and b.state == STAND
+
+
+def test_spontaneous_bouts_come_and_go_and_hunger_makes_them_longer(tier):
+    from neuropest.brain import ACTIVITY_REF
+
+    share = {}
+    for h in (1.0, 0.0):
+        b = Brain(tier, seed=3)
+        b.set_stimulus(1e6, 0.0, walk_bias=ACTIVITY_REF, hunger=h)
+        on = sum(b._bout for _ in range(30_000) if b.advance(4.0) is not None)      # 120 s
+        share[h] = on / 30_000
+    assert share[1.0] > 0.5 > 0.25 > share[0.0] > 0.0          # starved ~73%, sated ~9% of the time in a bout
+
+
+def test_a_food_odor_sets_a_hungry_fly_walking_without_a_bout(tier):
+    from neuropest.brain import ODOR_WALK_LEVEL
+
+    b = Brain(tier)
+    b.set_stimulus(1e6, 0.0, walk_bias=0.0, phero_drive=0.5, hunger=1.0)
+    assert np.isclose(_walk_drive(b), FLYWIRE.walk_drive[0] * ODOR_WALK_LEVEL)
+    b.set_stimulus(1e6, 0.0, walk_bias=0.0, phero_drive=0.5, hunger=0.0)              # a sated fly: no pull
+    assert _walk_drive(b) == 0.0
+
+
+def test_losing_the_odor_starts_a_search_toward_where_it_was_stronger_and_finding_it_ends_it(tier):
+    b = Brain(tier)
+    b.set_stimulus(1e6, 0.0, walk_bias=0.0, phero_drive=0.5, phero_steer=5.0, hunger=1.0)   # stronger on the right
+    _settle(b, 2000)
+    assert b._search_ms == 0.0
+    b.set_stimulus(1e6, 0.0, walk_bias=0.0, phero_drive=0.02, phero_steer=0.0, hunger=1.0)  # out of the plume
+    _settle(b, 1500)
+    assert b._search_kind == "odor" and b._search_ms > 0.0 and b._search_side == 1 and b.steer > 10.0
+    assert _walk_drive(b) > 0.0                                 # it walks the loops
+    b.set_stimulus(1e6, 0.0, walk_bias=0.0, phero_drive=0.5, phero_steer=0.0, hunger=1.0)   # back in it
+    _settle(b, 1000)
+    assert b._search_ms == 0.0

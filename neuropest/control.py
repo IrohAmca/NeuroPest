@@ -485,8 +485,10 @@ class Control(QWidget):
 
         self.w_slider = QSlider(Qt.Horizontal, minimum=0, maximum=100, value=int(self.runner.bias * 100))
         self.w_slider.valueChanged.connect(self._on_bias_changed)
-        slider_row(adv_lay, "Locomotion Drive (Base Walking Drive)",
-                   "Tonic current injected into DNp09/P9 walking command neurons: baseline urge without hunger or threat. Default: 65%.",
+        slider_row(adv_lay, "Activity (Spontaneous Walking)",
+                   "How often the fly starts a walking bout on its own (drive on the DNp09/P9 walking command neurons); "
+                   "hunger makes bouts longer and rests shorter, and a food odor sets a hungry fly walking whatever "
+                   "this is. 0% = it walks only for odor, threats and searches. Default: 65%.",
                    self.w_slider, lambda v: f"{v}%")
 
         cur_skittish = getattr(self.runner, "skittish", 1.0)
