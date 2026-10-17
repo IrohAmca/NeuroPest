@@ -19,3 +19,4 @@ class LIFParams:
     t_ref: float = 2.2      # ms; v and g are frozen while refractory
     t_dly: float = 1.8      # ms synaptic delay (quantized to the time step)
     w_syn: float = 0.275    # mV per synapse
+    tau_adapt: float = 300.0  # ms; decay of the spike-frequency adaptation (only on neurons with net.extra['adapt_mv'])

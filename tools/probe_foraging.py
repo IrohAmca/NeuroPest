@@ -6,7 +6,10 @@ x feed level, MetabolicState, the meal spot for the local search, Fly.update on 
 runner._loop does per iteration (set_stimulus when the rounded inputs change, the meal counter, the meal spot, 4 ms
 chunks). One 1920x1040 screen, the fly in the middle, the cursor far away (only the food acts), --seconds per trial.
 
-  A      the code as it is: spontaneous bouts, the odor drives walking, a search when the plume is lost (brain.ACTIVITY_REF)
+  A      the code as it is: spontaneous bouts, the odor drives walking, a search when the plume is lost (brain.ACTIVITY_REF);
+         the odor's left-right difference steers through LC10
+  ornN   A, but the odor enters through the two antennae's ORNs at up to N Hz (brain.FLYWIRE_SMELL, orn_level) and only
+         the circuit turns the fly
   old    an approximation of the architecture before it: always in a walking bout (the constant drive), no odor-loss
          search
 
@@ -14,10 +17,12 @@ Per variant: trials that ate, median time to the first meal, meals per trial, sh
 search, CPU ms per simulated second (the brain only).
 
 Run: uv run python tools/probe_foraging.py [--tier 15000] [--seeds 6] [--seconds 90] [--hunger 0.7] [--variants A,old]
+     [--symmetry individual|symmetric]
 """
 from __future__ import annotations
 
 import argparse
+import dataclasses
 import math
 import random
 import statistics
@@ -39,7 +44,7 @@ RADIUS = 28.0
 BIAS = 0.65
 
 
-def trial(net, seed: int, hunger: float, seconds: float) -> dict:
+def trial(net, seed: int, hunger: float, seconds: float, spec=None) -> dict:
     random.seed(seed)
     l, t, r, b = SCREEN
     area = PlayArea.from_rect((l + MARGIN, t + MARGIN, r - MARGIN, b - MARGIN), margin=MARGIN)
@@ -47,14 +52,14 @@ def trial(net, seed: int, hunger: float, seconds: float) -> dict:
     field = PheromoneField(border_margin=30.0, border_strength=0.4)
     field.spawn_random_sources(area.screens, count=FOOD_COUNT)
     meta = MetabolicState(energy=1.0 - hunger)
-    brain = B.Brain(net, dt=0.5, seed=seed, learning=False)
+    brain = B.Brain(net, dt=0.5, seed=seed, learning=False, spec=spec)
     cursor = (-5000.0, -5000.0)
     last_in, was_feeding, spot = None, False, None
     out = dict(t_eat=None, meals=0, walk=0, feed=0, search=0, frames=0, cpu=0.0)
     for k in range(int(seconds / FRAME_S)):
         state = brain.state
         long_flight = state == FLY and brain.gear == "fly_long"
-        steer_ph, drive, repel = field.smell(fly.x, fly.y, fly.heading, area, 1.0)
+        steer_ph, drive, repel, delta = field.smell(fly.x, fly.y, fly.heading, area, 1.0)
         src = field.food_at(fly.x, fly.y, RADIUS)
         feeding = state == FEED and src is not None
         if feeding:
@@ -72,7 +77,7 @@ def trial(net, seed: int, hunger: float, seconds: float) -> dict:
         h = meta.hunger
         cur = (round(dist_c, 1), 0.0, BIAS, 1.0, round(fly.bearing_of(cursor), 2), 0.0, round(steer_ph, 1),
                round(drive, 2), round(repel, 2), 1.0 if src is not None else 0.0, round(h, 2), float(fly.hit_wall),
-               1.0 if src is not None else 0.0)
+               1.0 if src is not None else 0.0, round(delta, 4))
         if cur != last_in:
             brain.set_stimulus(*cur)
             last_in = cur
@@ -107,10 +112,11 @@ def main():
     ap.add_argument("--seconds", type=float, default=90.0)
     ap.add_argument("--hunger", type=float, nargs="+", default=[0.7, 0.1])
     ap.add_argument("--variants", default="A,old")
+    ap.add_argument("--symmetry", default="individual", choices=["individual", "symmetric"])
     a = ap.parse_args()
-    net = flywire.load_tier(a.tier)
+    net = flywire.load_tier(a.tier, symmetry=a.symmetry)
     saved = (B.BOUT_WALK_S, B.BOUT_REST_S, B.ODOR_LOSS_MIN)
-    print(f"tier {a.tier}, {FOOD_COUNT} foods, {a.seeds} seeds x {a.seconds:.0f} s")
+    print(f"tier {a.tier} ({a.symmetry}), {FOOD_COUNT} foods, {a.seeds} seeds x {a.seconds:.0f} s")
     try:
         for hunger in a.hunger:
             print(f"== starting hunger {hunger}")
@@ -119,7 +125,10 @@ def main():
                     B.BOUT_WALK_S, B.BOUT_REST_S, B.ODOR_LOSS_MIN = (1e6, 1e6), (1e-6, 1e-6), 1e9
                 else:
                     B.BOUT_WALK_S, B.BOUT_REST_S, B.ODOR_LOSS_MIN = saved
-                rows = [trial(net, 1_000_003 * s + 7, hunger, a.seconds) for s in range(a.seeds)]
+                spec = None
+                if name.startswith("orn"):                        # e.g. orn40: the ORNs' maximum rate
+                    spec = dataclasses.replace(B.spec_for(net), orn_max_hz=float(name[3:]))
+                rows = [trial(net, 1_000_003 * s + 7, hunger, a.seconds, spec) for s in range(a.seeds)]
                 report(name, rows, a.seconds)
     finally:
         B.BOUT_WALK_S, B.BOUT_REST_S, B.ODOR_LOSS_MIN = saved

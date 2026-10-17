@@ -22,6 +22,11 @@ FOOD_COUNT = 3
 FOOD_RADIUS_PX = 300.0
 FOOD_SIZE_RANGE = (0.6, 1.4)
 FOOD_MIN_SIZE = 0.05            # below this the food is eaten up
+# The tropotaxis bias (Hz of steering drive per unit of right-minus-left concentration) the brain gets when its circuit has
+# no olfactory pathway; with one, the attractant difference reaches the brain as two antennae's ORN rates instead
+# (brain.BrainSpec.orn_max_hz) and only the repellent part steers through this bias.
+ATTRACT_STEER_HZ = 180.0
+REPEL_STEER_HZ = 220.0
 
 
 @dataclass
@@ -236,11 +241,14 @@ class PheromoneField:
             "total_rep": total_rep,
         }
 
-    def smell(self, x: float, y: float, heading: float, play_area=None, scale: float = 1.0) -> tuple[float, float, float]:
-        """What the fly's antennae give the brain: (steer, drive, repel) = the right-minus-left tropotaxis bias (Hz; an
-        attractant on the right turns it right, a repellent turns it away), the attractant and the repellent intensity."""
+    def smell(self, x: float, y: float, heading: float, play_area=None,
+              scale: float = 1.0) -> tuple[float, float, float, float]:
+        """What the fly's antennae give the brain: (steer, drive, repel, delta) = the right-minus-left tropotaxis bias
+        (Hz; an attractant on the right turns it right, a repellent turns it away), the attractant and the repellent
+        intensity (the mean of the two antennae), and the attractant's right-minus-left concentration difference."""
         ant = self.sample_antennae(x, y, heading, play_area, antenna_dist=12.0 * scale)
-        return ant["delta_attr"] * 180.0 - ant["delta_rep"] * 220.0, ant["total_attr"], ant["total_rep"]
+        steer = ant["delta_attr"] * ATTRACT_STEER_HZ - ant["delta_rep"] * REPEL_STEER_HZ
+        return steer, ant["total_attr"], ant["total_rep"], ant["delta_attr"]
 
     def render(self, p, play_area=None, scale: float = 1.0) -> None:
         """Pheromones are invisible to the user: nothing is rendered."""

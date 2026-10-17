@@ -1,12 +1,14 @@
 """Dense NumPy reference engine: same discretization as `LIFEngine`, no active set.
 
-Slow by design; it is the test oracle for the compiled engine.
+Slow by design; it is the test oracle for the compiled engine. The adapted threshold (net.extra["adapt_mv"]) decays here
+every step for every neuron; the compiled engine keeps it lazily, which gives the same numbers.
 """
 from __future__ import annotations
 
 import numpy as np
 
 from .hostdrive import HostDrive
+from .lif_numba import adapt_of
 from .network import Network
 from .params import LIFParams
 
@@ -27,6 +29,9 @@ class ReferenceEngine(HostDrive):
         self.a = f32(np.exp(-dt / params.tau_m))
         self.b = f32(np.exp(-dt / params.tau_syn))
         self.c = f32(params.tau_syn / (params.tau_m - params.tau_syn))
+        self.adapt_mv = adapt_of(net)
+        self.th = np.zeros(n, f32)
+        self.th_decay = f32(np.exp(-dt / params.tau_adapt))
         self.rng = np.random.default_rng(seed)
         self._rem = 0.0
         self.steps = 0
@@ -58,8 +63,14 @@ class ReferenceEngine(HostDrive):
         self.v = np.where(free, v_new, self.v)
         self.g = np.where(free, g_new, self.g)
         self.ref = np.where(free, self.ref, np.maximum(self.ref - np.float32(self.dt), 0))
-        spk = np.flatnonzero(free & (self.v > np.float32(p.v_th)))
+        thr = np.float32(p.v_th)
+        if self.adapt_mv is not None:
+            self.th *= self.th_decay
+            thr = thr + self.th
+        spk = np.flatnonzero(free & (self.v > thr))
         if len(spk):
+            if self.adapt_mv is not None:
+                self.th[spk] += self.adapt_mv[spk]
             self.v[spk] = p.v_rest
             self.g[spk] = 0
             self.ref[spk] = p.t_ref

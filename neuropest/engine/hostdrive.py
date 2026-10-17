@@ -1,8 +1,9 @@
 """External drive and silencing, host side of the CPU engines (`LIFEngine`, `ReferenceEngine`).
 
 The kernels read the effective drive lists: forced Poisson spikes (`f_idx`, `f_p`) and Poisson synaptic events
-(`c_idx`, `c_p`, `c_w`). The lists as set are kept raw, and the effective ones are derived from them: entries with a
-positive rate, minus the silenced neurons.
+(`c_idx`, `c_p`, `c_w`); the compiled engine draws them as geometric gaps (`f_lp`, `f_next`, `c_lp`, `c_next`). The
+lists as set are kept raw, and the effective ones are derived from them: entries with a positive rate, minus the
+silenced neurons.
 
 Silencing (the lab's lesions) clamps a neuron in the refractory state (`ref = REF_CLAMP`): it integrates nothing and can
 not cross the threshold, so nothing downstream hears it. Two things have to go with the clamp, on every engine:
@@ -63,12 +64,14 @@ class HostDrive:
         keep = self._keep(idx, rate)
         self.f_idx = np.ascontiguousarray(idx[keep])
         self.f_p = np.ascontiguousarray(1.0 - np.exp(-rate[keep] * self.dt / 1000.0), dtype=np.float32)
+        self.f_lp, self.f_next = _gaps_of(rate[keep], self.dt)
 
     def _apply_c(self) -> None:
         idx, rate, w = self._c_raw
         keep = self._keep(idx, rate)
         self.c_idx = np.ascontiguousarray(idx[keep])
         self.c_p = np.ascontiguousarray(1.0 - np.exp(-rate[keep] * self.dt / 1000.0), dtype=np.float32)
+        self.c_lp, self.c_next = _gaps_of(rate[keep], self.dt)
         self.c_w = np.ascontiguousarray(w[keep])
 
     # ---------------------------------------------------------- silencing
@@ -90,3 +93,11 @@ class HostDrive:
     def silenced(self) -> np.ndarray:
         """Indices of the silenced neurons."""
         return np.flatnonzero(self._sil)
+
+
+def _gaps_of(rate: np.ndarray, dt: float) -> tuple[np.ndarray, np.ndarray]:
+    """For the compiled engine's geometric draws: log(1 - p) per entry (float64; p = 1 - exp(-rate dt) is the chance of
+    an event in one step, so log(1 - p) = -rate dt exactly) and the steps to each entry's next event (0: not drawn yet).
+    A new drive starts every entry afresh, which is exact for a memoryless process."""
+    lp = np.ascontiguousarray(-np.asarray(rate, np.float64) * dt / 1000.0)
+    return lp, np.zeros(len(lp), np.int64)

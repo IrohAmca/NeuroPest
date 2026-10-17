@@ -13,12 +13,13 @@ from __future__ import annotations
 import math
 import warnings
 from collections import deque
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 import numpy as np
 
 from .engine import Network, create_engine
 from .mushroom import MushroomBody
+from .pheromone import ATTRACT_STEER_HZ
 from .states import FEED, FLY, FREEZE, GROOM, LAB_GROUPS, LC10_MAX_HZ, RETREAT, STAND, STATES, WALK  # noqa: F401
 
 
@@ -50,6 +51,9 @@ class BrainSpec:
     feed_off_hz: float = 5.0
     min_feed_ms: float = 600.0
     mn9_full_hz: float = 60.0         # MN9 rate read as the proboscis fully out (Brain.feed_level 1)
+    orn_max_hz: float = 0.0           # food-odor ORN rate (ODOR_L / ODOR_R) at a saturating odor x hunger; 0: the circuit
+                                      # has no olfactory pathway and the odor steers through LC10 (see Brain._drive)
+    orn_half: float = 0.2             # odor x hunger at half that rate
     walk_min_hz: float = 3.0
     walk_on_hz: float = 3.5           # C1: hysteresis threshold to initiate walk
     walk_off_hz: float = 2.0          # C1: hysteresis threshold to stop walk
@@ -143,7 +147,8 @@ SEARCH_MIN_HUNGER = 0.15            # a fly this sated does not search
 FEED_SMOOTH_MS = 400.0              # the feeding decision reads MN9 (two neurons, noisy) smoothed like the walking one
 
 # What sets the fly walking [DESIGNED: the model makes no spontaneous activity, and food odor does not reach the walking
-# neurons through its own olfactory pathway in this engine (hareket-mimarisi-plani.md)]. No constant drive: every source
+# neurons (P9) through its olfactory pathway, even with the pathway in the tier (hareket-mimarisi-plani.md;
+# motor-arastirmasi-ara-rapor.md E2: P9 ~1 Hz under odor)]. No constant drive: every source
 # below enters as drive on P9 (DNp09, the walking command neurons), and the largest one counts.
 # - Spontaneous bouts: the fly alternates rest and walking bouts; hunger makes the bouts longer and the rests shorter
 #   (starvation-induced hyperactivity: Lee & Park 2004; Yang et al. 2015). The Motility setting (walk_bias) scales how
@@ -154,7 +159,8 @@ FEED_SMOOTH_MS = 400.0              # the feeding decision reads MN9 (two neuron
 #   toward the side the odor was last stronger on, on the same DNa02 drive as the local search after a meal, for 3-10 s
 #   (longer the hungrier), until it smells the plume again (Alvarez-Salvado et al. 2018: slowing, turning and searching
 #   after the odor ends). The fly finds the source by losing it and turning back, as its antennae are too close for the
-#   left-right difference (LC10 input, kept) to steer it well.
+#   left-right difference (the two antennae's ORNs, or LC10 without an olfactory pathway; see orn_level) to steer it
+#   well.
 # - A search walks: while one lasts the walking drive is SEARCH_WALK_LEVEL (loops, not turning on the spot).
 ACTIVITY_REF = 0.65
 BOUT_LEVEL = 0.65                   # walking drive during a spontaneous bout (P9 ~6 Hz on the 15k tier: it walks)
@@ -185,6 +191,27 @@ TOY = BrainSpec(loom_gain=10.0, loom_max_hz=250.0, vis_max_hz=60.0, rest_drive=(
 # strong: retreat from about 2 /s of expansion, take-off from about 7 /s.
 FLYWIRE = BrainSpec(loom_gain=3.0, loom_max_hz=150.0, retreat_gain=8.0, retreat_max_hz=20.0,
                     steer_max_hz=20.0, touch_hz=120.0, freeze_on=FREEZE_ON, sugar_hz=120.0)
+# The same circuit with the odor entering through the two antennae's ORNs (see orn_level). Not the default: in closed loop
+# (tools/probe_foraging.py, 15k tier, 16 seeds x 90 s, hunger 0.7) the fly found food in 7-8 of 16 trials against 10-11
+# with the LC10 tropotaxis and spent ~2x the CPU while smelling (115-165 against ~60 ms per simulated second): the
+# antennae's left-right difference (~10% of the odor) moves DNa02 by a few Hz, too little to steer, and the olfactory
+# pathway's spikes cost. The pathway and the adaptation are in the tier either way (silent without odor input).
+FLYWIRE_SMELL = replace(FLYWIRE, orn_max_hz=80.0)
+
+# Smell. With orn_max_hz > 0 (FLYWIRE_SMELL) and an olfactory pathway in the circuit (flywire.OLF_*: the ORN -> DN paths,
+# antennal-lobe adaptation) the odor at each antenna drives that antenna's food-odor ORNs:
+# rate = orn_max_hz x c / (c + orn_half), c = odor x hunger (hunger
+# raises the ORNs' gain: Root et al. 2011, presynaptic facilitation of ORNs by sNPF in starved flies). Which way the fly
+# turns is then the circuit's: the odor side reaches DNa02 through the antennal lobe (Rayshubskiy et al. 2025: odor
+# excites the ipsilateral DNa02). The antennae lie ~12 px apart, so the difference is small and the turn weak; the fly
+# finds the source mostly by losing the plume and searching (ODOR_LOSS_*). Otherwise (the default FLYWIRE, smaller tiers,
+# the toy circuit) the attractant's left-right difference steers through LC10 as a tropotaxis bias.
+
+
+def orn_level(c: float, half: float) -> float:
+    """Share of the ORNs' maximum rate at odor x hunger `c` (a saturating receptor response)."""
+    c = max(0.0, float(c))
+    return c / (c + half)
 
 
 def spec_for(net: Network) -> BrainSpec:
@@ -205,6 +232,9 @@ class Brain:
         self.rates = {k: 0.0 for k in ("GF", "WALK", "REST", "MDN", "DNa02_L", "DNa02_R", "GROOM", "MN9")}
         # the taste pathway runs in the network when it has both ends; else the sugar input decides (_feed_signal)
         self.taste = bool(len(self.group("SUGAR")) and len(self.group("MN9")) and self.spec.sugar_hz > 0)
+        # smell runs in the network when it has the food-odor ORNs of both antennae (see orn_level)
+        self.smell = bool(len(self.group("ODOR_L")) and len(self.group("ODOR_R")) and self.spec.orn_max_hz > 0)
+        self.orn_hz = (0.0, 0.0)                        # the ORN rates (left, right) the drive was last built with
         self._rng = np.random.default_rng(seed + 1)     # the local search's side switches
         self.lab_rates = {k: 0.0 for k in LAB_RATE_GROUPS if len(self.group(k))}   # visual inputs the lab reads
         # all output groups are read with one call per chunk (on a GPU every read waits for the device)
@@ -251,6 +281,7 @@ class Brain:
         self.phero_steer = 0.0     # bilateral tropotaxis steering bias (Hz)
         self.phero_drive = 0.0     # attractive pheromone intensity (0..1)
         self.phero_repel = 0.0     # repulsive warning/border intensity (0..1)
+        self.odor_delta = 0.0      # attractant concentration, right antenna minus left
         self.at_target = 0.0       # 1.0 if arrived at attractive source
         self.sugar = 0.0           # 0..1: food under the fly (taste contact)
         self.feed_level = 0.0      # 0..1: how far the proboscis is out (MN9 rate / mn9_full_hz); the GUI eats by it
@@ -299,7 +330,8 @@ class Brain:
         self._last_cw: np.ndarray | None = None
 
         # Pre-allocate static drive buffers for cursor and current inputs
-        cursor_groups = ("LOOM", "RETREAT_IN", "VIS", "BULK_DRIVE", "LC10_R", "LC10_L", "TOUCH_R", "TOUCH_L", "SUGAR")
+        cursor_groups = ("LOOM", "RETREAT_IN", "VIS", "BULK_DRIVE", "LC10_R", "LC10_L", "TOUCH_R", "TOUCH_L", "SUGAR",
+                         "ODOR_L", "ODOR_R")
         c_parts = [self.group(k) for k in cursor_groups]
         self._cursor_fi = np.concatenate(c_parts).astype(np.int32) if c_parts else np.zeros(0, np.int32)
         self._cursor_slices = []
@@ -462,7 +494,8 @@ class Brain:
     def set_stimulus(self, dist: float, closing_speed: float, walk_bias: float | None = None,
                      skittish: float | None = None, bearing: float | None = None, touch: float = 0.0,
                      phero_steer: float = 0.0, phero_drive: float = 0.0, phero_repel: float = 0.0,
-                     at_target: float = 0.0, hunger: float = 1.0, wall_bump: float = 0.0, sugar: float = 0.0):
+                     at_target: float = 0.0, hunger: float = 1.0, wall_bump: float = 0.0, sugar: float = 0.0,
+                     odor_delta: float = 0.0):
         """dist: px to the cursor; closing_speed: px/s, positive when the cursor approaches;
         bearing: angle of the cursor relative to the fly's heading, radians, positive to the right.
         touch: 0..1, the cursor is on the fly (hover); it touches the side given by the bearing.
@@ -476,7 +509,10 @@ class Brain:
         at_target: 1.0 when arrived at target/nectar source.
         hunger: 0..1 internal metabolic hunger drive.
         wall_bump: 1.0 when colliding with screen boundaries (mechanosensory pain).
-        sugar: 0..1, food under the fly: drives the sugar receptor neurons (x hunger gain), hence MN9 and feeding."""
+        sugar: 0..1, food under the fly: drives the sugar receptor neurons (x hunger gain), hence MN9 and feeding.
+        odor_delta: the attractant's concentration at the right antenna minus at the left one (pheromone.smell); with an
+            olfactory pathway the two antennae's ORNs are driven from phero_drive -/+ odor_delta / 2, and the attractant's
+            share of phero_steer (ATTRACT_STEER_HZ x odor_delta) is taken off the LC10 steering."""
         self._stim = (dist, closing_speed, self._stim[2] if bearing is None else bearing, touch)
         if walk_bias is not None:
             self.walk_bias = walk_bias
@@ -489,6 +525,7 @@ class Brain:
         self.hunger = float(hunger)
         self.wall_bump = float(wall_bump)
         self.sugar = max(0.0, min(1.0, float(sugar)))
+        self.odor_delta = float(odor_delta)
         self._drive()
 
     def _drive(self):
@@ -509,6 +546,14 @@ class Brain:
                        SEARCH_WALK_LEVEL if search_hz > 0.0 else 0.0)
         effective_walk_bias = min(1.0, (walk_src + 0.4 * desire) * (1.0 + 0.3 * self.arousal))
         sugar_hz = s.sugar_hz * self.sugar * sugar_gain(h) if self.taste else 0.0
+        phero_steer = self.phero_steer
+        orn_l = orn_r = 0.0
+        if self.smell:                                   # the antennae's ORNs; only the repellent part steers via LC10
+            d = 0.5 * self.odor_delta
+            orn_l = s.orn_max_hz * orn_level((self.phero_drive - d) * h, s.orn_half)
+            orn_r = s.orn_max_hz * orn_level((self.phero_drive + d) * h, s.orn_half)
+            phero_steer -= ATTRACT_STEER_HZ * self.odor_delta
+        self.orn_hz = (orn_l, orn_r)
 
         # Food odor / attractant suppresses predator looming escape (GF), backward retreat (MDN) and freezing in
         # proportion to its strength (odor_gate); a satiated fly (eff_phero_drive == 0) keeps normal predator avoidance
@@ -534,7 +579,7 @@ class Brain:
         # learned valence scales it: toward what the fly learned to want, away from what it learned to fear
         gain = min(2.5, max(-1.0, 1.0 + 1.5 * v))
         cur_r, cur_l = steer * max(0.0, side), steer * max(0.0, -side)
-        eff_phero_steer = self.phero_steer * h
+        eff_phero_steer = phero_steer * h
         ph_r, ph_l = max(0.0, eff_phero_steer), max(0.0, -eff_phero_steer)
         if gain < 0:                                     # aversion reverses the turn: the opposite side is driven
             cur_r, cur_l, ph_r, ph_l = cur_l, cur_r, ph_l, ph_r
@@ -563,7 +608,8 @@ class Brain:
                     fr.append(np.full(len(rest), min(add, LC10_MAX_HZ), dtype=np.float32))
             cursor_drive = (("VIS", vis), ("BULK_DRIVE", s.bulk_hz), ("SUGAR", sugar_hz))
             touch_drive = (("TOUCH_R", s.touch_hz * touch * (side >= 0)), ("TOUCH_L", s.touch_hz * touch * (side < 0)))
-            for name, hz in cursor_drive + touch_drive:      # touch is mechanical, not visual: it always comes from the cursor
+            odor_drive = (("ODOR_L", orn_l), ("ODOR_R", orn_r))
+            for name, hz in cursor_drive + touch_drive + odor_drive:   # touch and smell are not visual: always here
                 idx = self.group(name)
                 fi.append(idx)
                 fr.append(np.full(len(idx), hz, dtype=np.float32))
@@ -576,6 +622,7 @@ class Brain:
                 s.touch_hz * touch * (side >= 0),
                 s.touch_hz * touch * (side < 0),
                 sugar_hz,
+                orn_l, orn_r,
             )
             for sl, r in zip(self._cursor_slices, rates_tuple):
                 self._cursor_fr[sl] = r
