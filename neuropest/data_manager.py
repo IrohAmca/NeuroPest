@@ -69,7 +69,7 @@ def download_file(
 
     req = urllib.request.Request(
         url,
-        headers={"User-Agent": "NeuroPest-Downloader/0.7.0 (https://github.com/IrohAmca/NeuroPest)"},
+        headers={"User-Agent": "NeuroPest-Downloader/0.8.0 (https://github.com/IrohAmca/NeuroPest)"},
     )
 
     downloaded = 0
