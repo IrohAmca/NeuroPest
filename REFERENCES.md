@@ -163,6 +163,12 @@ Energy depletion and satiety modulate sensory salience, dopamine release, and mo
   **Cell**, 139(2), 416–427. [doi:10.1016/j.cell.2009.08.035](https://doi.org/10.1016/j.cell.2009.08.035)  
   *Implementation:* Hunger state strictly gates PAM dopamine reward neurons and enhances sensitivity to food-related cues. Satiated feeding produces no associative reinforcement, while starved states trigger DNp09-driven foraging hyperactivity (`neuropest/metabolism.py`, `neuropest/brain.py`).
 
+- **Lee, G., & Park, J. H. (2004)** *Hemolymph sugar homeostasis and starvation-induced hyperactivity affected by genetic manipulations of the adipokinetic hormone-encoding gene in Drosophila melanogaster.* **Genetics**, 167(1), 311–323. [doi:10.1534/genetics.167.1.311](https://doi.org/10.1534/genetics.167.1.311)
+- **Yang, Z., Yu, Y., Zhang, V., Tian, Y., Qi, W., & Wang, L. (2015)** *Octopamine mediates starvation-induced hyperactivity in adult Drosophila.* **PNAS**, 112(16), 5219–5224. [doi:10.1073/pnas.1417838112](https://doi.org/10.1073/pnas.1417838112)  
+  *Implementation (these two):* no constant walking drive; spontaneous walking bouts whose length and frequency grow with hunger (`brain.ACTIVITY_REF`, `BOUT_*`, designed).
+- **Álvarez-Salvado, E., et al. (2018)** *Elementary sensory-motor transformations underlying olfactory navigation in walking fruit-flies.* **eLife**, 7, e37815. [doi:10.7554/eLife.37815](https://doi.org/10.7554/eLife.37815)  
+  *Implementation:* a food odor sets a hungry fly walking; losing the plume starts a short search of loops toward the side it was last stronger on (`brain.ODOR_*`, designed, on the DNa02 drive).
+
 - **Inagaki, H. K., et al. (2012)**  
   *Visualizing neuromodulation in vivo: TANGO-mapping of dopamine signaling reveals appetite control of sugar sensing.*  
   **Cell**, 148(3), 583–595. [doi:10.1016/j.cell.2011.12.022](https://doi.org/10.1016/j.cell.2011.12.022)  

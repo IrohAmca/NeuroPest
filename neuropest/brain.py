@@ -142,6 +142,34 @@ SEARCH_SIDE_DEADBAND = 0.15         # rad: the side follows the meal spot's bear
 SEARCH_MIN_HUNGER = 0.15            # a fly this sated does not search
 FEED_SMOOTH_MS = 400.0              # the feeding decision reads MN9 (two neurons, noisy) smoothed like the walking one
 
+# What sets the fly walking [DESIGNED: the model makes no spontaneous activity, and food odor does not reach the walking
+# neurons through its own olfactory pathway in this engine (hareket-mimarisi-plani.md)]. No constant drive: every source
+# below enters as drive on P9 (DNp09, the walking command neurons), and the largest one counts.
+# - Spontaneous bouts: the fly alternates rest and walking bouts; hunger makes the bouts longer and the rests shorter
+#   (starvation-induced hyperactivity: Lee & Park 2004; Yang et al. 2015). The Motility setting (walk_bias) scales how
+#   often a bout starts (ACTIVITY_REF = the default 0.65; 0: no spontaneous walking at all).
+# - Food odor: a clear odor x hunger drives walking whatever the bouts do, so the odor is what moves a hungry fly near food
+#   (flies speed up in an odor: Alvarez-Salvado et al. 2018).
+# - Losing the odor: when odor x hunger falls well under its recent peak (the fly left the plume) it searches: loops
+#   toward the side the odor was last stronger on, on the same DNa02 drive as the local search after a meal, for 3-10 s
+#   (longer the hungrier), until it smells the plume again (Alvarez-Salvado et al. 2018: slowing, turning and searching
+#   after the odor ends). The fly finds the source by losing it and turning back, as its antennae are too close for the
+#   left-right difference (LC10 input, kept) to steer it well.
+# - A search walks: while one lasts the walking drive is SEARCH_WALK_LEVEL (loops, not turning on the spot).
+ACTIVITY_REF = 0.65
+BOUT_LEVEL = 0.65                   # walking drive during a spontaneous bout (P9 ~6 Hz on the 15k tier: it walks)
+BOUT_WALK_S = (2.0, 8.0)            # mean length of a bout: sated, starved
+BOUT_REST_S = (20.0, 3.0)           # mean rest between bouts: sated, starved (divided by the activity setting)
+ODOR_WALK_LEVEL = 0.75              # walking drive at a clear food odor ...
+ODOR_WALK_FULL = 0.1                # ... from this odor x hunger on (proportionally below it)
+SEARCH_WALK_LEVEL = 0.7
+ODOR_SMOOTH_MS = 300.0              # odor x hunger as the loss detector reads it
+ODOR_PEAK_TAU_MS = 3000.0           # its recent peak fades this fast
+ODOR_LOSS_MIN = 0.05                # a peak at least this strong ...
+ODOR_LOSS_RATIO = 0.5               # ... and the odor under this share of it: the plume is lost
+ODOR_LOSS_S = (3.0, 10.0)           # the search after losing it: sated, starved
+ODOR_REFOUND = 1.5                  # the odor back over this multiple of where it was lost ends that search
+
 # Toy circuit: calibrated with tools/calibrate.py
 TOY = BrainSpec(loom_gain=10.0, loom_max_hz=250.0, vis_max_hz=60.0, rest_drive=(500.0, 3.0), bulk_hz=150.0,
                gf_event_spikes=0)
@@ -232,6 +260,12 @@ class Brain:
         self._search_switch_ms = 0.0
         self.meal_dist, self.meal_bearing = 1e6, 0.0   # where the last meal was (set_meal_spot)
         self._search_hz = 0.0                          # the forced DNa02 rate the drive was last built with
+        self._search_kind = ""                         # "meal" (after eating) or "odor" (the plume was lost)
+        self._bout = False                             # in a spontaneous walking bout (ACTIVITY_REF, BOUT_*)
+        self._bout_ms = 0.0                            # time left in this bout or rest (drawn when it ends)
+        self._odor_s = self._odor_peak = 0.0           # odor x hunger, smoothed, and its recent peak
+        self._odor_side = 1                            # the side the odor was last stronger on
+        self._odor_lost_at = 0.0
         self.hunger = 1.0          # internal hunger drive in [0, 1]
         self.flight_urge = 0.0     # accumulated motivation to fly to a food source (foraging flight, see GOAL_*)
         self.wall_bump = 0.0       # mechanical wall collision impact [0, 1]
@@ -389,7 +423,7 @@ class Brain:
         """Where the last meal was: px to it (>= 1e6: unknown) and its bearing (rad, + to the right). The local search
         turns toward it (the path integrator's stand-in, see SEARCH_*), so its loops keep coming back around the place."""
         self.meal_dist, self.meal_bearing = float(dist), float(bearing)
-        if self._search_ms > 0.0 and self.meal_dist < 1e5:
+        if self._search_ms > 0.0 and self._search_kind == "meal" and self.meal_dist < 1e5:
             side = 1 if self.meal_bearing > 0.0 else -1
             if side != self._search_side and abs(self.meal_bearing) > SEARCH_SIDE_DEADBAND:
                 self._search_side = side
@@ -470,8 +504,10 @@ class Brain:
         eff_phero_drive = self.phero_drive * h
         search_hz = self._search_rate()                  # local search after a meal (SEARCH_*)
         self._search_hz = search_hz
-        effective_walk_bias = min(1.0, (self.walk_bias + 0.65 * eff_phero_drive + 0.4 * desire)
-                                  * (1.0 + 0.3 * self.arousal))
+        # walking: the largest of a spontaneous bout, the food odor and a search (see ACTIVITY_REF), plus learned desire
+        walk_src = max(BOUT_LEVEL if self._bout else 0.0, ODOR_WALK_LEVEL * min(1.0, eff_phero_drive / ODOR_WALK_FULL),
+                       SEARCH_WALK_LEVEL if search_hz > 0.0 else 0.0)
+        effective_walk_bias = min(1.0, (walk_src + 0.4 * desire) * (1.0 + 0.3 * self.arousal))
         sugar_hz = s.sugar_hz * self.sugar * sugar_gain(h) if self.taste else 0.0
 
         # Food odor / attractant suppresses predator looming escape (GF), backward retreat (MDN) and freezing in
@@ -633,8 +669,20 @@ class Brain:
         if h < SEARCH_MIN_HUNGER or self.lab_on or not len(self.group("DNa02_L")) or not len(self.group("DNa02_R")):
             return
         self._search_total = self._search_ms = SEARCH_MAX_MS * h
+        self._search_kind = "meal"
         self._search_side = 1 if self._rng.random() < 0.5 else -1     # the spot is under the fly: either way round
         self._search_switch_ms = float(self._rng.uniform(*SEARCH_SWITCH_MS))
+        self._drive()
+
+    def _start_odor_search(self) -> None:
+        """The plume was lost: loops toward the side it was last stronger on, 3-10 s (ODOR_LOSS_*)."""
+        h = self.hunger
+        if self.lab_on or not len(self.group("DNa02_L")) or not len(self.group("DNa02_R")):
+            return
+        lo, hi = ODOR_LOSS_S
+        self._search_total = self._search_ms = 1000.0 * (lo + (hi - lo) * min(1.0, max(0.0, h)))
+        self._search_kind, self._search_side = "odor", self._odor_side
+        self._odor_lost_at = self._odor_s
         self._drive()
 
     def _stop_search(self) -> None:
@@ -642,12 +690,41 @@ class Brain:
             self._search_ms = 0.0
             self._drive()
 
+    def _activity_timers(self, ms: float) -> None:
+        """Spontaneous bouts, and the odor-loss detector (ACTIVITY_REF, BOUT_*, ODOR_*)."""
+        h = min(1.0, max(0.0, self.hunger))
+        activity = self.walk_bias / ACTIVITY_REF
+        self._bout_ms -= ms
+        if self._bout_ms <= 0.0:
+            if activity <= 0.0:
+                self._bout, self._bout_ms = False, 500.0           # no spontaneous walking: look again later
+            else:
+                self._bout = not self._bout
+                walk = BOUT_WALK_S[0] + (BOUT_WALK_S[1] - BOUT_WALK_S[0]) * h
+                rest = (BOUT_REST_S[0] + (BOUT_REST_S[1] - BOUT_REST_S[0]) * h) / activity
+                self._bout_ms = 1000.0 * float(self._rng.exponential(walk if self._bout else rest))
+            self._drive()
+        s_now = self.phero_drive * self.hunger
+        self._odor_s += (1.0 - math.exp(-ms / ODOR_SMOOTH_MS)) * (s_now - self._odor_s)
+        self._odor_peak = max(self._odor_s, self._odor_peak * math.exp(-ms / ODOR_PEAK_TAU_MS))
+        if self._odor_s > ODOR_LOSS_MIN * ODOR_LOSS_RATIO and abs(self.phero_steer) > 0.5:
+            self._odor_side = 1 if self.phero_steer > 0.0 else -1
+        if self._search_ms > 0.0:
+            if self._search_kind == "odor" and self._odor_s > ODOR_REFOUND * self._odor_lost_at + 0.01:
+                self._stop_search()                                 # back in the plume
+        elif (self._odor_peak > ODOR_LOSS_MIN and self._odor_s < ODOR_LOSS_RATIO * self._odor_peak
+              and self.state in (WALK, STAND)):
+            self._start_odor_search()
+            self._odor_peak = self._odor_s                          # one search per loss
+
     def _tick_timers(self, ms: float) -> None:
-        """The lab's pulse (it ends by itself) and its tail, the sandbox cues, the local search."""
+        """The lab's pulse (it ends by itself) and its tail, the sandbox cues, the searches, the spontaneous bouts."""
+        self._activity_timers(ms)
         if self._search_ms > 0.0:
             self._search_ms = max(0.0, self._search_ms - ms)
             self._search_switch_ms -= ms
-            flip = self._search_switch_ms <= 0.0 and self.meal_dist >= 1e5     # a known spot sets the side (set_meal_spot)
+            # after a meal without a known spot the side switches now and then; a known spot sets it (set_meal_spot)
+            flip = self._search_kind == "meal" and self._search_switch_ms <= 0.0 and self.meal_dist >= 1e5
             if flip:
                 self._search_side = -self._search_side
                 self._search_switch_ms = float(self._rng.uniform(*SEARCH_SWITCH_MS))
