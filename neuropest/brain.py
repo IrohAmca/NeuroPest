@@ -1,7 +1,8 @@
 """Glue between the outside world and the engine.
 
-stimulus (cursor) -> Poisson drive on named neuron groups
-spikes of output groups -> smoothed rates -> behavior state (stand / walk / fly / retreat / groom / freeze) and a steering signal
+stimulus (cursor, food under the fly) -> Poisson drive on named neuron groups
+spikes of output groups -> smoothed rates -> behavior state (stand / walk / fly / retreat / groom / freeze / feed) and a
+steering signal
 
 Stimulus-to-rate maps live in a `BrainSpec`, one per circuit kind, because each circuit has its
 own units: the toy circuit's weights are arbitrary, the FlyWire one is calibrated against the
@@ -18,7 +19,7 @@ import numpy as np
 
 from .engine import Network, create_engine
 from .mushroom import MushroomBody
-from .states import FLY, FREEZE, GROOM, LAB_GROUPS, RETREAT, STAND, STATES, WALK  # noqa: F401  (re-exported)
+from .states import FEED, FLY, FREEZE, GROOM, LAB_GROUPS, LC10_MAX_HZ, RETREAT, STAND, STATES, WALK  # noqa: F401
 
 
 @dataclass(frozen=True)
@@ -43,6 +44,12 @@ class BrainSpec:
     mdn_off_hz: float = 2.0
     groom_on_hz: float = 8.0          # mean rate of the grooming DNs (aDN1, aDN2)
     groom_off_hz: float = 3.0
+    sugar_hz: float = 0.0             # SUGAR drive (labellar sugar receptor neurons) on food at full hunger; 0: the circuit
+                                      # has no taste pathway and the sugar input itself decides (see Brain._feed_signal)
+    feed_on_hz: float = 15.0          # mean MN9 rate (proboscis motor neuron) that starts feeding (FEED)
+    feed_off_hz: float = 5.0
+    min_feed_ms: float = 600.0
+    mn9_full_hz: float = 60.0         # MN9 rate read as the proboscis fully out (Brain.feed_level 1)
     walk_min_hz: float = 3.0
     walk_on_hz: float = 3.5           # C1: hysteresis threshold to initiate walk
     walk_off_hz: float = 2.0          # C1: hysteresis threshold to stop walk
@@ -104,6 +111,37 @@ GOAL_REFRACTORY_MS = 3000.0
 GOAL_MEAL_REFRACTORY_MS = 8000.0
 CUE_PULSE_MS = 800.0        # a learning-sandbox cue is shown to the mushroom body this long
 
+# Taste and feeding. Food under the fly drives the labellar sugar receptor neurons (SUGAR); in the connectome they drive
+# the proboscis motor neuron MN9 (Shiu et al. 2024), and while MN9 fires the fly feeds (FEED): it stands with the proboscis
+# out and eats (the GUI eats in proportion to feed_level). Hunger raises the sugar neurons' sensitivity (Inagaki et al.
+# 2012) [DESIGNED: the shape of sugar_gain]; so a fly that has eaten enough stops by itself: its MN9 falls below the
+# feeding threshold while food is left. Standing still while MN9 fires is the decoder's [DESIGNED] stand-in for the walk-OFF
+# halt of the animal (Sapkal et al. 2024: sugar recruits the GABAergic FG neurons, which inhibit the walking DNs below P9);
+# in this model sugar does not reach P9, the neuron the decoder reads for walking.
+SUGAR_GAIN_EXP = 0.7
+
+
+def sugar_gain(hunger: float) -> float:
+    """Sensitivity of the sugar receptor neurons, 0 (sated) .. 1 (starved)."""
+    return max(0.0, min(1.0, float(hunger))) ** SUGAR_GAIN_EXP
+
+
+# Local search after a meal [DESIGNED]: a fly that leaves food (eaten up, or it walked off) walks loops around the place,
+# returning to it, for longer the hungrier it is (Kim & Dickinson 2017; Corfas, Sharma & Dickinson 2019: sugar receptor
+# neurons trigger it; Behbahani et al. 2021: the path integrator is reset at the food). Here a forced drive on the DNa02 of
+# one side (the steering neurons fly.py turns by) for the duration: on the side the meal spot lies (the GUI gives its
+# bearing, set_meal_spot: the stand-in for the path integrator, the same kind of shortcut as the goal of a foraging
+# flight), so the fly circles the place; strong at first (tight circles, ~80 px) and fading (wider ones: the search spreads
+# out). Without a known spot the side switches now and then (figure eights). The walking drive stays the user's: raised
+# to its maximum it drives P9 to ~20 Hz, and a one-sided DNa02 / LC10 input then leaves a small loop that keeps DNa02
+# firing after the input ends (measured on the 15,000 tier). Escape, retreat and freezing end the search; the lab pauses it.
+SEARCH_MAX_MS = 40_000.0            # at full hunger when the meal ends; scales with the hunger left
+SEARCH_DNA02_HZ = (70.0, 30.0)      # forced DNa02 rate on the turning side: at the start, at the end
+SEARCH_SWITCH_MS = (4_000.0, 10_000.0)   # without a meal spot the turning side changes after a random time in this range
+SEARCH_SIDE_DEADBAND = 0.15         # rad: the side follows the meal spot's bearing once it is this far off the heading
+SEARCH_MIN_HUNGER = 0.15            # a fly this sated does not search
+FEED_SMOOTH_MS = 400.0              # the feeding decision reads MN9 (two neurons, noisy) smoothed like the walking one
+
 # Toy circuit: calibrated with tools/calibrate.py
 TOY = BrainSpec(loom_gain=10.0, loom_max_hz=250.0, vis_max_hz=60.0, rest_drive=(500.0, 3.0), bulk_hz=150.0,
                gf_event_spikes=0)
@@ -118,7 +156,7 @@ TOY = BrainSpec(loom_gain=10.0, loom_max_hz=250.0, vis_max_hz=60.0, rest_drive=(
 # So retreat input saturates at 20 Hz (MDN ~15 Hz), and take-off wins only when the looming input is
 # strong: retreat from about 2 /s of expansion, take-off from about 7 /s.
 FLYWIRE = BrainSpec(loom_gain=3.0, loom_max_hz=150.0, retreat_gain=8.0, retreat_max_hz=20.0,
-                    steer_max_hz=20.0, touch_hz=120.0, freeze_on=FREEZE_ON)
+                    steer_max_hz=20.0, touch_hz=120.0, freeze_on=FREEZE_ON, sugar_hz=120.0)
 
 
 def spec_for(net: Network) -> BrainSpec:
@@ -136,7 +174,10 @@ class Brain:
         if "RETREAT_IN" in self.g:
             self.g.setdefault("LPC1", self.g["RETREAT_IN"])
         self.ema_ms = ema_ms
-        self.rates = {k: 0.0 for k in ("GF", "WALK", "REST", "MDN", "DNa02_L", "DNa02_R", "GROOM")}
+        self.rates = {k: 0.0 for k in ("GF", "WALK", "REST", "MDN", "DNa02_L", "DNa02_R", "GROOM", "MN9")}
+        # the taste pathway runs in the network when it has both ends; else the sugar input decides (_feed_signal)
+        self.taste = bool(len(self.group("SUGAR")) and len(self.group("MN9")) and self.spec.sugar_hz > 0)
+        self._rng = np.random.default_rng(seed + 1)     # the local search's side switches
         self.lab_rates = {k: 0.0 for k in LAB_RATE_GROUPS if len(self.group(k))}   # visual inputs the lab reads
         # all output groups are read with one call per chunk (on a GPU every read waits for the device)
         self._mon_keys = list(self.rates) + list(self.lab_rates)
@@ -183,6 +224,14 @@ class Brain:
         self.phero_drive = 0.0     # attractive pheromone intensity (0..1)
         self.phero_repel = 0.0     # repulsive warning/border intensity (0..1)
         self.at_target = 0.0       # 1.0 if arrived at attractive source
+        self.sugar = 0.0           # 0..1: food under the fly (taste contact)
+        self.feed_level = 0.0      # 0..1: how far the proboscis is out (MN9 rate / mn9_full_hz); the GUI eats by it
+        self.mn9_smoothed = 0.0    # MN9 rate smoothed over FEED_SMOOTH_MS: what the feeding decision reads
+        self._search_ms = self._search_total = 0.0     # local search after a meal: time left, its whole length
+        self._search_side = 1                          # +1: turning right (DNa02_R driven), -1: left
+        self._search_switch_ms = 0.0
+        self.meal_dist, self.meal_bearing = 1e6, 0.0   # where the last meal was (set_meal_spot)
+        self._search_hz = 0.0                          # the forced DNa02 rate the drive was last built with
         self.hunger = 1.0          # internal hunger drive in [0, 1]
         self.flight_urge = 0.0     # accumulated motivation to fly to a food source (foraging flight, see GOAL_*)
         self.wall_bump = 0.0       # mechanical wall collision impact [0, 1]
@@ -216,7 +265,7 @@ class Brain:
         self._last_cw: np.ndarray | None = None
 
         # Pre-allocate static drive buffers for cursor and current inputs
-        cursor_groups = ("LOOM", "RETREAT_IN", "VIS", "BULK_DRIVE", "LC10_R", "LC10_L", "TOUCH_R", "TOUCH_L")
+        cursor_groups = ("LOOM", "RETREAT_IN", "VIS", "BULK_DRIVE", "LC10_R", "LC10_L", "TOUCH_R", "TOUCH_L", "SUGAR")
         c_parts = [self.group(k) for k in cursor_groups]
         self._cursor_fi = np.concatenate(c_parts).astype(np.int32) if c_parts else np.zeros(0, np.int32)
         self._cursor_slices = []
@@ -336,6 +385,16 @@ class Brain:
         to the right), odor = that source's own odor at the fly (0: no goal). Stored only; the decision reads it."""
         self.goal_gap, self.goal_bearing, self.goal_odor = float(gap), float(bearing), max(0.0, float(odor))
 
+    def set_meal_spot(self, dist: float, bearing: float) -> None:
+        """Where the last meal was: px to it (>= 1e6: unknown) and its bearing (rad, + to the right). The local search
+        turns toward it (the path integrator's stand-in, see SEARCH_*), so its loops keep coming back around the place."""
+        self.meal_dist, self.meal_bearing = float(dist), float(bearing)
+        if self._search_ms > 0.0 and self.meal_dist < 1e5:
+            side = 1 if self.meal_bearing > 0.0 else -1
+            if side != self._search_side and abs(self.meal_bearing) > SEARCH_SIDE_DEADBAND:
+                self._search_side = side
+                self._drive()
+
     def note_fed(self, n: int = 1) -> None:
         """n meals since the last call (a counter in the shared input, so none is lost): ends a foraging flight and is
         the feeding reward even when the one-frame at_target was missed."""
@@ -369,7 +428,7 @@ class Brain:
     def set_stimulus(self, dist: float, closing_speed: float, walk_bias: float | None = None,
                      skittish: float | None = None, bearing: float | None = None, touch: float = 0.0,
                      phero_steer: float = 0.0, phero_drive: float = 0.0, phero_repel: float = 0.0,
-                     at_target: float = 0.0, hunger: float = 1.0, wall_bump: float = 0.0):
+                     at_target: float = 0.0, hunger: float = 1.0, wall_bump: float = 0.0, sugar: float = 0.0):
         """dist: px to the cursor; closing_speed: px/s, positive when the cursor approaches;
         bearing: angle of the cursor relative to the fly's heading, radians, positive to the right.
         touch: 0..1, the cursor is on the fly (hover); it touches the side given by the bearing.
@@ -382,7 +441,8 @@ class Brain:
         phero_repel: repulsive warning/border intensity (0..1).
         at_target: 1.0 when arrived at target/nectar source.
         hunger: 0..1 internal metabolic hunger drive.
-        wall_bump: 1.0 when colliding with screen boundaries (mechanosensory pain)."""
+        wall_bump: 1.0 when colliding with screen boundaries (mechanosensory pain).
+        sugar: 0..1, food under the fly: drives the sugar receptor neurons (x hunger gain), hence MN9 and feeding."""
         self._stim = (dist, closing_speed, self._stim[2] if bearing is None else bearing, touch)
         if walk_bias is not None:
             self.walk_bias = walk_bias
@@ -394,6 +454,7 @@ class Brain:
         self.at_target = at_target
         self.hunger = float(hunger)
         self.wall_bump = float(wall_bump)
+        self.sugar = max(0.0, min(1.0, float(sugar)))
         self._drive()
 
     def _drive(self):
@@ -407,8 +468,11 @@ class Brain:
 
         # Hunger gates olfactory sensitivity
         eff_phero_drive = self.phero_drive * h
+        search_hz = self._search_rate()                  # local search after a meal (SEARCH_*)
+        self._search_hz = search_hz
         effective_walk_bias = min(1.0, (self.walk_bias + 0.65 * eff_phero_drive + 0.4 * desire)
                                   * (1.0 + 0.3 * self.arousal))
+        sugar_hz = s.sugar_hz * self.sugar * sugar_gain(h) if self.taste else 0.0
 
         # Food odor / attractant suppresses predator looming escape (GF), backward retreat (MDN) and freezing in
         # proportion to its strength (odor_gate); a satiated fly (eff_phero_drive == 0) keeps normal predator avoidance
@@ -447,10 +511,21 @@ class Brain:
             self._vision_expansion if self._vision is not None
             else max(0.0, closing) / max(dist, 30.0)) * effective_skittish * gate
         if self._vision is not None:                     # the image replaces the visual part of the cursor drive
-            fi = [self._vision[0]]
-            fr = [self._vision[1]]                       # already odor-gated through the detector gain (runner._Eye)
-            cursor_drive = (("VIS", vis), ("BULK_DRIVE", s.bulk_hz),
-                            ("LC10_R", ph_r), ("LC10_L", ph_l))
+            vi, vr = self._vision[0], self._vision[1].copy()   # already odor-gated through the detector gain (runner._Eye)
+            fi, fr = [vi], [vr]
+            # the odor's bearing goes onto the same LC10 cells the image drives: one entry per neuron (a neuron listed
+            # twice fires twice per step on the CPU engines, once on the GPU), the sum within LC10_MAX_HZ
+            for name, add in (("LC10_R", ph_r), ("LC10_L", ph_l)):
+                grp = self.group(name)
+                if not len(grp):
+                    continue
+                seen = np.isin(vi, grp)
+                vr[seen] = np.minimum(vr[seen] + add, LC10_MAX_HZ)
+                if add > 0.0:
+                    rest = grp[~np.isin(grp, vi)]
+                    fi.append(rest)
+                    fr.append(np.full(len(rest), min(add, LC10_MAX_HZ), dtype=np.float32))
+            cursor_drive = (("VIS", vis), ("BULK_DRIVE", s.bulk_hz), ("SUGAR", sugar_hz))
             touch_drive = (("TOUCH_R", s.touch_hz * touch * (side >= 0)), ("TOUCH_L", s.touch_hz * touch * (side < 0)))
             for name, hz in cursor_drive + touch_drive:      # touch is mechanical, not visual: it always comes from the cursor
                 idx = self.group(name)
@@ -461,14 +536,19 @@ class Brain:
         else:
             rates_tuple = (
                 loom, retreat, vis, s.bulk_hz,
-                cur_r + ph_r, cur_l + ph_l,
+                min(LC10_MAX_HZ, cur_r + ph_r), min(LC10_MAX_HZ, cur_l + ph_l),    # within the runaway-safe range
                 s.touch_hz * touch * (side >= 0),
-                s.touch_hz * touch * (side < 0)
+                s.touch_hz * touch * (side < 0),
+                sugar_hz,
             )
             for sl, r in zip(self._cursor_slices, rates_tuple):
                 self._cursor_fr[sl] = r
             new_fi = self._cursor_fi
             new_fr = self._cursor_fr
+        if search_hz > 0.0:                              # the local search's turn, on the DNa02 of one side
+            grp = self.group("DNa02_R" if self._search_side > 0 else "DNa02_L")
+            new_fi = np.concatenate([new_fi, grp]).astype(np.int32)
+            new_fr = np.concatenate([new_fr, np.full(len(grp), search_hz, dtype=np.float32)])
         if len(self._lab_fi):                            # the lab's stimulation on top
             new_fi, new_fr = self._merge_lab(new_fi, new_fr)
 
@@ -518,6 +598,10 @@ class Brain:
                 rates[k] += a * (inst - rates[k])
         self.loom += a * (self._loom_in - self.loom)
         self._track_gf_spikes(ms, gf_spikes)
+        if self.taste:
+            self.feed_level = min(1.0, self.rates["MN9"] / self.spec.mn9_full_hz)
+        else:                                            # no MN9 in this circuit: the sugar input itself (see _decode)
+            self.feed_level = min(1.0, max(0.0, (self._feed_signal() - 0.3) / 0.6)) if self.state == FEED else 0.0
         self._tick_timers(ms)
         # B3: decay defensive arousal
         if self.arousal > 1e-4:
@@ -531,8 +615,44 @@ class Brain:
             self._learn(ms)
         return self.state
 
+    # ---------------------------------------------------------------- feeding, local search
+    def _feed_signal(self) -> float:
+        """Taste drive 0..1: food under the fly x the hunger-raised sensitivity of the sugar neurons."""
+        return self.sugar * sugar_gain(self.hunger)
+
+    def _search_rate(self) -> float:
+        """Forced DNa02 rate (Hz) of the local search now, 0 when there is none (or the lab is on)."""
+        if self._search_ms <= 0.0 or self.lab_on:
+            return 0.0
+        hi, lo = SEARCH_DNA02_HZ
+        return lo + (hi - lo) * self._search_ms / max(self._search_total, 1.0)
+
+    def _start_search(self) -> None:
+        """A meal just ended: loops around the place, for longer the hungrier the fly still is (SEARCH_*)."""
+        h = self.hunger
+        if h < SEARCH_MIN_HUNGER or self.lab_on or not len(self.group("DNa02_L")) or not len(self.group("DNa02_R")):
+            return
+        self._search_total = self._search_ms = SEARCH_MAX_MS * h
+        self._search_side = 1 if self._rng.random() < 0.5 else -1     # the spot is under the fly: either way round
+        self._search_switch_ms = float(self._rng.uniform(*SEARCH_SWITCH_MS))
+        self._drive()
+
+    def _stop_search(self) -> None:
+        if self._search_ms > 0.0:
+            self._search_ms = 0.0
+            self._drive()
+
     def _tick_timers(self, ms: float) -> None:
-        """The lab's pulse (it ends by itself) and its tail, the sandbox cues."""
+        """The lab's pulse (it ends by itself) and its tail, the sandbox cues, the local search."""
+        if self._search_ms > 0.0:
+            self._search_ms = max(0.0, self._search_ms - ms)
+            self._search_switch_ms -= ms
+            flip = self._search_switch_ms <= 0.0 and self.meal_dist >= 1e5     # a known spot sets the side (set_meal_spot)
+            if flip:
+                self._search_side = -self._search_side
+                self._search_switch_ms = float(self._rng.uniform(*SEARCH_SWITCH_MS))
+            if flip or self._search_ms <= 0.0 or abs(self._search_rate() - self._search_hz) > 2.0:
+                self._drive()
         if self._lab_left_ms > 0.0:
             self._lab_left_ms -= ms
             if self._lab_left_ms <= 0.0:
@@ -605,8 +725,8 @@ class Brain:
             self.gf_window -= h.popleft()[1]
 
     def _decode(self, ms: float):
-        """Priority: take-off, retreat, freeze, grooming, then walk / stand (a higher one interrupts a lower one at
-        once; leaving a state needs its hysteresis and minimum duration)."""
+        """Priority: take-off, retreat, freeze, feeding, grooming, then walk / stand (a higher one interrupts a lower one
+        at once; leaving a state needs its hysteresis and minimum duration)."""
         s = self.spec
         gf, mdn = self.rates["GF"], self.rates["MDN"]
         walk, rest = self.rates["WALK"], self.rates["REST"]
@@ -617,6 +737,12 @@ class Brain:
         retreat_on = mdn > s.mdn_on_hz
         freeze_on = s.freeze_on > 0 and self.loom > s.freeze_on
         groom_on = s.groom_on_hz > 0 and groom > s.groom_on_hz
+        if self.taste:                                  # the proboscis motor neuron decides
+            self.mn9_smoothed += (1.0 - math.exp(-ms / FEED_SMOOTH_MS)) * (self.rates["MN9"] - self.mn9_smoothed)
+            feed_on, feed_off = self.mn9_smoothed > s.feed_on_hz, self.mn9_smoothed < s.feed_off_hz
+        else:                                           # [DESIGNED] no taste pathway here: the sugar input itself
+            sig = self._feed_signal()
+            feed_on, feed_off = sig > 0.42, sig < 0.32
 
         # C1: 400 ms decision reader smoothing and hysteresis
         a_w = 1.0 - math.exp(-ms / self.walk_smooth_ms)
@@ -627,7 +753,7 @@ class Brain:
             quiet = WALK if self.walk_smoothed > max(s.walk_on_hz, rest * 1.2) else STAND
 
         def settle(skip=()):
-            return next((st for st, on in ((RETREAT, retreat_on), (FREEZE, freeze_on), (GROOM, groom_on))
+            return next((st for st, on in ((RETREAT, retreat_on), (FREEZE, freeze_on), (FEED, feed_on), (GROOM, groom_on))
                          if on and st not in skip), quiet)
 
         # V_motor terms. threat: how hard the escape / retreat outputs and the alarm odor push; desire: the odor plus
@@ -699,6 +825,11 @@ class Brain:
                 new = GROOM if groom_on else quiet
         elif freeze_on:
             new = FREEZE
+        elif cur == FEED:                               # stands, proboscis out, while MN9 fires
+            if feed_off and self._dwell >= s.min_feed_ms:
+                new = GROOM if groom_on else quiet
+        elif feed_on:
+            new = FEED
         elif cur == GROOM:
             if groom < s.groom_off_hz and self._dwell >= s.min_groom_ms:
                 new = quiet
@@ -713,6 +844,10 @@ class Brain:
             self.state, self._dwell = new, 0.0
             if new != FLY:
                 self.flight_mode = ""
+            if new in (RETREAT, FREEZE, FEED) or (new == FLY and self.flight_mode == "short"):
+                self._stop_search()                     # a threat, or food again, ends the local search
+            elif cur == FEED:
+                self._start_search()                    # the meal is over: loops around the place
             # B3: defensive arousal surge on threat (an escape; not a foraging flight, not what the lab evoked)
             if new == FLY:
                 self._surge(0.5 if self.flight_mode == "short" else 0.0)

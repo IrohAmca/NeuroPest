@@ -19,6 +19,10 @@ RAW_DIR = ROOT / "data" / "raw"
 CIRCUITS = ROOT / "data" / "circuits"
 CACHE = CIRCUITS / "flywire_v783.npz"
 CACHE_SYM = CIRCUITS / "flywire_v783_sym.npz"
+# Version of the cache's contents (groups, ranking protocols): flywire.build writes it into the cache; an older cache is
+# rebuilt (data_manager.is_connectome_ready). The groups live inside the file, so a new group is missing from an old one.
+#   2: SUGAR and MN9 groups, the sugar protocols, LC10 protocols within states.LC10_MAX_HZ
+CACHE_VERSION = 2
 TIER_DIR = CIRCUITS / "tiers"       # one small npz per tier size (flywire.load_tier)
 TIERS = CIRCUITS / "tiers.json"
 EYE = CIRCUITS / "eye.npz"          # photoreceptor viewing directions (tools/build_eye.py)
@@ -27,6 +31,20 @@ MUSHROOM_3D = CIRCUITS / "mushroom_3d.npz"     # 3D coordinates & anatomy for Fl
 FIELD = CIRCUITS / "field.npz"      # medulla columns and projection-neuron receptive fields
 SKINS_DIR = Path(__file__).resolve().parent / "assets" / "skins"
 SKIN_THUMBNAILS = SKINS_DIR / "thumbnails"
+
+
+def cache_version(path: Path = CACHE) -> int:
+    """CACHE_VERSION the cache at `path` was built with (0: missing, unreadable, or built before versions existed).
+    Reads only the small meta entry of the npz, not the 125 MB of synapses."""
+    import json
+
+    import numpy as np
+
+    try:
+        with np.load(path) as z:
+            return int(json.loads(str(z["meta_json"])).get("version", 0))
+    except (OSError, ValueError, KeyError):
+        return 0
 
 
 def get_user_data_dir() -> Path:

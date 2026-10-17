@@ -76,6 +76,17 @@ def test_grooming_fly_stays_in_place():
     assert (fly.x, fly.y) == (x, y) and abs(fly.heading - heading) < 1e-9 and fly.phase != 0.0
 
 
+def test_feeding_fly_stays_on_the_food_and_pumps_its_proboscis():
+    from neuropest.states import FEED
+
+    fly = Fly(500, 500)
+    x, y, heading = fly.x, fly.y, fly.heading
+    for _ in range(60):
+        fly.update(1 / 60, FEED, (900, 500), RECT, steer=40.0)
+    assert (fly.x, fly.y) == (x, y) and abs(math.remainder(fly.heading - heading, math.tau)) < 1e-9
+    assert fly.phase != 0.0
+
+
 def test_frozen_fly_stays_in_place():
     from neuropest.states import FREEZE
 

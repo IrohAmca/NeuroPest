@@ -235,3 +235,41 @@ def test_a_startle_under_food_odor_does_not_teach_fear():
     for _ in range(20):
         brain._learn(50.0)
     assert brain._punish == 0.0
+
+
+def test_a_bigger_food_smells_further_and_stronger_and_shrinks_as_it_is_eaten():
+    from neuropest.pheromone import FOOD_RADIUS_PX
+
+    big = PheromoneSource(0.0, 0.0, radius=FOOD_RADIUS_PX, strength=1.0, size=1.4)
+    small = PheromoneSource(0.0, 0.0, radius=FOOD_RADIUS_PX, strength=1.0, size=0.6)
+    assert big.radius > small.radius and big.strength > small.strength
+    assert big.concentration_at(350.0, 0.0) > small.concentration_at(350.0, 0.0)
+    r0 = big.radius
+    big.set_size(0.35)                                       # a quarter of it left: half the spread and strength
+    assert math.isclose(big.radius, r0 / 2.0) and math.isclose(big.strength, math.sqrt(0.35))
+
+
+def test_the_fly_eats_a_food_bit_by_bit_and_a_new_one_appears_once_it_is_gone():
+    from neuropest.pheromone import FOOD_COUNT
+
+    scr = ScreenBox(0, "scr", 0, 0, 1920, 1080, 0, 0, 1920, 1080)
+    field = PheromoneField()
+    field.spawn_random_sources([scr])
+    assert len(field.sources) == FOOD_COUNT == 3
+    food = field.sources[0]
+    food.set_size(1.0)
+    assert field.eat_at(food.x + 5.0, food.y, 0.4, radius=28.0, screen_boxes=[scr]) == 0.4
+    assert math.isclose(food.size, 0.6) and food in field.sources
+    assert field.eat_at(food.x + 500.0, food.y + 500.0, 0.4, radius=28.0, screen_boxes=[scr]) == 0.0   # not on it
+    eaten = field.eat_at(food.x, food.y, 0.58, radius=28.0, screen_boxes=[scr])     # 0.02 left: under FOOD_MIN_SIZE
+    assert math.isclose(eaten, 0.6) and food not in field.sources and len(field.sources) == FOOD_COUNT
+
+
+def test_new_food_comes_in_sizes():
+    from neuropest.pheromone import FOOD_SIZE_RANGE
+
+    scr = ScreenBox(0, "scr", 0, 0, 1920, 1080, 0, 0, 1920, 1080)
+    field = PheromoneField()
+    field.spawn_random_sources([scr], count=20)
+    sizes = [s.size for s in field.sources]
+    assert all(FOOD_SIZE_RANGE[0] <= x <= FOOD_SIZE_RANGE[1] for x in sizes) and max(sizes) > min(sizes)

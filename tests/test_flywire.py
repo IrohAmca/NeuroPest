@@ -8,7 +8,7 @@ import pytest
 from neuropest import flywire
 from dataclasses import replace
 
-from neuropest.brain import FLY, FLYWIRE, FREEZE, GROOM, RETREAT, STAND, WALK, Brain
+from neuropest.brain import FEED, FLY, FLYWIRE, FREEZE, GROOM, RETREAT, STAND, WALK, Brain, sugar_gain
 from neuropest.engine import LIFEngine
 
 N = 400
@@ -46,9 +46,14 @@ def raw(tmp_path_factory):
         cc[lo:lo + 15] = "mechanosensory"
     types[140:142], cc[140:142] = "BM_Taste", "mechanosensory"
     types[150:152], types[152:154], sc[150:154] = "DNg62", "DNge078", "descending"
+    # 160..165 sugar receptor neurons (LB3c, "sugar"), 166,167 "sugar/low_salt" (LB3b: not in the group), 170,171 MN9
+    sub = np.array([np.nan] * N, dtype=object)
+    types[160:166], sub[160:166], cc[160:168] = "LB3c", "sugar", "gustatory"
+    types[166:168], sub[166:168] = "LB3b", "sugar/low_salt"
+    types[170:172], sc[170:172] = "CB0701", "motor"
     pd.DataFrame({"Completed": True}, index=pd.Index(ids)).to_csv(d / "Completeness_783.csv")
     ann = pd.DataFrame({"root_id": ids, "flow": "intrinsic", "super_class": sc, "cell_class": cc,
-                        "cell_type": types, "hemibrain_type": hb, "side": side})
+                        "cell_sub_class": sub, "cell_type": types, "hemibrain_type": hb, "side": side})
     ann.to_csv(d / "Supplemental_file1_neuron_annotations.tsv", sep="\t", index=False)
     pre, post, cnt = [], [], []
     for i in range(N):                                    # sparse random wiring
@@ -62,6 +67,7 @@ def raw(tmp_path_factory):
     strong += [(range(60, 70), (70, 71, 72, 73), 40)]     # LPC1 -> MDN
     strong += [(range(76, 86), (74,), 80), (range(86, 96), (75,), 80)]   # LC10 -> DNa02 of the same side
     strong += [(range(100, 115), (150, 152), 40), (range(120, 135), (151, 153), 40)]   # touch -> grooming DNs
+    strong += [(range(160, 166), (170, 171), 12)]         # sugar -> MN9
     for rows, targets, c in strong:
         for i in rows:
             for j in targets:
@@ -102,6 +108,31 @@ def test_groups_follow_the_annotation(raw):
     assert len(g["VPN"]) == 80 and len(g["DN"]) == 20
     assert list(g["TOUCH_L"]) == list(range(100, 115)) and list(g["TOUCH_R"]) == list(range(120, 135))
     assert list(g["GROOM"]) == [150, 151, 152, 153]
+    assert list(g["SUGAR"]) == list(range(160, 166))            # "sugar/low_salt" is left out
+    assert list(g["MN9"]) == [170, 171]
+
+
+def test_an_annotation_file_without_sub_classes_gives_an_empty_taste_group(raw, tmp_path):
+    import shutil
+
+    ann = pd.read_csv(raw / "Supplemental_file1_neuron_annotations.tsv", sep="\t").drop(columns=["cell_sub_class"])
+    ann.to_csv(tmp_path / "Supplemental_file1_neuron_annotations.tsv", sep="\t", index=False)
+    shutil.copy(raw / "Completeness_783.csv", tmp_path)
+    _, _, _, ids = flywire.load_connectome(raw)
+    g = flywire.make_groups(flywire.load_annotations(ids, tmp_path))
+    assert len(g["SUGAR"]) == 0 and list(g["MN9"]) == [170, 171] and list(g["GF"]) == [50, 51]
+
+
+def test_the_cache_carries_its_version_and_the_lc10_protocols_stay_under_the_ceiling(raw, tmp_path):
+    from neuropest.paths import CACHE_VERSION, cache_version
+    from neuropest.states import LC10_MAX_HZ
+
+    net = flywire.build(raw)
+    net.save(tmp_path / "c.npz")
+    assert cache_version(tmp_path / "c.npz") == CACHE_VERSION
+    for proto in flywire.train_protocols() + flywire.test_protocols():
+        assert all(hz <= LC10_MAX_HZ for k, hz in proto.items() if k.startswith("LC10"))
+    assert any("SUGAR" in p for p in flywire.train_protocols())
 
 
 def test_build_orders_pinned_first_and_prefix_is_a_valid_network(raw):
@@ -535,3 +566,97 @@ def test_an_escape_from_a_foraging_flight_is_timed_from_the_attack(tier):
     b.rates["GF"] = 50.0
     b._decode(4.0)
     assert b.flight_mode == "short" and b._dwell < 10.0
+
+
+# ------------------------------------------------------------------ taste, feeding, local search, the LC10 ceiling
+def _on_food(b, hunger=1.0, sugar=1.0, ms=1000.0):
+    b.set_stimulus(1e6, 0.0, walk_bias=0.0, hunger=hunger, at_target=1.0 if sugar else 0.0, sugar=sugar)
+    return {b.advance(4.0) for _ in range(int(ms / 4))}
+
+
+def test_food_under_a_hungry_fly_fires_mn9_and_it_feeds_until_the_food_is_gone(tier):
+    b = Brain(tier)
+    assert b.taste
+    _on_food(b)
+    assert b.state == FEED and b.rates["MN9"] > FLYWIRE.feed_on_hz and b.feed_level > 0.2
+    _on_food(b, sugar=0.0, ms=1200.0)                       # MN9 falls, the smoothed reading follows
+    assert b.state != FEED and b.feed_level < 0.1
+
+
+def test_a_sated_fly_on_food_does_not_feed(tier):
+    b = Brain(tier)
+    assert FEED not in _on_food(b, hunger=0.0)
+    assert b.rates["MN9"] == 0.0                            # no drive: the sugar neurons are not sensitive at all
+
+
+def test_the_sugar_drive_follows_contact_and_hunger(tier):
+    b = Brain(tier)
+    sl = b._cursor_slices[8]                                # SUGAR, the last of the static drive groups
+    for h in (1.0, 0.5, 0.2):
+        b.set_stimulus(1e6, 0.0, hunger=h, sugar=1.0)
+        assert np.allclose(b._cursor_fr[sl], FLYWIRE.sugar_hz * sugar_gain(h))
+    assert sugar_gain(1.0) > sugar_gain(0.5) > sugar_gain(0.2) > sugar_gain(0.0) == 0.0
+    b.set_stimulus(1e6, 0.0, hunger=1.0, sugar=0.0)
+    assert np.allclose(b._cursor_fr[sl], 0.0)
+
+
+def test_an_approach_interrupts_feeding(tier):
+    b = Brain(tier)
+    _on_food(b)
+    assert b.state == FEED
+    b.set_stimulus(150, 3000, walk_bias=0.0, hunger=1.0, at_target=1.0, sugar=1.0)   # a fast approach: Giant Fiber
+    assert FLY in {b.advance(4.0) for _ in range(150)}
+
+
+def test_the_end_of_a_meal_starts_a_search_that_circles_the_meal_spot_and_a_threat_ends_it(tier):
+    b = Brain(tier)
+    _on_food(b)
+    _on_food(b, sugar=0.0, ms=1200.0)
+    assert b.state != FEED and b._search_ms > 0.0
+    b.set_meal_spot(100.0, 1.0)                             # the spot on the right: it turns right
+    _settle(b, 400)
+    assert b.steer > 10.0
+    b.set_meal_spot(100.0, -1.0)                            # ... and left once it is on the left
+    _settle(b, 400)
+    assert b.steer < -10.0
+    b.set_stimulus(150, 3000, walk_bias=0.0, hunger=1.0)
+    assert FLY in {b.advance(4.0) for _ in range(150)}
+    assert b._search_ms == 0.0
+
+
+def test_a_sated_fly_does_not_search_and_the_lab_pauses_a_search(tier):
+    b = Brain(tier)
+    b.hunger = 0.1
+    b._start_search()
+    assert b._search_ms == 0.0
+    b.hunger = 1.0
+    b._start_search()
+    assert b._search_ms > 0.0 and b._search_rate() > 0.0
+    b.set_lab(silenced=["GF"])
+    assert b._search_rate() == 0.0                          # an experiment runs on the circuit alone
+
+
+def test_the_lc10_drive_stays_under_the_ceiling_whatever_the_learned_gain(tier):
+    import math
+
+    from neuropest.states import LC10_MAX_HZ
+
+    b = Brain(tier)
+    b.valence = 1.0                                         # learned desire: x2.5 on the bearing drive
+    b.set_stimulus(0.0, 0.0, bearing=math.pi / 2, phero_steer=100.0, phero_drive=0.5, hunger=1.0)
+    assert b._cursor_fr[b._cursor_slices[4]].max() == LC10_MAX_HZ
+    # the image path: the odor goes onto the image's LC10 cells, one entry per neuron, within the ceiling
+    lc = b.group("LC10_R")
+    b.set_vision(lc[:5], np.full(5, 50.0, np.float32))
+    on = np.isin(b._last_fi, lc)
+    assert b._last_fr[on].max() <= LC10_MAX_HZ and len(np.unique(b._last_fi[on])) == on.sum() == len(lc)
+
+
+def test_a_circuit_without_the_taste_pathway_feeds_by_the_sugar_input():
+    from neuropest.toy_circuit import build
+
+    b = Brain(build(146, seed=42))
+    assert not b.taste
+    assert FEED in _on_food(b)
+    assert b.feed_level > 0.0
+    assert FEED not in _on_food(Brain(build(146, seed=42)), hunger=0.1)

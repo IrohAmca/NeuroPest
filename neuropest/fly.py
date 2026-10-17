@@ -4,7 +4,7 @@ from __future__ import annotations
 import math
 import random
 
-from .states import FLY, FREEZE, GROOM, RETREAT, STAND, WALK
+from .states import FEED, FLY, FREEZE, GROOM, RETREAT, STAND, WALK
 
 Rect = tuple[float, float, float, float]   # left, top, right, bottom of the area the fly's center may use
 TURN_GAIN = 0.02                           # rad/s of turning per Hz of right-minus-left DNa02 rate
@@ -283,7 +283,8 @@ class Fly:
         """steer: right-minus-left DNa02 rate (Hz) from the brain; turns a walking or retreating fly.
         mode "long" is a foraging flight: goal = (x, y, eating radius) of the food it flies to (None: it hovers until the
         brain lands it). An escape (any other flight) keeps its speed and DNa02 steering."""
-        speed = {STAND: 0.0, WALK: 70.0, FLY: 420.0, RETREAT: -45.0, GROOM: 0.0, FREEZE: 0.0}[state]     # retreat = backward walking
+        speed = {STAND: 0.0, WALK: 70.0, FLY: 420.0, RETREAT: -45.0, GROOM: 0.0, FREEZE: 0.0,
+                 FEED: 0.0}[state]     # retreat = backward walking; a feeding fly stands on the food
 
         # Transient filter on DNa02 steer (Rayshubskiy et al. 2025 biphasic filter: persistent input adapts)
         a_steer = 1.0 - math.exp(-dt / 0.4)
@@ -353,7 +354,7 @@ class Fly:
             self.turn_t = 0.6
             self.turn = 0.0
 
-        rate = {STAND: 0.0, WALK: 14.0, FLY: 120.0, RETREAT: -10.0, GROOM: 22.0, FREEZE: 0.0}[state]
+        rate = {STAND: 0.0, WALK: 14.0, FLY: 120.0, RETREAT: -10.0, GROOM: 22.0, FREEZE: 0.0, FEED: 6.0}[state]   # FEED: the proboscis pumps
         self.phase = (self.phase + rate * dt) % math.tau
 
     def clamp(self, rect: Rect | PlayArea):

@@ -14,7 +14,7 @@ import time
 from typing import Callable
 import urllib.request
 
-from .paths import CACHE, CIRCUITS, EYE, FIELD, MUSHROOM, MUSHROOM_3D, RAW_DIR
+from .paths import CACHE, CACHE_VERSION, CIRCUITS, EYE, FIELD, MUSHROOM, MUSHROOM_3D, RAW_DIR, cache_version
 
 _log = logging.getLogger(__name__)
 
@@ -46,8 +46,14 @@ def is_raw_data_present(raw_dir: Path = RAW_DIR) -> bool:
 
 
 def is_connectome_ready(cache: Path = CACHE) -> bool:
-    """Return True if the main FlyWire circuit cache exists and is valid."""
-    return cache.exists() and cache.stat().st_size > 0
+    """Return True if the main FlyWire circuit cache exists and is current (paths.CACHE_VERSION: an older one lacks
+    groups the brain uses, such as the taste pathway, and is rebuilt from the raw files)."""
+    return cache.exists() and cache.stat().st_size > 0 and cache_version(cache) >= CACHE_VERSION
+
+
+def is_connectome_outdated(cache: Path = CACHE) -> bool:
+    """A cache is there but was built by an older version (it still runs, without what the newer one added)."""
+    return cache.exists() and cache.stat().st_size > 0 and cache_version(cache) < CACHE_VERSION
 
 
 def download_file(
@@ -303,11 +309,17 @@ def prompt_startup_data(parent=None) -> bool:
     vbox.setContentsMargins(24, 20, 24, 20)
     vbox.setSpacing(14)
 
-    title_lbl = QLabel("Biological Connectome Setup", dialog)
+    outdated = is_connectome_outdated()
+    title_lbl = QLabel("Biological Connectome Update" if outdated else "Biological Connectome Setup", dialog)
     title_lbl.setStyleSheet("font-size: 16px; font-weight: bold; color: #ffffff;")
     vbox.addWidget(title_lbl)
 
     info_lbl = QLabel(
+        "Your FlyWire circuit was built by an older NeuroPest version and lacks the taste pathway (sugar receptor "
+        "neurons, the proboscis motor neuron MN9) that feeding now runs on.\n"
+        "Rebuild it now (about two minutes; the raw files are downloaded only if they are missing), or keep the old "
+        "one for now (the fly then feeds by a designed rule)?"
+        if outdated else
         "FlyWire v783 connectome data (~135 MB) is not yet installed.\n"
         "Would you like to download and initialize the biological fruit fly "
         "brain circuit now, or run in lightweight Toy Circuit mode (146 neurons)?",
@@ -330,8 +342,8 @@ def prompt_startup_data(parent=None) -> bool:
     btn_layout = QHBoxLayout()
     btn_layout.addStretch()
 
-    toy_btn = QPushButton("Use Toy Circuit", dialog)
-    download_btn = QPushButton("Download & Initialize", dialog)
+    toy_btn = QPushButton("Keep the old one" if outdated else "Use Toy Circuit", dialog)
+    download_btn = QPushButton("Rebuild" if outdated else "Download & Initialize", dialog)
     download_btn.setObjectName("primaryBtn")
 
     btn_layout.addWidget(toy_btn)
@@ -391,6 +403,8 @@ def main():
     if is_connectome_ready():
         print(f"[OK] FlyWire connectome is already installed at: {CACHE}")
         return
+    if is_connectome_outdated():
+        print(f"The circuit at {CACHE} was built by an older version: rebuilding it (missing raw files are downloaded).")
 
     print("Downloading upstream FlyWire v783 raw files (~135 MB)...")
     def _cli_progress(pct: float, txt: str):

@@ -56,3 +56,13 @@ def test_starve_and_satiate_actions():
     m.satiate()
     assert m.energy == 1.0
     assert m.hunger == 0.0
+
+
+def test_eating_adds_energy_per_unit_of_food():
+    m = MetabolicState(energy=0.2)
+    m.eat(0.5)
+    assert abs(m.energy - (0.2 + 0.5 * m.cfg.feed_amount)) < 1e-9
+    m.eat(10.0)
+    assert m.energy == 1.0
+    m.eat(-1.0)                                             # nothing to eat: no change
+    assert m.energy == 1.0

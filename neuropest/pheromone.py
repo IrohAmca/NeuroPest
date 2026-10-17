@@ -2,8 +2,9 @@
 
 Manages invisible positive chemical (nectar/food) sources across the desktop
 and an invisible slim border repulsion keeping the fly on-screen.
-Pheromone sources are invisible to the user and disappear (get consumed)
-when the fly reaches and feeds on them.
+Pheromone sources are invisible to the user. A food has a size: its odor spreads further and smells stronger the
+bigger it is, the fly eats it bit by bit while it feeds (brain FEED state, driven by MN9), and it is gone (a new one
+appears elsewhere) once eaten up.
 """
 from __future__ import annotations
 
@@ -12,16 +13,36 @@ import random
 from dataclasses import dataclass
 from typing import List, Tuple
 
+# Food on the desktop [DESIGNED]. Few and sparse (was 7): their odors do not merge into one field and the fly has to
+# search (motor-asamalari-inceleme 4b). A food of size 1 spreads its odor over FOOD_RADIUS_PX; radius and strength grow
+# with the square root of the size, so a big food is smelled from further and more strongly while the steepest left-right
+# difference (the steering input) stays the same. Eating a whole food of size 1 takes ~10 s at a fully extended proboscis
+# (app.EAT_RATE).
+FOOD_COUNT = 3
+FOOD_RADIUS_PX = 300.0
+FOOD_SIZE_RANGE = (0.6, 1.4)
+FOOD_MIN_SIZE = 0.05            # below this the food is eaten up
+
 
 @dataclass
 class PheromoneSource:
     x: float
     y: float
     kind: str = "attract"  # all free sources are purely attractive (food/nectar)
-    radius: float = 220.0  # spatial diffusion scale (px)
-    strength: float = 1.0
+    radius: float = 220.0  # spatial diffusion scale (px) at size 1
+    strength: float = 1.0  # peak concentration at size 1
+    size: float = 1.0      # how much food is left (radius and strength scale with sqrt(size))
 
     def __post_init__(self):
+        self.base_radius, self.base_strength = self.radius, self.strength
+        self.set_size(self.size)
+
+    def set_size(self, size: float) -> None:
+        """Food left; the odor shrinks with it."""
+        self.size = max(0.0, float(size))
+        f = math.sqrt(self.size)
+        self.radius = max(1e-3, self.base_radius * f)
+        self.strength = self.base_strength * f
         sig2 = self.radius ** 2
         self._cutoff_d2 = sig2 * 6.25
         self._denom = 2.0 * (sig2 * 0.4)
@@ -48,12 +69,12 @@ class PheromoneField:
         self.sources.clear()
 
     def add_source(self, x: float, y: float, kind: str = "attract",
-                   radius: float = 220.0, strength: float = 1.0) -> PheromoneSource:
-        src = PheromoneSource(x=x, y=y, kind=kind, radius=radius, strength=strength)
+                   radius: float = 220.0, strength: float = 1.0, size: float = 1.0) -> PheromoneSource:
+        src = PheromoneSource(x=x, y=y, kind=kind, radius=radius, strength=strength, size=size)
         self.sources.append(src)
         return src
 
-    def spawn_random_sources(self, screen_boxes, count: int = 6) -> None:
+    def spawn_random_sources(self, screen_boxes, count: int = FOOD_COUNT) -> None:
         """Seed desktop with purely positive/attractive food sources."""
         self.sources.clear()
         if not screen_boxes:
@@ -70,10 +91,34 @@ class PheromoneField:
         h = max(100.0, (s.usable_b - s.usable_t) - 2 * margin)
         x = s.usable_l + margin + random.random() * w
         y = s.usable_t + margin + random.random() * h
-        self.add_source(x, y, radius=random.uniform(190.0, 250.0), strength=1.0)
+        self.add_source(x, y, radius=FOOD_RADIUS_PX, strength=1.0, size=random.uniform(*FOOD_SIZE_RANGE))
+
+    def food_at(self, x: float, y: float, radius: float) -> PheromoneSource | None:
+        """The attractive source the fly at (x, y) stands on (the nearest within `radius`), or None."""
+        best, best_d = None, radius
+        for s in self.sources:
+            d = math.hypot(s.x - x, s.y - y)
+            if s.kind == "attract" and d <= best_d:
+                best, best_d = s, d
+        return best
+
+    def eat_at(self, x: float, y: float, amount: float, radius: float = 30.0, screen_boxes=None) -> float:
+        """The fly at (x, y) eats up to `amount` of the food it stands on; returns how much it ate. A food eaten up
+        disappears and a new one appears elsewhere (keeping FOOD_COUNT)."""
+        src = self.food_at(x, y, radius)
+        if src is None or amount <= 0.0:
+            return 0.0
+        eaten = min(float(amount), src.size)
+        src.set_size(src.size - eaten)
+        if src.size < FOOD_MIN_SIZE:
+            eaten += src.size
+            self.sources = [s for s in self.sources if s is not src]
+            if screen_boxes and len(self.sources) < FOOD_COUNT:
+                self._spawn_one(screen_boxes)
+        return eaten
 
     def consume_at(self, fly_x: float, fly_y: float, consume_radius: float = 30.0, screen_boxes=None) -> bool:
-        """When fly reaches a positive source, it consumes it: source disappears, new one spawns elsewhere."""
+        """The whole food under the fly at once: it disappears and a new one spawns elsewhere (eat_at eats it bit by bit)."""
         consumed = False
         remaining = []
         for s in self.sources:
@@ -82,14 +127,14 @@ class PheromoneField:
             else:
                 remaining.append(s)
         self.sources = remaining
-        if consumed and screen_boxes and len(self.sources) < 6:
+        if consumed and screen_boxes and len(self.sources) < FOOD_COUNT:
             self._spawn_one(screen_boxes)
         return consumed
 
     def goal_for(self, x: float, y: float, screen=None) -> tuple[PheromoneSource | None, float]:
         """The food source a fly at (x, y) would fly to, and its odor there: the one it smells most, on `screen` (a
         ScreenBox) when given, so a flight never crosses to another monitor. The cursor is never a goal: in attract mode
-        the pet feeds at it every few seconds and would keep hopping to it. (None, 0.0) when it smells none."""
+        the pet can feed at it and would keep hopping to it. (None, 0.0) when it smells none."""
         best, best_c = None, 0.0
         for s in self.sources:
             if s.kind != "attract" or (screen is not None and not screen.contains_point(s.x, s.y)):
