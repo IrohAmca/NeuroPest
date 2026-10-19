@@ -31,7 +31,7 @@ from .tray import Tray
 
 TOUCH_RADIUS_PX = 14.0     # cursor this close to the fly center (times its scale) touches it
 OVERLAY_INSET_PX = 1       # keep the overlay strictly inside the desktop, see overlay_rect()
-EAT_RATE = 0.14            # food eaten per second with the proboscis fully out: a food of size 1 in ~10 s for a hungry fly,
+EAT_RATE = 0.28            # food eaten per second with the proboscis fully out: a food of size 1 in ~5 s for a hungry fly,
                            # whose proboscis is out ~0.7 on average while it eats (MN9 falls as it fills up; pheromone.FOOD_*)
 PROBOSCIS_TAU_S = 0.15     # the drawn proboscis follows the brain's feed level (MN9) this fast
 

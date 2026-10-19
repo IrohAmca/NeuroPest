@@ -81,7 +81,7 @@ uv run neuropest
     neurons); in the connectome they drive the proboscis motor neuron MN9 (Shiu et al. 2024), and while MN9 fires the
     fly is in the `FEED` state: it stands with its proboscis out (drawn as far out as MN9 fires) and eats in proportion
     to it. Hunger raises the sugar neurons' sensitivity (Inagaki et al. 2012; the curve is designed), so a hungry fly
-    eats a food of size 1 in about ten seconds, a half-fed one stops by itself when its MN9 falls below the threshold,
+    eats a food of size 1 in about five seconds, a half-fed one stops by itself when its MN9 falls below the threshold,
     and a sated one does not start. A food eaten up appears again elsewhere. Standing still while MN9 fires is the
     decoder's stand-in for the halt of real flies (Sapkal et al. 2024: sugar recruits GABAergic neurons that inhibit
     the walking descending neurons below P9; in this model sugar does not reach P9, the neuron read for walking).

@@ -16,7 +16,7 @@ from typing import List, Tuple
 # Food on the desktop [DESIGNED]. Few and sparse (was 7): their odors do not merge into one field and the fly has to
 # search (motor-asamalari-inceleme 4b). A food of size 1 spreads its odor over FOOD_RADIUS_PX; radius and strength grow
 # with the square root of the size, so a big food is smelled from further and more strongly while the steepest left-right
-# difference (the steering input) stays the same. Eating a whole food of size 1 takes ~10 s at a fully extended proboscis
+# difference (the steering input) stays the same. Eating a whole food of size 1 takes ~5 s for a hungry fly
 # (app.EAT_RATE).
 FOOD_COUNT = 3
 FOOD_RADIUS_PX = 300.0
