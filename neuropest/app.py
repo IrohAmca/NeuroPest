@@ -229,9 +229,10 @@ class Overlay(QWidget):
             cursor_enabled = (self.cursor_phero_mode != "none")
             cursor_kind = self.cursor_phero_mode if cursor_enabled else "attract"
             self.pheromone.update_cursor(cur_x, cur_y, kind=cursor_kind, enabled=cursor_enabled)
-            # bilateral antennae: tropotaxis steering bias (Hz), attractant and repellent intensity
-            phero_steer, phero_drive, phero_repel = self.pheromone.smell(self.fly.x, self.fly.y, self.fly.heading,
-                                                                         area, self.scale)
+            # bilateral antennae: tropotaxis steering bias (Hz), attractant and repellent intensity, the attractant's
+            # right-minus-left difference (the two antennae's ORN input)
+            phero_steer, phero_drive, phero_repel, odor_delta = self.pheromone.smell(
+                self.fly.x, self.fly.y, self.fly.heading, area, self.scale)
 
             # Food under the fly is its taste input (the sugar receptor neurons). Whether it feeds is the brain's: MN9
             # fires and it stands in FEED; meanwhile it eats in proportion to how far the proboscis is out, a food bit by
@@ -258,6 +259,7 @@ class Overlay(QWidget):
             phero_steer = 0.0
             phero_drive = 0.0
             phero_repel = 0.0
+            odor_delta = 0.0
             at_target = False
             self._was_feeding = False
             self.goal.source = None
@@ -288,7 +290,8 @@ class Overlay(QWidget):
                          hunger=self.metabolism.hunger,
                          wall_bump=self.fly.hit_wall,
                          goal_gap=goal_gap, goal_bearing=goal_bearing, goal_odor=goal_odor,
-                         sugar=1.0 if at_target else 0.0, meal_dist=meal_dist, meal_bearing=meal_bearing)
+                         sugar=1.0 if at_target else 0.0, meal_dist=meal_dist, meal_bearing=meal_bearing,
+                         odor_delta=odor_delta)
 
         # The drawn proboscis follows MN9 (the brain's feed level) while the fly feeds; floating reward effects
         want = self.runner.feed_level if state == FEED else 0.0

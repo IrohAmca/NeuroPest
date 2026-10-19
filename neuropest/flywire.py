@@ -135,7 +135,108 @@ def make_groups(meta: pd.DataFrame) -> dict[str, np.ndarray]:
     sugar = meta["cell_sub_class"].fillna("") == "sugar" if "cell_sub_class" in meta.columns else ct == "\0"
     g["SUGAR"] = idx(sugar)
     g["MN9"] = idx(ct == "CB0701")
+    # Smell: the receptor neurons of the food-odor glomeruli DM1-DM4 (the vinegar / fruit odor glomeruli of the earlier
+    # probes), per antenna. The brain drives them from the odor at each antenna.
+    orn = ct.isin(FOOD_ORN_TYPES)
+    g["ODOR_L"] = idx(orn & (side == "left"))
+    g["ODOR_R"] = idx(orn & (side == "right"))
     return g
+
+
+# --------------------------------------------------------------------------- smell
+# The Shiu model has no spike-frequency adaptation; without it the antennal lobe's projection-neuron / local-neuron loop
+# keeps itself firing after any strong odor and drags ~9,500 neurons (Kenyon cells, lateral horn, DANs) with it
+# (tools/probe_runaway.py). Real projection neurons adapt: a transient onset, then a lower sustained rate (Bhandawat et al.
+# 2007; Kim et al. 2015). Every spike of an ALPN / ALLN raises its threshold by AL_ADAPT_MV, decaying with
+# LIFParams.tau_adapt (300 ms). Measured (motor-arastirmasi-ara-rapor.md, E1-E3): the runaway ends, PN rates follow the
+# odor (ORN 5 / 20 / 80 Hz -> PN 2 / 30 / 50 Hz) and the other calibrated pathways do not change; +2 mV leaves it running.
+FOOD_ORN_TYPES = ("ORN_DM1", "ORN_DM2", "ORN_DM3", "ORN_DM4")
+AL_ADAPT_CLASSES = ("ALPN", "ALLN")
+AL_ADAPT_MV = 4.0
+# Which olfactory neurons a tier holds. Ranked by activity, the odor would pull in its whole chain (~5,000 spiking neurons,
+# mostly Kenyon cells and lateral horn: 200-300 ms of CPU per simulated second). Instead the tier keeps the short, strong
+# paths from the food ORNs to the steering and walking DNs (DNa02, DNb05, DNg100 = BDN2): a neuron joins when its
+# distance from the ORNs plus its distance to those DNs, over connections of at least OLF_PATH_SYN synapses, is at most
+# OLF_PATH_HOPS. It also holds both hemispheres' copies of the neuron types on those paths and of those up to
+# OLF_TWIN_HOPS strong steps above DNa02: a type present on one side only tipped DNa02 (the turning DN) to the left, and
+# the symmetric weights (symmetrize) can not add a missing neuron. Measured (E9-E11): +1,400 neurons on the 15,000 tier,
+# 60-70 ms of CPU per simulated second while smelling (0 without odor), the odor side turns DNa02 in 7 of 8 seeds from
+# 20 Hz of ORN input on, the other pathways unchanged.
+OLF_TARGET_TYPES = ("DNa02", "DNb05", "DNg100")
+OLF_PATH_SYN, OLF_PATH_HOPS = 20, 4
+OLF_TWIN_SYN, OLF_TWIN_HOPS = 10, 2
+OLF_TIER = 15_000                   # the tier the olfactory neurons are fitted into (the app's default); smaller tiers stay
+                                    # as they were, larger ones contain them
+
+
+def adapt_mv(meta: pd.DataFrame) -> np.ndarray:
+    """Threshold raise per spike (mV) for every neuron: AL_ADAPT_MV on the antennal-lobe PNs and LNs, 0 elsewhere."""
+    cc = meta["cell_class"].fillna("").to_numpy()
+    return np.where(np.isin(cc, AL_ADAPT_CLASSES), np.float32(AL_ADAPT_MV), np.float32(0.0)).astype(np.float32)
+
+
+def _hops(src: np.ndarray, a: np.ndarray, b: np.ndarray, n: int, depth: int) -> np.ndarray:
+    """Steps from `src` along the edges a -> b (99: farther than `depth`)."""
+    d = np.full(n, 99, np.int16)
+    d[src] = 0
+    front = np.asarray(src)
+    for h in range(1, depth + 1):
+        nxt = np.unique(b[np.isin(a, front)])
+        nxt = nxt[d[nxt] == 99]
+        d[nxt] = h
+        front = nxt
+    return d
+
+
+def olfactory_pathway(net: Network, meta: pd.DataFrame, base: np.ndarray) -> np.ndarray:
+    """Neurons a tier made of `base` needs for smell (see OLF_*): the ORN -> DN paths and the other-side copies of the
+    neuron types on them and above DNa02, minus what `base` holds already."""
+    ct = meta["cell_type"].fillna("").to_numpy()
+    side = meta["side"].fillna("").to_numpy()
+    orn = np.flatnonzero(np.isin(ct, FOOD_ORN_TYPES))
+    tgt = np.flatnonzero(np.isin(ct, OLF_TARGET_TYPES))
+    if not len(orn) or not len(tgt):
+        return np.zeros(0, np.int32)
+    n = net.n
+    pre = np.repeat(np.arange(n, dtype=np.int32), np.diff(net.indptr))
+    post = net.indices
+    nsyn = np.rint(np.abs(net.data) / np.float32(net.meta.get("w_syn", LIFParams().w_syn)))
+    k = nsyn >= OLF_PATH_SYN
+    d = (_hops(orn, pre[k], post[k], n, OLF_PATH_HOPS).astype(np.int32)
+         + _hops(tgt, post[k], pre[k], n, OLF_PATH_HOPS))
+    path = np.flatnonzero(d <= OLF_PATH_HOPS)
+    inside = np.zeros(n, bool)
+    inside[base] = True
+    inside[path] = True
+    k = (nsyn >= OLF_TWIN_SYN) & inside[pre] & inside[post]
+    dna02 = np.flatnonzero(ct == "DNa02")
+    up = np.flatnonzero(_hops(dna02, post[k], pre[k], n, OLF_TWIN_HOPS) <= OLF_TWIN_HOPS)
+    types = np.setdiff1d(np.unique(ct[np.union1d(path, up)]), [""])
+    twins = np.flatnonzero(np.isin(ct, types) & np.isin(side, ["left", "right"]))
+    keep = np.union1d(np.union1d(path, up), twins)
+    return keep[~np.isin(keep, base)].astype(np.int32)
+
+
+def fit_olfactory(order: np.ndarray, net: Network, meta: pd.DataFrame, tier: int = OLF_TIER) -> np.ndarray:
+    """`order` with the olfactory neurons (olfactory_pathway) moved to just before position `tier`: the tier of that size
+    ends with them and every smaller tier is unchanged. The neurons they push out of it are its least active ones; the
+    pathway is recomputed against what is left until it settles."""
+    if tier >= len(order):
+        return order
+    head = order[:tier]
+    olf = np.zeros(0, np.int32)
+    for _ in range(4):
+        new = olfactory_pathway(net, meta, head)
+        if np.array_equal(np.sort(new), np.sort(olf)):
+            break
+        olf = new
+        head = order[:max(0, tier - len(olf))]
+        head = head[~np.isin(head, olf)]
+    rank = np.empty(len(order), np.int64)
+    rank[order] = np.arange(len(order))
+    olf = olf[np.argsort(rank[olf], kind="stable")]               # in ranking order
+    rest = order[~np.isin(order, np.concatenate([head, olf]))]
+    return np.concatenate([head, olf, rest]).astype(np.int32)
 
 
 # --------------------------------------------------------------------------- ranking
@@ -272,7 +373,8 @@ def build(raw_dir: Path = RAW_DIR, with_activity: bool = True) -> Network:
     meta = load_annotations(ids, raw_dir)
     groups = make_groups(meta)
     net = Network(indptr, indices, data, ids=ids, groups=groups,
-                  meta={"kind": "flywire", "source": SOURCE, "w_syn": LIFParams().w_syn, "version": CACHE_VERSION})
+                  meta={"kind": "flywire", "source": SOURCE, "w_syn": LIFParams().w_syn, "version": CACHE_VERSION},
+                  extra={"adapt_mv": adapt_mv(meta)})
     anchors = np.unique(np.concatenate([groups[k] for k in ANCHOR_GROUPS]))
     pinned = np.unique(np.concatenate([anchors] + [groups[k] for k in INPUT_GROUPS]))
     structural = rank_by_pathway(net, groups["VPN"], anchors, pinned)
@@ -284,8 +386,9 @@ def build(raw_dir: Path = RAW_DIR, with_activity: bool = True) -> Network:
     srank[structural] = np.arange(net.n)
     key = act.astype(np.float64)
     key[pinned] = np.inf                                   # inputs and anchor outputs first
-    net.order = np.lexsort((srank, -key)).astype(np.int32)  # most active first, ties by structure
-    net.extra = {"activity": act, "struct_rank": srank}
+    order = np.lexsort((srank, -key)).astype(np.int32)     # most active first, ties by structure
+    net.order = fit_olfactory(order, net, meta)            # the smell pathway inside the default tier
+    net.extra.update({"activity": act, "struct_rank": srank})
     net.meta["n_active"] = int((act > 0).sum())
     return net
 

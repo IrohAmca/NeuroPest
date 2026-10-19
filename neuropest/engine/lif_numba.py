@@ -6,11 +6,22 @@ Same neuron model as Shiu et al. 2024, integrated exactly per time step:
     spike when v > v_th: v = v_rest, g = 0, refractory for t_ref (v and g frozen)
     a presynaptic spike adds w (mV) to g of each target after t_dly
 
+plus one mechanism the Shiu model lacks, on the neurons the network asks for it (`net.extra["adapt_mv"]`, mV per
+spike; FlyWire: the antennal-lobe projection and local neurons): spike-frequency adaptation. Each spike of such a neuron
+raises its threshold by adapt_mv, and the raise decays with tau_adapt. It is kept lazily (value and the step it was set
+at), so it costs nothing while the neuron is silent.
+
 Cost per step is proportional to the number of *active* neurons (non-resting
 state) plus delivered synaptic events, not to the network size: a silent
 neuron costs nothing, because the model has no spontaneous activity.
+
+The Poisson drive is drawn as geometric gaps between events (one random number per event, a counter per step) instead of
+one Bernoulli trial per driven neuron per step: the same process (the number of steps to the first success of a Bernoulli
+trial is geometric; Devroye 1986, inverse transform), ~10-17x cheaper for groups of hundreds of neurons.
 """
 from __future__ import annotations
+
+import math
 
 import numba as nb
 import numpy as np
@@ -21,9 +32,21 @@ from .params import LIFParams
 
 
 @nb.njit(cache=True)
-def _advance(n_steps, dt, a, b, c, dly, v0, v_th, t_ref, eps,
+def _gap(lp):
+    """Steps until the next event of a per-step Bernoulli(p), >= 1; lp = log(1 - p) (-inf for p = 1)."""
+    if lp == -np.inf:
+        return 1
+    k = math.log(1.0 - np.random.random()) / lp          # 1 - random() is in (0, 1]
+    if k >= 4.0e18:
+        return 4_000_000_000_000_000_000
+    return 1 + int(k)
+
+
+@nb.njit(cache=True)
+def _advance(n_steps, s0, dt, a, b, c, dly, v0, v_th, t_ref, eps,
              v, g, ref, counts, ring, touch, ntouch, tflag,
-             act, in_act, sc, indptr, indices, data, f_idx, f_p, c_idx, c_p, c_w, seed):
+             act, in_act, sc, indptr, indices, data, f_idx, f_lp, f_next, c_idx, c_lp, c_next, c_w, seed,
+             has_adapt, adapt_mv, th, th_s, dt_tau_a):
     np.random.seed(seed)
     D = ring.shape[0]
     pos = sc[0]
@@ -32,7 +55,8 @@ def _advance(n_steps, dt, a, b, c, dly, v0, v_th, t_ref, eps,
     nc = c_idx.shape[0]
     spikes = 0
     work = 0
-    for _ in range(n_steps):
+    for st in range(n_steps):
+        s = s0 + st
         # 1. deliver synaptic input that arrives now
         for q in range(ntouch[pos]):
             i = touch[pos, q]
@@ -48,13 +72,19 @@ def _advance(n_steps, dt, a, b, c, dly, v0, v_th, t_ref, eps,
 
         # 1b. graded Poisson synaptic drive (events add w to g, like an outside presynaptic cell)
         for q in range(nc):
-            if np.random.random() < c_p[q]:
+            k = c_next[q]
+            if k == 0:
+                k = _gap(c_lp[q])
+            k -= 1
+            if k == 0:
+                k = _gap(c_lp[q])
                 i = c_idx[q]
                 g[i] += c_w[q]
                 if in_act[i] == 0:
                     in_act[i] = 1
                     act[nact] = i
                     nact += 1
+            c_next[q] = k
 
         # 2. integrate the active neurons, collect spikes, compact the list
         w = 0
@@ -70,12 +100,18 @@ def _advance(n_steps, dt, a, b, c, dly, v0, v_th, t_ref, eps,
             gi = g[i]
             ui = (v[i] - v0) * a + gi * c * (a - b)
             gi = gi * b
-            if ui + v0 > v_th:
+            thr = v_th
+            if has_adapt and th[i] > 0.0:
+                thr = v_th + th[i] * math.exp(-(s - th_s[i]) * dt_tau_a)
+            if ui + v0 > thr:
                 v[i] = v0
                 g[i] = 0.0
                 ref[i] = t_ref
                 counts[i] += 1
                 spikes += 1
+                if has_adapt and adapt_mv[i] > 0.0:
+                    th[i] = th[i] * math.exp(-(s - th_s[i]) * dt_tau_a) + adapt_mv[i]
+                    th_s[i] = s
                 for k in range(indptr[i], indptr[i + 1]):
                     j = indices[k]
                     ring[slot, j] += data[k]
@@ -85,7 +121,7 @@ def _advance(n_steps, dt, a, b, c, dly, v0, v_th, t_ref, eps,
                         ntouch[slot] += 1
                 act[w] = i
                 w += 1
-            elif abs(ui) < eps and abs(gi) < eps:
+            elif abs(ui) < eps and abs(gi) < eps:      # the adapted threshold decays lazily: it may leave
                 v[i] = v0
                 g[i] = 0.0
                 in_act[i] = 0
@@ -99,20 +135,26 @@ def _advance(n_steps, dt, a, b, c, dly, v0, v_th, t_ref, eps,
 
         # 3. externally driven (Poisson) spikes: no refractory period, as in Shiu
         for q in range(nf):
-            if np.random.random() < f_p[q]:
+            k = f_next[q]
+            if k == 0:
+                k = _gap(f_lp[q])
+            k -= 1
+            if k == 0:
+                k = _gap(f_lp[q])
                 i = f_idx[q]
                 v[i] = v0
                 g[i] = 0.0
                 ref[i] = 0.0
                 counts[i] += 1
                 spikes += 1
-                for k in range(indptr[i], indptr[i + 1]):
-                    j = indices[k]
-                    ring[slot, j] += data[k]
+                for kk in range(indptr[i], indptr[i + 1]):
+                    j = indices[kk]
+                    ring[slot, j] += data[kk]
                     if tflag[slot, j] == 0:
                         tflag[slot, j] = 1
                         touch[slot, ntouch[slot]] = j
                         ntouch[slot] += 1
+            f_next[q] = k
         pos += 1
         if pos == D:
             pos = 0
@@ -149,6 +191,9 @@ class LIFEngine(HostDrive):
         self.a = np.float32(np.exp(-dt / params.tau_m))
         self.b = np.float32(np.exp(-dt / params.tau_syn))
         self.c = np.float32(params.tau_syn / (params.tau_m - params.tau_syn))
+        self.adapt_mv = adapt_of(net)
+        self.th = np.zeros(n, np.float32)                # threshold raise (mV) as of step th_s
+        self.th_s = np.zeros(n, np.int64)
         self._seed = seed
         self._rem = 0.0
         self.steps = 0
@@ -163,12 +208,14 @@ class LIFEngine(HostDrive):
             return 0
         self._seed += 1
         p, net = self.p, self.net
-        _advance(n_steps, np.float32(self.dt), self.a, self.b, self.c, self.dly,
+        _advance(n_steps, np.int64(self.steps), np.float32(self.dt), self.a, self.b, self.c, self.dly,
                  np.float32(p.v_rest), np.float32(p.v_th), np.float32(p.t_ref),
                  np.float32(self.eps), self.v, self.g, self.ref, self.counts,
                  self.ring, self.touch, self.ntouch, self.tflag, self.act, self.in_act,
-                 self.sc, net.indptr, net.indices, net.data, self.f_idx, self.f_p,
-                 self.c_idx, self.c_p, self.c_w, self._seed)
+                 self.sc, net.indptr, net.indices, net.data, self.f_idx, self.f_lp, self.f_next,
+                 self.c_idx, self.c_lp, self.c_next, self.c_w, self._seed,
+                 self.adapt_mv is not None, self.adapt_mv if self.adapt_mv is not None else self.th, self.th,
+                 self.th_s, self.dt / p.tau_adapt)
         self.steps += n_steps
         return n_steps
 
@@ -194,3 +241,12 @@ class LIFEngine(HostDrive):
     @property
     def sim_ms(self) -> float:
         return self.steps * self.dt
+
+
+def adapt_of(net: Network) -> np.ndarray | None:
+    """Per-neuron threshold raise per spike (mV, float32) the network asks for, or None when no neuron adapts."""
+    a = net.extra.get("adapt_mv")
+    if a is None:
+        return None
+    a = np.ascontiguousarray(a, np.float32)
+    return a if a.shape == (net.n,) and bool(np.any(a > 0)) else None

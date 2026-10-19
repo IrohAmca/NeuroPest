@@ -22,7 +22,9 @@ CACHE_SYM = CIRCUITS / "flywire_v783_sym.npz"
 # Version of the cache's contents (groups, ranking protocols): flywire.build writes it into the cache; an older cache is
 # rebuilt (data_manager.is_connectome_ready). The groups live inside the file, so a new group is missing from an old one.
 #   2: SUGAR and MN9 groups, the sugar protocols, LC10 protocols within states.LC10_MAX_HZ
-CACHE_VERSION = 2
+#   3: ODOR_L / ODOR_R groups, antennal-lobe adaptation (extra adapt_mv), the olfactory pathway fitted into the
+#      15,000 tier (flywire.fit_olfactory)
+CACHE_VERSION = 3
 TIER_DIR = CIRCUITS / "tiers"       # one small npz per tier size (flywire.load_tier)
 TIERS = CIRCUITS / "tiers.json"
 EYE = CIRCUITS / "eye.npz"          # photoreceptor viewing directions (tools/build_eye.py)

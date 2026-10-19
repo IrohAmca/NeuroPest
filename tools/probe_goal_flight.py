@@ -57,7 +57,7 @@ def trial(net, seed: int, direction: int, dist: float, hunger: float, seconds: f
     for k in range(frames):
         state, gear = brain.state, brain.gear
         long_flight = state == FLY and gear == "fly_long"
-        steer_ph, drive, repel = field.smell(fly.x, fly.y, fly.heading, area, 1.0)
+        steer_ph, drive, repel, delta = field.smell(fly.x, fly.y, fly.heading, area, 1.0)
         at_target = any(math.hypot(s.x - fly.x, s.y - fly.y) < RADIUS for s in field.sources)
         if at_target and field.consume_at(fly.x, fly.y, consume_radius=RADIUS):
             fed += 1
@@ -73,7 +73,8 @@ def trial(net, seed: int, direction: int, dist: float, hunger: float, seconds: f
         dist_c = math.hypot(cursor[0] - fly.x, cursor[1] - fly.y)
         # the worker: inputs rounded as in runner._loop, applied when they change
         cur = (round(dist_c, 1), 0.0, BIAS, 1.0, round(fly.bearing_of(cursor), 2), 0.0, round(steer_ph, 1),
-               round(drive, 2), round(repel, 2), 1.0 if at_target else 0.0, round(hunger, 2), float(fly.hit_wall))
+               round(drive, 2), round(repel, 2), 1.0 if at_target else 0.0, round(hunger, 2), float(fly.hit_wall),
+               0.0, round(delta, 4))
         if cur != last_in:
             brain.set_stimulus(*cur)
             last_in = cur

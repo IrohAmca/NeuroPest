@@ -51,6 +51,7 @@ I_LAB_STIM_MS = 35          # how long the stimulation lasts, simulated ms from 
 I_LAB_RATE0 = 36            # Hz per lab group: I_LAB_RATE0 + k for LAB_GROUPS[k]
 I_LAB_RATE_END = 52         # (reserved up to here)
 I_MEAL_BEARING = 53         # rad, + = the last meal's spot is to the fly's right
+I_ODOR_DELTA = 54           # attractant concentration at the right antenna minus the left one (pheromone.smell)
 INP_LEN = 64
 # ---- output slots (worker writes, GUI reads) ----
 (O_READY, O_STATE, O_GF, O_WALK, O_REST, O_RT, O_ACTIVE, O_N, O_CPU, O_LAG, O_SIM_S, O_BEAT, O_MDN, O_STEER,
@@ -243,7 +244,7 @@ def _loop(cfg: EngineConfig, brain, net, inp, out, stop, cap_frame=None, cap_met
                round(inp[I_BEARING], 2), inp[I_TOUCH],
                round(inp[I_PHERO_STEER], 1), round(inp[I_PHERO_DRIVE], 2),
                round(inp[I_PHERO_REPEL], 2), inp[I_AT_TARGET],
-               round(hunger, 2), round(wall_bump, 2), round(inp[I_SUGAR], 2))
+               round(hunger, 2), round(wall_bump, 2), round(inp[I_SUGAR], 2), round(inp[I_ODOR_DELTA], 4))
         if eye.on:                                      # the image, not cursor numbers, drives the looming inputs;
             cur = (1e6, 0.0, cur[2], cur[3], cur[4] if cur[5] else 0.0) + cur[5:]
         if cur != last_in:
@@ -689,13 +690,14 @@ class Runner:
              phero_repel: float = 0.0, at_target: bool = False,
              hunger: float = 1.0, wall_bump: bool = False,
              goal_gap: float = 1e6, goal_bearing: float = 0.0, goal_odor: float = 0.0, sugar: float = 0.0,
-             meal_dist: float = 1e6, meal_bearing: float = 0.0) -> None:
+             meal_dist: float = 1e6, meal_bearing: float = 0.0, odor_delta: float = 0.0) -> None:
         """Per-frame input. pose = fly (x, y, heading) and cursor = (x, y) in screen px feed the visual input.
 
         stamp: `time.perf_counter()` of the frame. With it the worker measures the cursor's closing speed itself from
         pose and cursor (`closing` is then ignored); without it (0) `closing` is used as given.
         goal_*: the food source the fly would fly to (Brain.set_goal); the defaults say there is none.
-        sugar: 0..1, food under the fly (the taste input). meal_*: where the last meal was (Brain.set_meal_spot)."""
+        sugar: 0..1, food under the fly (the taste input). meal_*: where the last meal was (Brain.set_meal_spot).
+        odor_delta: the attractant at the right antenna minus the left one (the two antennae's ORN input)."""
         inp = self.inp
         inp[I_DIST], inp[I_CLOSING], inp[I_BIAS], inp[I_SKITTISH] = dist, closing, self.bias, self.skittish
         inp[I_BEARING], inp[I_TOUCH] = bearing, touch
@@ -713,6 +715,7 @@ class Runner:
         inp[I_GOAL_GAP], inp[I_GOAL_BEARING], inp[I_GOAL_ODOR] = goal_gap, goal_bearing, goal_odor
         inp[I_SUGAR] = float(sugar)
         inp[I_MEAL_DIST], inp[I_MEAL_BEARING] = float(meal_dist), float(meal_bearing)
+        inp[I_ODOR_DELTA] = float(odor_delta)
 
         if hasattr(self, "capture") and self.capture is not None:
             cx, cy = capture_pos if capture_pos is not None else (pose[0], pose[1])

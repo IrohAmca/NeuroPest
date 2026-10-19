@@ -246,6 +246,23 @@ Higher priority states immediately interrupt lower states; state transitions enf
   the 15,000 tier, and a well-trained pet lured by the cursor (learned desire x2.5 on the bearing drive, ~75 Hz on
   LC10) circled to the left at ~30x the CPU. `states.LC10_MAX_HZ` (40 Hz) now caps the brain's LC10 drive, the ranking
   protocols stay under it, and the 15,000 tier no longer holds that network (`tools/probe_runaway.py`).
+- **Antennal-lobe adaptation:** the engines (CPU, reference and GPU) now give the antennal-lobe projection and local
+  neurons spike-frequency adaptation (`flywire.AL_ADAPT_MV` = 4 mV per spike, decaying with `LIFParams.tau_adapt` =
+  300 ms; per neuron in the cache, `extra["adapt_mv"]`). Projection neurons answer an odor with a transient and a lower
+  sustained rate, as in the animal (Bhandawat et al. 2007; Kim et al. 2015), and odor input no longer starts the runaway
+  above (full brain: food-odor ORNs at 150 Hz, sugar/low_salt at 100 Hz or LC10 at 100 Hz leave nothing firing once they
+  end). Calibrated pathways are unchanged.
+- **The smell pathway in the 15,000 tier:** besides the activity ranking, the tier holds the short strong paths from the
+  food-odor receptor neurons (glomeruli DM1-DM4, groups `ODOR_L` / `ODOR_R`) to the steering and walking DNs (DNa02,
+  DNb05, DNg100 = BDN2) and both hemispheres' copies of the neuron types on them and above DNa02
+  (`flywire.fit_olfactory`; a type present on one side only had tipped DNa02 to the left). Smaller tiers are unchanged.
+  The odor still steers through LC10 by default: driving the two antennae's ORNs instead (`brain.FLYWIRE_SMELL`,
+  `tools/probe_foraging.py --variants orn80`) lets the circuit turn the fly toward the odor side on its own, but in
+  closed loop the fly found less food (7-8 of 16 trials against 10-11) at about twice the CPU while smelling, because
+  the antennae's left-right difference is too small to steer.
+- **Cheaper Poisson input:** the CPU engine draws the drive as geometric gaps between events (Devroye 1986) instead of a
+  random number per driven neuron per step: the same process, 10-17x cheaper for the ~1,000 visual or ~900 touch neurons
+  the eye and the cursor drive.
 
 ---
 

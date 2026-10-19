@@ -15,6 +15,10 @@ split into separate arrays and only touched when it changes: a resting neuron wi
 Differences from the CPU engine, all small: weights are rounded to 1/4096 mV, the Poisson generator
 is a hash (statistically the same), a neuron that spikes and is also driven in one step counts once.
 `n_active` is not tracked (every neuron is updated every step).
+
+Spike-frequency adaptation (net.extra["adapt_mv"], see lif_numba): the threshold raise sits next to the refractory time
+(`rft`, vec2), decays every step and is -1 on neurons that do not adapt; one raise per spike for all adapting neurons
+(the FlyWire tiers have one value).
 """
 from __future__ import annotations
 
@@ -22,6 +26,7 @@ import struct
 
 import numpy as np
 
+from .lif_numba import adapt_of
 from .network import Network
 from .params import REF_CLAMP, LIFParams
 
@@ -31,12 +36,13 @@ STEP_STRIDE = 256          # min uniform buffer offset alignment
 STORAGE_BUFFERS = 12       # the step kernel binds 11; the WebGPU default limit is 8
 
 _MAIN = """
-struct Prm { n: u32, D: u32, W: u32, nupd: u32, a: f32, b: f32, c: f32, v0: f32, vth: f32, tref: f32, dt: f32, p1: f32 };
+struct Prm { n: u32, D: u32, W: u32, nupd: u32, a: f32, b: f32, c: f32, v0: f32, vth: f32, tref: f32, dt: f32, p1: f32,
+            adec: f32, dth: f32, p2: f32, p3: f32 };
 struct Step { pos: u32, slot: u32, w: u32, r: u32, z: u32, seed: u32, p0: u32, p1: u32 };
 
 @group(0) @binding(0) var<uniform> prm: Prm;
 @group(0) @binding(1) var<storage, read_write> vg: array<vec2<f32>>;
-@group(0) @binding(2) var<storage, read_write> rft: array<f32>;
+@group(0) @binding(2) var<storage, read_write> rft: array<vec2<f32>>;     // refractory ms, adaptation mV (-1: none)
 @group(0) @binding(3) var<storage, read_write> cnt: array<u32>;
 @group(0) @binding(4) var<storage, read_write> ring: array<atomic<i32>>;
 @group(0) @binding(5) var<storage, read> drive: array<vec4<f32>>;
@@ -68,7 +74,10 @@ fn step(@builtin(workgroup_id) wg: vec3<u32>, @builtin(local_invocation_id) lid:
             let old = vg[i];
             var v = old.x;
             var g = old.y;
-            var rf = rft[i];
+            let rt = rft[i];
+            var rf = rt.x;
+            var th = rt.y;
+            if (th > 0.0) { th = th * prm.adec; if (th < 1e-4) { th = 0.0; } }
             let slot = stp.pos * prm.n + i;
             var dirty = false;
             if (atomicLoad(&ring[slot]) != 0) {
@@ -83,12 +92,13 @@ fn step(@builtin(workgroup_id) wg: vec3<u32>, @builtin(local_invocation_id) lid:
             }
             var spiked = false;
             if (rf > 0.0) {
-                rft[i] = max(rf - prm.dt, 0.0);
+                rf = max(rf - prm.dt, 0.0);
             } else {
                 let u = (v - prm.v0) * prm.a + g * prm.c * (prm.a - prm.b);
                 let gn = g * prm.b;
-                if (u + prm.v0 > prm.vth) {
-                    v = prm.v0; g = 0.0; rft[i] = prm.tref; spiked = true; dirty = true;
+                if (u + prm.v0 > prm.vth + max(th, 0.0)) {
+                    v = prm.v0; g = 0.0; rf = prm.tref; spiked = true; dirty = true;
+                    if (th >= 0.0) { th = th + prm.dth; }
                 } else {
                     v = prm.v0 + u;
                     g = gn;
@@ -96,9 +106,10 @@ fn step(@builtin(workgroup_id) wg: vec3<u32>, @builtin(local_invocation_id) lid:
                 }
             }
             if (pforce > 0.0 && urand(i, 2u) < pforce) {
-                v = prm.v0; g = 0.0; rft[i] = 0.0; spiked = true; dirty = true;
+                v = prm.v0; g = 0.0; rf = 0.0; spiked = true; dirty = true;
             }
             if (dirty) { vg[i] = vec2<f32>(v, g); }
+            if (rf != rt.x || th != rt.y) { rft[i] = vec2<f32>(rf, th); }
             if (spiked) {
                 cnt[i] = cnt[i] + 1u;
                 let k = atomicAdd(&scount[stp.w], 1u);
@@ -144,7 +155,7 @@ fn gather(@builtin(global_invocation_id) gid: vec3<u32>) {
 
 _SETSTATE = """
 @group(0) @binding(0) var<storage, read_write> vg: array<vec2<f32>>;
-@group(0) @binding(1) var<storage, read_write> rft: array<f32>;
+@group(0) @binding(1) var<storage, read_write> rft: array<vec2<f32>>;
 @group(0) @binding(2) var<storage, read> uidx: array<u32>;
 @group(0) @binding(3) var<storage, read> uval: array<vec4<f32>>;
 @compute @workgroup_size(64)
@@ -153,7 +164,7 @@ fn setstate(@builtin(global_invocation_id) gid: vec3<u32>) {
     if (q >= arrayLength(&uidx)) { return; }
     let i = uidx[q];
     vg[i] = uval[q].xy;
-    rft[i] = uval[q].z;
+    rft[i] = vec2<f32>(uval[q].z, rft[i].y);
 }
 """
 
@@ -272,7 +283,18 @@ class WGPUEngine:
         vg = np.zeros((n, 2), np.float32)
         vg[:, 0] = p.v_rest
         self.vg = self._new(vg, usage=U.STORAGE | U.COPY_DST)
-        self.rft = self._new(np.zeros(n, np.float32), usage=U.STORAGE | U.COPY_DST)
+        rft = np.zeros((n, 2), np.float32)
+        adapt = adapt_of(net)
+        dth = 0.0
+        if adapt is None:
+            rft[:, 1] = -1.0
+        else:
+            steps = np.unique(adapt[adapt > 0])
+            if len(steps) > 1:
+                raise ValueError(f"the GPU engine takes one adaptation step for all adapting neurons, got {steps}")
+            dth = float(steps[0])
+            rft[:, 1] = np.where(adapt > 0, 0.0, -1.0)
+        self.rft = self._new(rft, usage=U.STORAGE | U.COPY_DST)
         self.cnt = self._new(np.zeros(n, np.uint32), usage=U.STORAGE | U.COPY_DST)
         self.ring = self._new(np.zeros(self.D * n, np.int32), usage=U.STORAGE | U.COPY_DST)
         self.drive = self._new(np.zeros((n, 4), np.float32), usage=U.STORAGE | U.COPY_DST)
@@ -293,8 +315,9 @@ class WGPUEngine:
         a = float(np.float32(np.exp(-self.dt / p.tau_m)))
         b = float(np.float32(np.exp(-self.dt / p.tau_syn)))
         c = float(np.float32(p.tau_syn / (p.tau_m - p.tau_syn)))
-        prm = struct.pack("<4I8f", n, self.D, self._W, self._wg_update, a, b, c, p.v_rest, p.v_th, p.t_ref,
-                          self.dt, 0.0)
+        adec = float(np.float32(np.exp(-self.dt / p.tau_adapt)))
+        prm = struct.pack("<4I12f", n, self.D, self._W, self._wg_update, a, b, c, p.v_rest, p.v_th, p.t_ref,
+                          self.dt, 0.0, adec, dth, 0.0, 0.0)
         self.prm = self._new(prm, usage=U.UNIFORM)
         self.stepbuf = self._new(size=STEP_STRIDE * MAX_STEPS, usage=U.UNIFORM | U.COPY_DST)
 

@@ -194,7 +194,16 @@ Energy depletion and satiety modulate sensory salience, dopamine release, and mo
 
 - **Kazama, H., & Wilson, R. I. (2008)** *Homeostatic matching and nonlinear amplification at identified central synapses.* **Neuron**, 58(3), 401–413. [doi:10.1016/j.neuron.2008.02.030](https://doi.org/10.1016/j.neuron.2008.02.030)
 - **Olsen, S. R., & Wilson, R. I. (2008)** *Lateral presynaptic inhibition mediates gain control in an olfactory circuit.* **Nature**, 452(7190), 956–960. [doi:10.1038/nature06864](https://doi.org/10.1038/nature06864)  
-  *Relevance (these two):* the mechanisms that keep the real antennal lobe graded (synaptic depression, gain control) are absent from the LIF model; without them strong olfactory (or LC10) drive starts a self-sustained runaway, hence `states.LC10_MAX_HZ` and the ranking protocols under it (`tools/probe_runaway.py`).
+  *Relevance (these two):* the mechanisms that keep the real antennal lobe graded (synaptic depression, gain control) are absent from the Shiu LIF model; without them strong olfactory (or LC10) drive starts a self-sustained runaway, hence `states.LC10_MAX_HZ` and the ranking protocols under it (`tools/probe_runaway.py`).
+- **Bhandawat, V., Olsen, S. R., Gouwens, N. W., Schlief, M. L., & Wilson, R. I. (2007)** *Sensory processing in the Drosophila antennal lobe increases reliability and separability of ensemble odor representations.* **Nature Neuroscience**, 10(11), 1474–1482. [doi:10.1038/nn1976](https://doi.org/10.1038/nn1976)
+- **Kim, A. J., Lazar, A. A., & Slutskiy, Y. B. (2015)** *Projection neurons in Drosophila antennal lobes signal the acceleration of odor concentrations.* **eLife**, 4, e06651. [doi:10.7554/eLife.06651](https://doi.org/10.7554/eLife.06651)
+  *Implementation (these two):* projection neurons answer an odor with a transient onset and a lower sustained rate. The engines add spike-frequency adaptation on the antennal-lobe projection and local neurons (`flywire.AL_ADAPT_MV`, 4 mV per spike, `LIFParams.tau_adapt` 300 ms): the runaway ends, PN rates follow the odor, the other calibrated pathways are unchanged.
+- **Gaudry, Q., Hong, E. J., Kain, J., de Bivort, B. L., & Wilson, R. I. (2013)** *Asymmetric neurotransmitter release enables rapid odour lateralization in Drosophila.* **Nature**, 493(7432), 424–428. [doi:10.1038/nature11747](https://doi.org/10.1038/nature11747)
+  *Relevance:* each antenna's ORNs drive the ipsilateral projection neurons more strongly, so a left-right odor difference reaches the brain; in the model the two antennae drive their own food-odor ORNs (`ODOR_L`, `ODOR_R`) and the side reaches DNa02 through the circuit (Rayshubskiy et al. 2025: odor excites the ipsilateral DNa02).
+- **Root, C. M., Ko, K. I., Jafari, A., & Wang, J. W. (2011)** *Presynaptic facilitation by neuropeptide signaling mediates odor-driven food search.* **Cell**, 145(1), 133–144. [doi:10.1016/j.cell.2011.02.008](https://doi.org/10.1016/j.cell.2011.02.008)
+  *Implementation:* starvation raises the ORNs' output gain; the brain scales the ORN input by hunger (`brain.orn_level`, odor x hunger).
+- **Devroye, L. (1986)** *Non-Uniform Random Variate Generation.* Springer-Verlag, New York (ISBN 0-387-96305-7; chapter X.2, the geometric distribution by inversion).
+  *Implementation:* the compiled engine draws the Poisson drive as geometric gaps between events (one random number per event instead of one per driven neuron per step); the same process, ~10-17x cheaper for large driven groups.
 
 ---
 
