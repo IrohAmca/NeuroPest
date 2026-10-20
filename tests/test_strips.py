@@ -94,11 +94,11 @@ def test_the_circuit_paints_active_edges_in_the_behaviour_colour_and_idle_ones_d
         h.push({"gf": 150.0, "lc4": 100.0, "dnaL": 0.0, "dnaR": 0.0}, "fly")
     v.update_view(h, {"gf": 150.0, "lc4": 100.0}, "fly")
     img = v.grab().toImage()
-    colours = {_pixel(img, x, y) for x in range(180, 280, 3) for y in range(60, 140, 2)}
+    colours = {_pixel(img, x, y) for x in range(182, 268, 2) for y in range(40, 150, 2)}
     assert any(c.startswith("#f") and c != "#ffffff" and QColor(c).red() > 120 for c in colours)   # the escape red
     v.update_view(h, {}, "stand")
     img = v.grab().toImage()
-    assert not any(QColor(_pixel(img, x, y)).red() > 150 for x in range(180, 280, 3) for y in range(60, 140, 2))
+    assert not any(QColor(_pixel(img, x, y)).red() > 150 for x in range(182, 268, 2) for y in range(40, 150, 2))
 
 
 def _runner(state="walk"):

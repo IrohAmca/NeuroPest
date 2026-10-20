@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import math
+import re
 
 from PySide6.QtCore import QPointF, Qt
 from PySide6.QtGui import QColor, QIcon, QPainter, QPalette, QPen, QPixmap
@@ -36,6 +37,22 @@ WARN = "#f5a524"
 WARN_BORDER = "#4a3a16"
 ERROR = "#ff5d5d"
 
+def pt(px: float) -> float:
+    """Point size of a CSS pixel size at the 96 dpi the design was drawn at. Qt rounds a fractional `px` in a stylesheet
+    up (12.5px -> 13, 9.5px -> 10), while a fractional `pt` is kept, so every size goes through here."""
+    return px * 0.75
+
+
+def fs(px: float) -> str:
+    """`font-size` value for a stylesheet, from CSS pixels (see pt)."""
+    return f"{pt(px):g}pt"
+
+
+def _fractional_pt(qss: str) -> str:
+    """Every `font-size: Npx` of a stylesheet as the equal point size."""
+    return re.sub(r"font-size:\s*([\d.]+)px", lambda m: f"font-size: {fs(float(m.group(1)))}", qss)
+
+
 UI_FONT = '"Geist", "Segoe UI Variable Text", "Segoe UI", "Inter", "Noto Sans", sans-serif'
 MONO_FONT = '"Geist Mono", "Cascadia Mono", "Consolas", monospace'
 
@@ -50,7 +67,7 @@ STATE_STYLE = {
     FEED: ("#fbbf24", "Feeding"),
 }
 
-QSS = f"""
+_QSS = f"""
 * {{
     font-family: {UI_FONT};
     font-size: 12.5px;
@@ -65,7 +82,7 @@ QFrame#Card {{
     border: 1px solid {BORDER};
     border-radius: 6px;
 }}
-QLabel#Brand {{ font-size: 13px; font-weight: 600; color: {TEXT_STRONG}; }}
+QLabel#Brand {{ font-size: 15px; font-weight: 600; color: {TEXT_STRONG}; }}
 QLabel#Title {{ font-size: 16px; font-weight: 600; color: {TEXT_STRONG}; }}
 QLabel#Subtitle {{ color: {MUTED}; font-size: 11px; }}
 QLabel#Section {{
@@ -131,23 +148,25 @@ QPushButton:pressed {{ background: {SEL_BG}; border-color: {MUTED}; }}
 QPushButton:disabled {{ color: {FAINT}; }}
 
 QFrame#TopBar {{
-    background: {BG};
-    border-bottom: 1px solid {BORDER};
+    background: {STRIP_BG};
+    border-bottom: 1px solid {BORDER_HI};
 }}
 QPushButton#NavBtn {{
     background: transparent;
     border: none;
-    border-bottom: 2px solid transparent;
+    border-bottom: 3px solid transparent;
     border-radius: 0;
-    padding: 9px 9px 7px 9px;
-    font-size: 12.5px;
-    color: {MUTED};
+    padding: 12px 11px 9px 11px;
+    font-size: 13.5px;
+    font-weight: 500;
+    color: {MUTED_2};
 }}
-QPushButton#NavBtn:hover {{ color: {TEXT}; background: transparent; }}
+QPushButton#NavBtn:hover {{ color: {TEXT_STRONG}; background: {SEL_BG}; }}
 QPushButton#NavBtn[active="true"] {{
     color: {TEXT_STRONG};
     font-weight: 600;
-    border-bottom: 2px solid {TEXT_STRONG};
+    background: {SEL_BG};
+    border-bottom: 3px solid {TEXT_STRONG};
 }}
 
 QScrollArea, QScrollArea > QWidget > QWidget {{ background: {BG}; border: none; }}
@@ -166,6 +185,9 @@ QMenu::separator {{ height: 1px; background: {BORDER}; margin: 4px 6px; }}
 QMenu::indicator {{ width: 14px; height: 14px; margin-left: 6px; }}
 QMenu::indicator:checked {{ image: url({ASSETS}/check_accent.svg); }}
 """
+
+
+QSS = _fractional_pt(_QSS)
 
 
 def apply_theme(app: QApplication) -> None:

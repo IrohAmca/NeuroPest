@@ -15,7 +15,7 @@ from PySide6.QtWidgets import QHBoxLayout, QLabel, QSizePolicy, QVBoxLayout, QWi
 
 from .states import FEED, FLY, GROOM, RETREAT, WALK
 from .theme import (
-    BORDER, EDGE_OFF, FAINT, MONO_FONT, MUTED, MUTED_2, STATE_STYLE, STRIP_BG, TEXT, TEXT_STRONG,
+    BORDER, EDGE_OFF, FAINT, MONO_FONT, MUTED, MUTED_2, STATE_STYLE, STRIP_BG, TEXT, TEXT_STRONG, pt,
 )
 
 CELLS = 44                      # cells in a strip
@@ -39,7 +39,8 @@ BEHAVIOUR = (("Escape", 0, 60), ("Retreat", 1, 128), ("Steer", 2, 211), ("Walk",
 EDGES_SD = ((0, 0), (1, 0), (1, 1), (2, 1), (3, 2), (4, 3), (5, 4), (6, 5), (7, 6))
 EDGES_DB = ((0, 0), (1, 1), (2, 2), (3, 2), (4, 3), (5, 4), (6, 5))
 CANVAS_W, CANVAS_H = 712, 450
-NODE_H = 44.0
+NODE_H = 34.0                   # name row 14 + gap 4 + strip 16
+STRIP_H = 16                    # 12 px of cells, 1 px padding, 1 px border
 
 
 def mix(c: str | QColor, ground: str | QColor, t: float) -> QColor:
@@ -104,7 +105,7 @@ def paint_strip(p: QPainter, x: float, y: float, w: float, h: float, cells: list
 class KymoStrip(QWidget):
     """A strip as a widget (10-12 px tall, as wide as it is given)."""
 
-    def __init__(self, colour: str = TEXT, height: int = 12):
+    def __init__(self, colour: str = TEXT, height: int = STRIP_H):
         super().__init__()
         self.colour, self.border, self.cells = colour, BORDER, [0.0] * CELLS
         self.setFixedHeight(height)
@@ -187,29 +188,32 @@ class CircuitView(QWidget):
     def paintEvent(self, _):
         p = QPainter(self)
         p.setRenderHint(QPainter.Antialiasing, True)
-        mono = QFont(MONO_FONT.split(",")[0].strip().strip('"'))
+        mono = QFont([f.strip().strip('"') for f in MONO_FONT.split(",")])
         mono.setStyleHint(QFont.Monospace)
-        mono.setPixelSize(10)
+        mono.setPointSizeF(pt(10))
         small = QFont(self.font())
-        small.setPixelSize(11)
+        small.setPointSizeF(pt(11.5))
+        small.setWeight(QFont.DemiBold)
         head = QFont(mono)
-        head.setPixelSize(9)
+        head.setPointSizeF(pt(9.5))
         head.setLetterSpacing(QFont.AbsoluteSpacing, 1.0)
         hist, rates = self.hist, self.rates
 
-        for x, w, title, axis in ((14, 162, "SENSORY", True), (272, 170, "DESCENDING", True), (540, 156, "BEHAVIOUR", False)):
+        p.setPen(QPen(QColor(BORDER), 1))
+        p.setBrush(Qt.NoBrush)
+        p.drawRoundedRect(QRectF(0.5, 0.5, CANVAS_W - 1, CANVAS_H - 1), 6, 6)
+        for x, w, title in ((14, 162, "SENSORY"), (272, 170, "DESCENDING"), (540, 156, "BEHAVIOUR")):
             p.setFont(head)
             p.setPen(QColor(FAINT))
-            p.drawText(QRectF(x, 8, w, 14), Qt.AlignLeft | Qt.AlignVCenter, title)
-            if axis:
-                p.drawText(QRectF(x, 8, w, 14), Qt.AlignRight | Qt.AlignVCenter, AXIS)
+            p.drawText(QRectF(x, 12, w, 14), Qt.AlignLeft | Qt.AlignVCenter, title)
+            p.drawText(QRectF(x, 12, w, 14), Qt.AlignRight | Qt.AlignVCenter, AXIS)
 
         sens = [(14.0, 40.0 + i * 49.0, 162.0) for i in range(len(SENSORY))]
         desc = [(272.0, float(d[3]), 170.0) for d in DESCENDING]
         beh = [(540.0, float(b[2]), 156.0) for b in BEHAVIOUR]
 
         def cy(n):
-            return n[1] + 25.0
+            return n[1] + 26.0
 
         # edges first, so the cards sit on them
         def edge(a, b, key, lane, k):
@@ -221,7 +225,7 @@ class CircuitView(QWidget):
             path = QPainterPath(QPointF(x1, y1))
             path.cubicTo(QPointF(m, y1), QPointF(m, y2), QPointF(x2, y2))
             pen = QPen(c, 1.0 + 3.5 * norm)
-            pen.setCapStyle(Qt.FlatCap)
+            pen.setCapStyle(Qt.RoundCap)
             p.setPen(pen)
             p.setBrush(Qt.NoBrush)
             p.drawPath(path)
@@ -230,7 +234,7 @@ class CircuitView(QWidget):
                 p.setPen(Qt.NoPen)
                 p.setBrush(c)
                 pt = path.pointAtPercent(t)
-                p.drawEllipse(pt, 1.5, 1.5)
+                p.drawEllipse(pt, 3, 3)
 
         for k, (si, di) in enumerate(EDGES_SD):
             edge(sens[si], desc[di], SENSORY[si][1], DESCENDING[di][2], k)
@@ -241,16 +245,13 @@ class CircuitView(QWidget):
             x, y, w = n
             on = self._lane_on(lane)
             col = self._lane_colour(lane)
-            p.setPen(QPen(QColor(col if on else BORDER), 1))
-            p.setBrush(QColor("#05070b"))
-            p.drawRoundedRect(QRectF(x + 0.5, y + 0.5, w - 1, NODE_H - 1), 4, 4)
             p.setFont(small)
-            p.setPen(QColor(TEXT_STRONG if on else MUTED_2))
-            p.drawText(QRectF(x + 8, y + 5, w - 60, 14), Qt.AlignLeft | Qt.AlignVCenter, name)
+            p.setPen(QColor(TEXT_STRONG if on else MUTED))
+            p.drawText(QRectF(x, y, w - 56, 14), Qt.AlignLeft | Qt.AlignVCenter, name)
             p.setFont(mono)
             p.setPen(QColor(TEXT_STRONG if on else MUTED))
-            p.drawText(QRectF(x + w - 62, y + 5, 54, 14), Qt.AlignRight | Qt.AlignVCenter, hz_text)
-            paint_strip(p, x + 8, y + 24, w - 16, 12, cells, col)
+            p.drawText(QRectF(x + w - 56, y, 56, 14), Qt.AlignRight | Qt.AlignVCenter, hz_text)
+            paint_strip(p, x, y + 18, w, STRIP_H, cells, col, col if on else BORDER)
 
         for n, (name, key, lane) in zip(sens, SENSORY):
             card(n, name, f"{rates.get(key, 0.0):.0f} Hz", lane, hist.cells(key))
@@ -277,7 +278,7 @@ class EthoStrip(QWidget):
     """The ethogram: one cell per pair of samples, in the colour of the behaviour state the fly was in (the cell ground
     where there is no history yet)."""
 
-    def __init__(self, height: int = 12):
+    def __init__(self, height: int = STRIP_H):
         super().__init__()
         self.cells: list[str] = [STRIP_BG] * CELLS
         self.setFixedHeight(height)

@@ -39,7 +39,9 @@ from .render import AVAILABLE_SKINS, SKIN_METADATA
 from .runner import GPU_AUTO_MIN_NEURONS, EngineConfig, list_gpus, mb_wiring_from_env, pick_gpu
 
 from .strips import CircuitView, EthoStrip, History, StripRow, legend
-from .theme import ACCENT, BORDER, ERROR, FAINT, MUTED, STATE_STYLE, TEXT, TEXT_STRONG
+from .theme import (
+    ACCENT, BORDER, BORDER_BTN, BORDER_HI, ERROR, FAINT, MUTED, MUTED_2, SEL_BG, STATE_STYLE, TEXT, TEXT_STRONG, fs,
+)
 
 from .visionparams import VisionParams
 
@@ -70,6 +72,10 @@ def _label(text: str = "", name: str | None = None, wrap: bool = False) -> QLabe
     lab = QLabel(text)
     if name:
         lab.setObjectName(name)
+    if name in ("Section", "Axis"):                 # mono caps with 1 px of letter spacing (the stylesheet has no such property)
+        f = lab.font()
+        f.setLetterSpacing(QFont.AbsoluteSpacing, 1.0)
+        lab.setFont(f)
     lab.setWordWrap(wrap)
     return lab
 
@@ -271,12 +277,13 @@ class Control(QWidget):
     def _setup_topbar(self, parent_layout: QVBoxLayout):
         bar = QFrame()
         bar.setObjectName("TopBar")
+        bar.setFixedHeight(46)
         lay = QHBoxLayout(bar)
         lay.setContentsMargins(24, 0, 24, 0)
-        lay.setSpacing(0)
+        lay.setSpacing(2)
 
         lay.addWidget(_label("NeuroPest", "Brand"))
-        lay.addSpacing(18)
+        lay.addSpacing(20)
 
         # Short tab names; the pages keep their content and headings
         self.nav_buttons: list[QPushButton] = []
@@ -404,19 +411,21 @@ class Control(QWidget):
         for s_ in (self.s_gf, self.s_mdn, self.s_steer, self.s_mn9):
             s_.setParent(self)
             s_.hide()
-        row = QHBoxLayout()
-        row.setSpacing(24)
+        # the same numbers in the footer line (the stats above stay for the readouts and tooltips)
         for s_ in (self.s_rt, self.s_cpu, self.s_spk):
-            row.addWidget(s_)
-        info = QVBoxLayout()
-        info.setSpacing(2)
+            s_.setParent(self)
+            s_.hide()
+        foot = QHBoxLayout()
+        foot.setContentsMargins(0, 0, 0, 0)
+        foot.addWidget(_label("EVERY STRIP SHARES ONE TIME AXIS", "Axis"))
+        foot.addStretch(1)
+        self.footer = _label("", "Axis")
+        foot.addWidget(self.footer)
+        lay.addLayout(foot)
         self.active = _label("", "Muted")
-        info.addWidget(self.active)
+        self.active.hide()
         self.telemetry = _label("", "Faint")
-        info.addWidget(self.telemetry)
-        row.addLayout(info)
-        row.addStretch(1)
-        lay.addLayout(row)
+        lay.addWidget(self.telemetry)
         self.warn = _label("", "Warn", wrap=True)
         self.warn.hide()
         lay.addWidget(self.warn)
@@ -499,7 +508,8 @@ class Control(QWidget):
         self.adv_btn = QPushButton("Show Advanced Settings")
         self.adv_btn.setFlat(True)
         self.adv_btn.setCursor(Qt.PointingHandCursor)
-        self.adv_btn.setStyleSheet("text-align: left; font-size: 13px; font-weight: 600; padding: 4px 0;")
+        self.adv_btn.setStyleSheet(f"text-align: left; font-size: {fs(12.5)}; font-weight: 600; padding: 4px 0; "
+                                   f"color: {TEXT_STRONG};")
         self.adv_btn.clicked.connect(self._toggle_adv_settings)
         adv_card.body.addWidget(self.adv_btn)
 
@@ -1219,27 +1229,27 @@ class Control(QWidget):
             btn.setText(meta["title"])
             btn.setToolTip(f"{meta['full_name']}\n{meta['desc']}")
 
-            btn.setStyleSheet("""
-                QToolButton {
-                    background: #11151c;
-                    border: 1px solid #27303f;
-                    border-radius: 8px;
+            btn.setStyleSheet(f"""
+                QToolButton {{
+                    background: transparent;
+                    border: 1px solid {BORDER_BTN};
+                    border-radius: 6px;
                     padding: 6px 2px 4px 2px;
-                    color: #94a3b8;
-                    font-size: 11px;
+                    color: {MUTED_2};
+                    font-size: {fs(11)};
                     font-weight: 500;
-                }
-                QToolButton:hover {
-                    background: #18202c;
-                    border: 1px solid #475569;
-                    color: #f1f5f9;
-                }
-                QToolButton:checked {
-                    background: rgba(52, 211, 153, 0.14);
-                    border: 2px solid #34d399;
-                    color: #34d399;
-                    font-weight: bold;
-                }
+                }}
+                QToolButton:hover {{
+                    background: {SEL_BG};
+                    border: 1px solid {BORDER_HI};
+                    color: {TEXT_STRONG};
+                }}
+                QToolButton:checked {{
+                    background: {SEL_BG};
+                    border: 2px solid {TEXT_STRONG};
+                    color: {TEXT_STRONG};
+                    font-weight: 600;
+                }}
             """)
 
             self.skin_buttons[key] = btn
@@ -1486,7 +1496,8 @@ class Control(QWidget):
     # ---------------------------------------------------------------- telemetry
     def _set_pill(self, text: str, color: str):
         self.pill.setText(f"●  {text}")
-        self.pill.setStyleSheet(f"color: {color}; background: transparent; border: none; font-size: 12px; font-weight: 600;")
+        self.pill.setStyleSheet(f"color: {color}; background: transparent; border: none; font-size: {fs(14)}; "
+                                "font-weight: 600;")
 
     def _show_warn(self, text: str, error: bool = False):
         self.warn.setObjectName("Error" if error else "Warn")
@@ -1499,6 +1510,7 @@ class Control(QWidget):
         for s in (self.s_gf, self.s_mdn, self.s_steer, self.s_mn9, self.s_rt, self.s_cpu, self.s_spk,
                   self.s_val, self.s_vm, self.s_gear):
             s.set("–")
+        self.footer.setText("")
         self.active.setText("")
         if hasattr(self, "lbl_lab_gate"):       # starting / failed: no lab state to report (a restart drops the light)
             self.lbl_lab_gate.setVisible(False)
@@ -1560,6 +1572,8 @@ class Control(QWidget):
         self.s_rt.set(f"×{st['rt']:.1f}")
         self.s_cpu.set(f"%{100 * st['cpu']:.0f}")
         self.s_spk.set(f"{st['spikes']:,.0f}")
+        act = f"{st['active']:,.0f} ACTIVE" if st["active"] >= 0 else f"{st['n']:,} NEURONS"
+        self.footer.setText(f"{st['rt']:.1f}× REAL-TIME · CPU {100 * st['cpu']:.0f}% · {act} · {st['spikes']:,.0f} SPIKES/S")
         v = st.get("valence", 0.0)
         self.s_val.set(f"{v:+.2f} " + ("desire" if v > 0.05 else "fear" if v < -0.05 else "neutral"))
         self.s_vm.set(f"{st.get('v_motor', 0.0):.2f}")
