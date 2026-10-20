@@ -8,7 +8,9 @@
 A desktop fly pet that roams your screen and reacts dynamically to your mouse cursor. Its behavior is directly driven by a Leaky Integrate-and-Fire (LIF) simulation of the fruit fly (*Drosophila melanogaster*) connectome extracted from **FlyWire (v783)**.
 
 <p align="center">
-  <img src="assets/demo.gif" alt="NeuroPest Desktop Pet & 3D Connectome Demo" width="760"/>
+  <a href="assets/demo.mp4"><img src="assets/demo.gif" alt="NeuroPest: the fly's behaviours, the Circuit tab, the 3D connectome and the skins" width="760"/></a>
+  <br/>
+  <a href="assets/demo.mp4"><b>▶ Watch the full one-minute tour (MP4)</b></a>
 </p>
 
 **Current State (v0.9.0):** The mouse cursor is converted into three primary sensory streams, transformed into motor behaviors by the biological connectome:
