@@ -282,6 +282,7 @@ class Brain:
         self.phero_drive = 0.0     # attractive pheromone intensity (0..1)
         self.phero_repel = 0.0     # repulsive warning/border intensity (0..1)
         self.odor_delta = 0.0      # attractant concentration, right antenna minus left
+        self.drive_sugar_hz = self.drive_touch_hz = 0.0   # the taste and touch inputs, Hz per neuron, as last driven
         self.at_target = 0.0       # 1.0 if arrived at attractive source
         self.sugar = 0.0           # 0..1: food under the fly (taste contact)
         self.feed_level = 0.0      # 0..1: how far the proboscis is out (MN9 rate / mn9_full_hz); the GUI eats by it
@@ -546,6 +547,8 @@ class Brain:
                        SEARCH_WALK_LEVEL if search_hz > 0.0 else 0.0)
         effective_walk_bias = min(1.0, (walk_src + 0.4 * desire) * (1.0 + 0.3 * self.arousal))
         sugar_hz = s.sugar_hz * self.sugar * sugar_gain(h) if self.taste else 0.0
+        self.drive_sugar_hz = sugar_hz                   # what the control window shows (circuit tab)
+        self.drive_touch_hz = s.touch_hz * touch
         phero_steer = self.phero_steer
         orn_l = orn_r = 0.0
         if self.smell:                                   # the antennae's ORNs; only the repellent part steers via LC10

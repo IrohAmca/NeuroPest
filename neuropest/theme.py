@@ -13,19 +13,33 @@ from .states import FEED, FLY, FREEZE, GROOM, RETREAT, STAND, WALK
 
 ASSETS = (Path(__file__).resolve().parent / "assets").as_posix()
 
-BG = "#0b0b0d"          # window
-SURFACE = "#141417"     # cards
-RAISED = "#1c1c21"      # inputs, menus
-BORDER = "#26262c"
-BORDER_HI = "#3a3a42"
-TEXT = "#ececf1"
-MUTED = "#8b8b96"
-FAINT = "#5c5c66"
-ACCENT = "#4cc9f0"
+# "Fluorescence microscope" (design_handoff, final decisions): near-black ground, pale green-white text, thin dark-green
+# hairlines, no shadows, blur, gradients or glow. The behaviour colours are the only saturated colour.
+BG = "#05070b"          # window
+STRIP_BG = "#0b120d"    # kymograph strip ground
+SURFACE = STRIP_BG
+BORDER = "#16261b"      # panel border / hairline
+BORDER_BTN = "#24382a"  # button and select border
+BORDER_HI = "#2f4a37"   # hover border
+BTN_BG = "#08100b"
+RAISED = BTN_BG         # inputs, buttons, menus
+SEL_BG = "#0d1a11"      # hover / selected background
+EDGE_OFF = "#1f3326"    # inactive circuit edge
+NODE_OFF = "#2a3f30"    # inactive circuit node
+TEXT = "#cfe9cf"
+TEXT_STRONG = "#e6fbe2"  # values, active
+MUTED = "#6f8a74"       # hints, inactive labels
+MUTED_2 = "#9fbfa4"     # inactive names on the secondary pages
+FAINT = "#4a6450"       # section labels
+ACCENT = TEXT_STRONG
 WARN = "#f5a524"
+WARN_BORDER = "#4a3a16"
 ERROR = "#ff5d5d"
 
-# colour and English label per behaviour state, used by the state pill and the tray icon
+UI_FONT = '"Geist", "Segoe UI Variable Text", "Segoe UI", "Inter", "Noto Sans", sans-serif'
+MONO_FONT = '"Geist Mono", "Cascadia Mono", "Consolas", monospace'
+
+# colour and English label per behaviour state, used by the state pill, the circuit and the tray icon
 STATE_STYLE = {
     STAND: ("#a1a1aa", "Standing"),
     WALK: ("#3ddc97", "Walking"),
@@ -38,120 +52,117 @@ STATE_STYLE = {
 
 QSS = f"""
 * {{
-    font-family: "Segoe UI Variable Text", "Segoe UI", "Inter", "Noto Sans", sans-serif;
-    font-size: 13px;
+    font-family: {UI_FONT};
+    font-size: 12.5px;
     color: {TEXT};
 }}
 QWidget#Control {{ background: {BG}; }}
 QLabel {{ background: transparent; }}
-QToolTip {{ background: {RAISED}; color: {TEXT}; border: 1px solid {BORDER_HI}; padding: 6px; }}
+QToolTip {{ background: {BTN_BG}; color: {TEXT}; border: 1px solid {BORDER_HI}; padding: 5px; }}
 
 QFrame#Card {{
-    background: {SURFACE};
+    background: transparent;
     border: 1px solid {BORDER};
-    border-radius: 12px;
+    border-radius: 6px;
 }}
-QLabel#Title {{ font-size: 18px; font-weight: 600; }}
-QLabel#Subtitle {{ color: {MUTED}; font-size: 12px; }}
+QLabel#Brand {{ font-size: 13px; font-weight: 600; color: {TEXT_STRONG}; }}
+QLabel#Title {{ font-size: 16px; font-weight: 600; color: {TEXT_STRONG}; }}
+QLabel#Subtitle {{ color: {MUTED}; font-size: 11px; }}
 QLabel#Section {{
-    color: {MUTED}; font-size: 11px; font-weight: 600; letter-spacing: 1.2px;
+    color: {FAINT}; font-family: {MONO_FONT}; font-size: 9.5px; letter-spacing: 1px;
 }}
-QLabel#Muted {{ color: {MUTED}; font-size: 12px; }}
-QLabel#Faint {{ color: {FAINT}; font-size: 11px; }}
-QLabel#Value {{ color: {TEXT}; font-size: 12px; font-family: "Cascadia Mono", "Consolas", monospace; }}
-QLabel#StatValue {{ font-size: 17px; font-weight: 600; font-family: "Cascadia Mono", "Consolas", monospace; }}
-QLabel#StatName {{ color: {MUTED}; font-size: 11px; }}
+QLabel#Axis {{ color: {FAINT}; font-family: {MONO_FONT}; font-size: 9.5px; letter-spacing: 1px; }}
+QLabel#Muted {{ color: {MUTED}; font-size: 11.5px; }}
+QLabel#Faint {{ color: {MUTED}; font-size: 11px; }}
+QLabel#Value {{ color: {TEXT_STRONG}; font-size: 11.5px; font-family: {MONO_FONT}; }}
+QLabel#StatValue {{ font-size: 15px; font-weight: 600; color: {TEXT_STRONG}; font-family: {MONO_FONT}; }}
+QLabel#StatName {{ color: {MUTED}; font-size: 10.5px; }}
+QLabel#StripName {{ color: {MUTED_2}; font-size: 11px; }}
+QLabel#StripValue {{ color: {TEXT_STRONG}; font-size: 10.5px; font-family: {MONO_FONT}; }}
 QLabel#Warn {{
-    color: {WARN}; background: rgba(245, 165, 36, 0.08);
-    border: 1px solid rgba(245, 165, 36, 0.35); border-radius: 8px; padding: 8px 10px;
+    color: {WARN}; background: transparent; border: 1px solid {WARN_BORDER}; border-radius: 4px; padding: 6px 9px;
 }}
 QLabel#Error {{
-    color: {ERROR}; background: rgba(255, 93, 93, 0.08);
-    border: 1px solid rgba(255, 93, 93, 0.35); border-radius: 8px; padding: 8px 10px;
+    color: {ERROR}; background: transparent; border: 1px solid #4a1a1a; border-radius: 4px; padding: 6px 9px;
 }}
 QLabel#Hint {{
-    color: {MUTED}; background: {RAISED}; border-radius: 8px; padding: 8px 10px; font-size: 12px;
+    color: {MUTED}; background: transparent; border: 1px solid {BORDER}; border-radius: 4px; padding: 6px 9px;
+    font-size: 11.5px;
 }}
 
-QSlider {{ min-height: 22px; }}
-QSlider::groove:horizontal {{ height: 4px; background: {BORDER_HI}; border-radius: 2px; }}
-QSlider::sub-page:horizontal {{ background: {ACCENT}; border-radius: 2px; }}
+QSlider {{ min-height: 20px; }}
+QSlider::groove:horizontal {{ height: 3px; background: {EDGE_OFF}; border-radius: 1px; }}
+QSlider::sub-page:horizontal {{ background: {MUTED}; border-radius: 1px; }}
 QSlider::handle:horizontal {{
-    width: 14px; height: 14px; margin: -6px 0; border-radius: 8px;
-    background: {TEXT}; border: 1px solid {BG};
+    width: 12px; height: 12px; margin: -5px 0; border-radius: 6px;
+    background: {TEXT_STRONG}; border: 1px solid {BG};
 }}
-QSlider::handle:horizontal:hover {{ background: #ffffff; border: 2px solid {ACCENT}; }}
-QSlider::sub-page:horizontal:disabled {{ background: {FAINT}; }}
+QSlider::handle:horizontal:hover {{ border: 2px solid {BORDER_HI}; }}
+QSlider::sub-page:horizontal:disabled {{ background: {NODE_OFF}; }}
 
 QComboBox {{
-    background: {RAISED}; border: 1px solid {BORDER}; border-radius: 8px;
-    padding: 6px 10px; min-height: 18px;
+    background: {BTN_BG}; border: 1px solid {BORDER_BTN}; border-radius: 4px;
+    padding: 4px 9px; min-height: 18px;
 }}
-QComboBox:hover {{ border-color: {BORDER_HI}; }}
-QComboBox:focus {{ border-color: {ACCENT}; }}
-QComboBox::drop-down {{ border: none; width: 26px; }}
+QComboBox:hover {{ border-color: {BORDER_HI}; background: {SEL_BG}; }}
+QComboBox:focus {{ border-color: {TEXT_STRONG}; }}
+QComboBox::drop-down {{ border: none; width: 24px; }}
 QComboBox::down-arrow {{ image: url({ASSETS}/chevron.svg); width: 10px; height: 6px; }}
 QComboBox QAbstractItemView {{
-    background: {RAISED}; border: 1px solid {BORDER_HI}; border-radius: 8px; padding: 4px;
-    selection-background-color: #26343b; selection-color: {TEXT}; outline: none;
+    background: {BTN_BG}; border: 1px solid {BORDER_HI}; border-radius: 4px; padding: 3px;
+    selection-background-color: {SEL_BG}; selection-color: {TEXT_STRONG}; outline: none;
 }}
 
-QCheckBox {{ spacing: 10px; }}
+QCheckBox {{ spacing: 9px; }}
 QCheckBox::indicator {{
-    width: 16px; height: 16px; border-radius: 5px;
-    border: 1px solid {BORDER_HI}; background: {RAISED};
+    width: 14px; height: 14px; border-radius: 3px;
+    border: 1px solid {FAINT}; background: transparent;
 }}
-QCheckBox::indicator:hover {{ border-color: {ACCENT}; }}
+QCheckBox::indicator:hover {{ border-color: {TEXT}; }}
 QCheckBox::indicator:checked {{
-    background: {ACCENT}; border-color: {ACCENT}; image: url({ASSETS}/check.svg);
+    background: {TEXT}; border-color: {TEXT}; image: url({ASSETS}/check.svg);
 }}
 
 QPushButton {{
-    background: {RAISED}; border: 1px solid {BORDER}; border-radius: 8px; padding: 6px 14px;
+    background: {BTN_BG}; border: 1px solid {BORDER_BTN}; border-radius: 4px; padding: 5px 12px;
 }}
-QPushButton:hover {{ border-color: {BORDER_HI}; background: #232329; }}
-QPushButton:pressed {{ background: {SURFACE}; }}
+QPushButton:hover {{ border-color: {BORDER_HI}; background: {SEL_BG}; }}
+QPushButton:pressed {{ background: {SEL_BG}; border-color: {MUTED}; }}
+QPushButton:disabled {{ color: {FAINT}; }}
 
-QFrame#Sidebar {{
-    background: #0d0d10;
-    border-right: 1px solid {BORDER};
+QFrame#TopBar {{
+    background: {BG};
+    border-bottom: 1px solid {BORDER};
 }}
 QPushButton#NavBtn {{
     background: transparent;
     border: none;
-    border-radius: 8px;
-    padding: 8px 12px;
-    text-align: left;
-    font-size: 13px;
+    border-bottom: 2px solid transparent;
+    border-radius: 0;
+    padding: 9px 9px 7px 9px;
+    font-size: 12.5px;
     color: {MUTED};
-    font-weight: 500;
 }}
-QPushButton#NavBtn:hover {{
-    background: {RAISED};
-    color: {TEXT};
-}}
+QPushButton#NavBtn:hover {{ color: {TEXT}; background: transparent; }}
 QPushButton#NavBtn[active="true"] {{
-    background: {RAISED};
-    color: {ACCENT};
+    color: {TEXT_STRONG};
     font-weight: 600;
-    border-left: 3px solid {ACCENT};
-    border-top-left-radius: 2px;
-    border-bottom-left-radius: 2px;
+    border-bottom: 2px solid {TEXT_STRONG};
 }}
 
 QScrollArea, QScrollArea > QWidget > QWidget {{ background: {BG}; border: none; }}
-QScrollBar:vertical {{ background: transparent; width: 8px; margin: 2px; }}
-QScrollBar::handle:vertical {{ background: {BORDER_HI}; border-radius: 3px; min-height: 30px; }}
+QScrollBar:vertical {{ background: transparent; width: 7px; margin: 2px; }}
+QScrollBar::handle:vertical {{ background: {BORDER_BTN}; border-radius: 3px; min-height: 30px; }}
 QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{ height: 0; }}
 QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {{ background: transparent; }}
 
 QMenu {{
-    background: {RAISED}; border: 1px solid {BORDER_HI}; border-radius: 10px; padding: 6px;
+    background: {BG}; border: 1px solid {BORDER_BTN}; border-radius: 6px; padding: 4px;
 }}
-QMenu::item {{ padding: 7px 22px 7px 12px; border-radius: 6px; }}
-QMenu::item:selected {{ background: #26343b; }}
+QMenu::item {{ padding: 6px 20px 6px 11px; border-radius: 4px; }}
+QMenu::item:selected {{ background: {SEL_BG}; color: {TEXT_STRONG}; }}
 QMenu::item:disabled {{ color: {MUTED}; }}
-QMenu::separator {{ height: 1px; background: {BORDER}; margin: 5px 6px; }}
+QMenu::separator {{ height: 1px; background: {BORDER}; margin: 4px 6px; }}
 QMenu::indicator {{ width: 14px; height: 14px; margin-left: 6px; }}
 QMenu::indicator:checked {{ image: url({ASSETS}/check_accent.svg); }}
 """
@@ -166,8 +177,8 @@ def apply_theme(app: QApplication) -> None:
     pal = QPalette()
     for role, col in [(QPalette.Window, BG), (QPalette.WindowText, TEXT), (QPalette.Base, RAISED),
                       (QPalette.AlternateBase, SURFACE), (QPalette.Text, TEXT), (QPalette.Button, RAISED),
-                      (QPalette.ButtonText, TEXT), (QPalette.Highlight, ACCENT),
-                      (QPalette.HighlightedText, BG), (QPalette.ToolTipBase, RAISED),
+                      (QPalette.ButtonText, TEXT), (QPalette.Highlight, SEL_BG),
+                      (QPalette.HighlightedText, TEXT_STRONG), (QPalette.ToolTipBase, RAISED),
                       (QPalette.ToolTipText, TEXT), (QPalette.PlaceholderText, FAINT)]:
         pal.setColor(role, QColor(col))
     app.setPalette(pal)

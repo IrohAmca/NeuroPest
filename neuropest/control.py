@@ -1,4 +1,4 @@
-"""Control window: live readouts and settings, grouped into categories with a sidebar navigation."""
+"""Control window: live readouts and settings, grouped into categories with a top navigation bar (design_handoff)."""
 from __future__ import annotations
 
 import importlib.util
@@ -38,7 +38,8 @@ from .preferences import Preferences
 from .render import AVAILABLE_SKINS, SKIN_METADATA
 from .runner import GPU_AUTO_MIN_NEURONS, EngineConfig, list_gpus, mb_wiring_from_env, pick_gpu
 
-from .theme import ACCENT, BORDER, ERROR, FAINT, MUTED, STATE_STYLE
+from .strips import CircuitView, EthoStrip, History, StripRow, legend
+from .theme import ACCENT, BORDER, ERROR, FAINT, MUTED, STATE_STYLE, TEXT, TEXT_STRONG
 
 from .visionparams import VisionParams
 
@@ -74,14 +75,14 @@ def _label(text: str = "", name: str | None = None, wrap: bool = False) -> QLabe
 
 
 class Card(QFrame):
-    """Rounded panel with a small upper-case heading; add rows to `.body`."""
+    """Outlined panel with a small mono upper-case heading; add rows to `.body`."""
 
     def __init__(self, title: str):
         super().__init__()
         self.setObjectName("Card")
         lay = QVBoxLayout(self)
-        lay.setContentsMargins(18, 16, 18, 18)
-        lay.setSpacing(12)
+        lay.setContentsMargins(12, 10, 12, 12)
+        lay.setSpacing(8)
         lay.addWidget(_label(title.upper(), "Section"))
         self.body = lay
 
@@ -214,6 +215,18 @@ class _ContentScrollArea(QScrollArea):
             w.setMaximumWidth(self.viewport().width())
 
 
+class _CurrentPageStack(QStackedWidget):
+    """A stack that is as tall as the page on show, not as the tallest page, so a short page does not scroll."""
+
+    def sizeHint(self) -> QSize:
+        w = self.currentWidget()
+        return w.sizeHint() if w is not None else super().sizeHint()
+
+    def minimumSizeHint(self) -> QSize:
+        w = self.currentWidget()
+        return w.minimumSizeHint() if w is not None else super().minimumSizeHint()
+
+
 class Control(QWidget):
     def __init__(self, overlay, runner, prefs: Preferences | None = None, auto_scan_gpus: bool = True):
         super().__init__()
@@ -227,12 +240,13 @@ class Control(QWidget):
         self.resize(760, 560)
         self.setMinimumSize(620, 440)
 
-        # Root two-column layout: Sidebar on the left, Content pages on the right
-        root = QHBoxLayout(self)
+        # Root layout: the navigation bar on top, the pages under it
+        self.hist = History()
+        root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(0)
 
-        self._setup_sidebar(root)
+        self._setup_topbar(root)
         self._setup_content(root)
 
         self._load_sizes(runner.cfg.n)
@@ -253,42 +267,21 @@ class Control(QWidget):
         super().showEvent(event)
         self._refresh()
 
-    # ------------------------------------------------------------------ sidebar
-    def _setup_sidebar(self, parent_layout: QHBoxLayout):
-        sidebar = QFrame()
-        sidebar.setObjectName("Sidebar")
-        sidebar.setFixedWidth(220)
-        lay = QVBoxLayout(sidebar)
-        lay.setContentsMargins(16, 20, 16, 18)
-        lay.setSpacing(10)
+    # ------------------------------------------------------------------ navigation
+    def _setup_topbar(self, parent_layout: QVBoxLayout):
+        bar = QFrame()
+        bar.setObjectName("TopBar")
+        lay = QHBoxLayout(bar)
+        lay.setContentsMargins(24, 0, 24, 0)
+        lay.setSpacing(0)
 
-        # App Brand Header
-        titles = QVBoxLayout()
-        titles.setSpacing(2)
-        titles.addWidget(_label("NeuroPest", "Title"))
-        titles.addWidget(_label("FlyWire Pet", "Subtitle"))
-        lay.addLayout(titles)
+        lay.addWidget(_label("NeuroPest", "Brand"))
+        lay.addSpacing(18)
 
-        # State Pill right under header
-        self.pill = QLabel()
-        self.pill.setAlignment(Qt.AlignCenter)
-        lay.addWidget(self.pill)
-
-        lay.addSpacing(14)
-        lay.addWidget(_label("CATEGORIES", "Section"))
-
-        # Navigation buttons
+        # Short tab names; the pages keep their content and headings
         self.nav_buttons: list[QPushButton] = []
-        nav_items = [
-            ("Live Telemetry", 0),
-            ("Behaviour", 1),
-            ("Visual Input", 2),
-            ("Pheromones && Odor", 3),
-            ("Circuit && Hardware", 4),
-            ("Appearance", 5),
-            ("Learning && Memory", 6),
-        ]
-        for title, idx in nav_items:
+        nav_items = ["Circuit", "Behaviour", "Senses", "Odor", "Hardware", "Look", "Memory"]
+        for idx, title in enumerate(nav_items):
             btn = QPushButton(title)
             btn.setObjectName("NavBtn")
             btn.setCursor(Qt.PointingHandCursor)
@@ -298,12 +291,16 @@ class Control(QWidget):
             lay.addWidget(btn)
 
         lay.addStretch(1)
-        lay.addWidget(_label("FlyWire v783 connectome\nShiu et al. (Nature 2024)", "Faint", wrap=True))
+        # the current behaviour state, on the right
+        self.pill = QLabel()
+        self.pill.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        lay.addWidget(self.pill)
 
-        parent_layout.addWidget(sidebar)
+        parent_layout.addWidget(bar)
 
     def _switch_tab(self, idx: int):
         self.stack.setCurrentIndex(idx)
+        self.stack.updateGeometry()
         for i, btn in enumerate(self.nav_buttons):
             active_str = "true" if i == idx else "false"
             btn.setProperty("active", active_str)
@@ -311,23 +308,23 @@ class Control(QWidget):
             btn.style().polish(btn)
 
     # ------------------------------------------------------------------ content
-    def _setup_content(self, parent_layout: QHBoxLayout):
+    def _setup_content(self, parent_layout: QVBoxLayout):
         scroll = _ContentScrollArea(widgetResizable=True, frameShape=QFrame.NoFrame)
         scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         content_wrap = QWidget()
         scroll.setWidget(content_wrap)
 
         content_lay = QVBoxLayout(content_wrap)
-        content_lay.setContentsMargins(24, 20, 24, 20)
-        content_lay.setSpacing(16)
+        content_lay.setContentsMargins(24, 12, 24, 12)
+        content_lay.setSpacing(10)
 
-        self.stack = QStackedWidget()
+        self.stack = _CurrentPageStack()
 
         # Page 0: Live Telemetry
         p0 = QWidget()
         p0_lay = QVBoxLayout(p0)
         p0_lay.setContentsMargins(0, 0, 0, 0)
-        p0_lay.setSpacing(14)
+        p0_lay.setSpacing(8)
         self._build_live_page(p0_lay)
         p0_lay.addStretch(1)
         self.stack.addWidget(p0)
@@ -336,7 +333,7 @@ class Control(QWidget):
         p1 = QWidget()
         p1_lay = QVBoxLayout(p1)
         p1_lay.setContentsMargins(0, 0, 0, 0)
-        p1_lay.setSpacing(14)
+        p1_lay.setSpacing(10)
         self._build_behaviour_page(p1_lay)
         p1_lay.addStretch(1)
         self.stack.addWidget(p1)
@@ -345,7 +342,7 @@ class Control(QWidget):
         p2 = QWidget()
         p2_lay = QVBoxLayout(p2)
         p2_lay.setContentsMargins(0, 0, 0, 0)
-        p2_lay.setSpacing(14)
+        p2_lay.setSpacing(10)
         self._build_vision_page(p2_lay)
         p2_lay.addStretch(1)
         self.stack.addWidget(p2)
@@ -354,7 +351,7 @@ class Control(QWidget):
         p3 = QWidget()
         p3_lay = QVBoxLayout(p3)
         p3_lay.setContentsMargins(0, 0, 0, 0)
-        p3_lay.setSpacing(14)
+        p3_lay.setSpacing(10)
         self._build_pheromone_page(p3_lay)
         p3_lay.addStretch(1)
         self.stack.addWidget(p3)
@@ -363,7 +360,7 @@ class Control(QWidget):
         p4 = QWidget()
         p4_lay = QVBoxLayout(p4)
         p4_lay.setContentsMargins(0, 0, 0, 0)
-        p4_lay.setSpacing(14)
+        p4_lay.setSpacing(10)
         self._build_circuit_page(p4_lay)
         p4_lay.addStretch(1)
         self.stack.addWidget(p4)
@@ -372,7 +369,7 @@ class Control(QWidget):
         p5 = QWidget()
         p5_lay = QVBoxLayout(p5)
         p5_lay.setContentsMargins(0, 0, 0, 0)
-        p5_lay.setSpacing(14)
+        p5_lay.setSpacing(10)
         self._build_view_page(p5_lay)
         p5_lay.addStretch(1)
         self.stack.addWidget(p5)
@@ -381,7 +378,7 @@ class Control(QWidget):
         p6 = QWidget()
         p6_lay = QVBoxLayout(p6)
         p6_lay.setContentsMargins(0, 0, 0, 0)
-        p6_lay.setSpacing(14)
+        p6_lay.setSpacing(10)
         self._build_learning_page(p6_lay)
         p6_lay.addStretch(1)
         self.stack.addWidget(p6)
@@ -391,10 +388,11 @@ class Control(QWidget):
 
     # ------------------------------------------------------------------ pages
     def _build_live_page(self, lay: QVBoxLayout):
-        card = Card("Live Metrics")
-        grid = QGridLayout()
-        grid.setHorizontalSpacing(16)
-        grid.setVerticalSpacing(14)
+        # The Circuit tab: 8 sensory -> 7 descending -> 6 behaviour nodes, each a kymograph strip of its last 22 s
+        self.circuit = CircuitView()
+        lay.addWidget(self.circuit, 0, Qt.AlignHCenter)
+
+        # the numbers the nodes show (kept as readouts; the first four are the nodes' values, not drawn again)
         self.s_gf = Stat("Giant Fiber", "Firing rate of escape/takeoff command neuron")
         self.s_mdn = Stat("MDN", "Firing rate of backward walking command neurons")
         self.s_steer = Stat("Steering", "Right minus left DNa02 rate (positive: turns right)")
@@ -403,19 +401,38 @@ class Control(QWidget):
         self.s_spk = Stat("Spikes / s")
         self.s_mn9 = Stat("MN9 (proboscis)", "Firing rate of the proboscis motor neuron: food under the fly drives the "
                           "sugar receptor neurons, they drive MN9, and the fly feeds while it fires (hunger raises it)")
-        for i, s in enumerate([self.s_gf, self.s_mdn, self.s_steer, self.s_mn9, self.s_rt, self.s_cpu, self.s_spk]):
-            grid.addWidget(s, i // 3, i % 3)
-        card.body.addLayout(grid)
+        for s_ in (self.s_gf, self.s_mdn, self.s_steer, self.s_mn9):
+            s_.setParent(self)
+            s_.hide()
+        row = QHBoxLayout()
+        row.setSpacing(24)
+        for s_ in (self.s_rt, self.s_cpu, self.s_spk):
+            row.addWidget(s_)
+        info = QVBoxLayout()
+        info.setSpacing(2)
         self.active = _label("", "Muted")
-        card.body.addWidget(self.active)
-        self.telemetry = _label("", "Faint", wrap=True)
-        card.body.addWidget(self.telemetry)
+        info.addWidget(self.active)
+        self.telemetry = _label("", "Faint")
+        info.addWidget(self.telemetry)
+        row.addLayout(info)
+        row.addStretch(1)
+        lay.addLayout(row)
         self.warn = _label("", "Warn", wrap=True)
         self.warn.hide()
-        card.body.addWidget(self.warn)
-        lay.addWidget(card)
+        lay.addWidget(self.warn)
 
-    def _build_behaviour_page(self, lay: QVBoxLayout):
+    def _build_behaviour_page(self, outer: QVBoxLayout):
+        # two columns: hunger and the ethogram on the left, touch and the advanced settings on the right
+        cols = QHBoxLayout()
+        cols.setSpacing(10)
+        left, right = QVBoxLayout(), QVBoxLayout()
+        left.setSpacing(10)
+        right.setSpacing(10)
+        cols.addLayout(left, 1)
+        cols.addLayout(right, 1)
+        outer.addLayout(cols)
+        left.addStretch(1)
+        right.addStretch(1)
         # 1. Hunger & Metabolism (Primary Biological Drive)
         hunger_card = Card("Hunger & Metabolism")
         self.hunger_enable_box = QCheckBox("Hunger and Metabolism Simulation")
@@ -441,6 +458,8 @@ class Control(QWidget):
         self.hunger_label = _label("–", "Value")
         status_row.addWidget(self.hunger_label)
         hunger_card.body.addLayout(status_row)
+        self.hunger_strip = StripRow("Hunger", TEXT, unit="")
+        hunger_card.body.addWidget(self.hunger_strip)
 
         btn_row = QHBoxLayout()
         self.btn_starve = QPushButton("Starve Fly")
@@ -454,7 +473,13 @@ class Control(QWidget):
         btn_row.addWidget(self.btn_feed)
 
         hunger_card.body.addLayout(btn_row)
-        lay.addWidget(hunger_card)
+        left.insertWidget(left.count() - 1, hunger_card)
+
+        etho_card = Card("Behaviour, last 22 s")
+        self.etho = EthoStrip()
+        etho_card.body.addWidget(self.etho)
+        etho_card.body.addWidget(legend())
+        left.insertWidget(left.count() - 1, etho_card)
 
         # 2. Touch & Grooming
         touch_card = Card("Touch & Grooming")
@@ -467,7 +492,7 @@ class Control(QWidget):
         self.touch_groom_box.setChecked(is_touch_on)
         self.touch_groom_box.toggled.connect(self._on_touch_groom_toggled)
         touch_card.body.addWidget(self.touch_groom_box)
-        lay.addWidget(touch_card)
+        right.insertWidget(right.count() - 1, touch_card)
 
         # 3. Advanced Behaviour Settings (Collapsible Accordion Card)
         adv_card = Card("Advanced Behaviour Settings")
@@ -514,7 +539,7 @@ class Control(QWidget):
 
         self.adv_content.setVisible(False)
         adv_card.body.addWidget(self.adv_content)
-        lay.addWidget(adv_card)
+        right.insertWidget(right.count() - 1, adv_card)
 
     def _toggle_adv_settings(self):
         visible = not self.adv_content.isVisible()
@@ -572,6 +597,12 @@ class Control(QWidget):
             self.overlay.metabolism.satiate()
 
     def _build_vision_page(self, lay: QVBoxLayout):
+        neurons = Card("Visual neurons, last 22 s")
+        self.vis_strips = {}
+        for name, key in (("LC4", "lc4"), ("LPLC2", "lplc2"), ("LC10 L", "lc10L"), ("LC10 R", "lc10R")):
+            self.vis_strips[key] = StripRow(name)
+            neurons.body.addWidget(self.vis_strips[key])
+        lay.addWidget(neurons)
         card = Card("Visual Input & Screen Perception")
         self.has_eye = EYE.exists() and FIELD.exists()
         self.vision = QCheckBox("Screen Capture Vision (Compound Eye Perception)", enabled=self.has_eye)
@@ -605,7 +636,7 @@ class Control(QWidget):
         self.preview_check.setChecked(bool(self.has_eye and getattr(self.prefs, "eye_preview", False)))
         card.body.addWidget(self.preview_check)
         self.preview_tabs = QWidget()
-        self.preview_tabs.setStyleSheet(f"QPushButton:checked {{ border: 1px solid {ACCENT}; color: {ACCENT}; }}")
+        self.preview_tabs.setStyleSheet(f"QPushButton:checked {{ border: 1px solid {ACCENT}; color: {ACCENT}; background: {BORDER}; }}")
         tabs = QHBoxLayout(self.preview_tabs)
         tabs.setContentsMargins(0, 0, 0, 0)
         tabs.setSpacing(6)
@@ -823,6 +854,12 @@ class Control(QWidget):
 
         lay.addWidget(card_3d)
 
+        card_da = Card("Dopamine neurons, last 22 s")
+        self.da_strips = {"pam": StripRow("PAM (reward)", TEXT, unit=""), "ppl1": StripRow("PPL1 (punishment)", TEXT, unit="")}
+        for w_ in self.da_strips.values():
+            card_da.body.addWidget(w_)
+        lay.addWidget(card_da)
+
         # 2. Experiment & Learning Sandbox Console
         card_sim = Card("Learning & Experiment Sandbox")
         card_sim.body.addWidget(_label(
@@ -972,7 +1009,7 @@ class Control(QWidget):
         if visible:
             self.btn_toggle_3d.setText("Hide 3D Neural Circuit (Save Power)")
             self.btn_toggle_3d.setStyleSheet(
-                "background: rgba(76, 201, 240, 0.15); border: 1px solid #4cc9f0; color: #4cc9f0; font-weight: 600;"
+                f"background: {BORDER}; border: 1px solid {TEXT_STRONG}; color: {TEXT_STRONG}; font-weight: 600;"
             )
         else:
             self.btn_toggle_3d.setText("View 3D Neural Circuit")
@@ -1449,9 +1486,7 @@ class Control(QWidget):
     # ---------------------------------------------------------------- telemetry
     def _set_pill(self, text: str, color: str):
         self.pill.setText(f"●  {text}")
-        self.pill.setStyleSheet(
-            f"color: {color}; background: rgba(255,255,255,0.04); border: 1px solid {color}55;"
-            "border-radius: 13px; padding: 4px 12px; font-size: 12px; font-weight: 600;")
+        self.pill.setStyleSheet(f"color: {color}; background: transparent; border: none; font-size: 12px; font-weight: 600;")
 
     def _show_warn(self, text: str, error: bool = False):
         self.warn.setObjectName("Error" if error else "Warn")
@@ -1468,10 +1503,40 @@ class Control(QWidget):
         if hasattr(self, "lbl_lab_gate"):       # starting / failed: no lab state to report (a restart drops the light)
             self.lbl_lab_gate.setVisible(False)
 
+    def _update_strips(self, r, st: dict) -> None:
+        """One 4 Hz sample into the history, then every strip."""
+        lab = r.lab_rates() if hasattr(r, "lab_rates") else {}
+        hunger = 0.0
+        m = getattr(self.overlay, "metabolism", None)
+        if m is not None:
+            hunger = (m.hunger_pct / 100.0) if getattr(m, "enabled", True) else 1.0
+        v = {"gf": st.get("gf", 0.0), "mdn": st.get("mdn", 0.0), "dnaL": lab.get("DNa02_L", 0.0),
+             "dnaR": lab.get("DNa02_R", 0.0), "dnp09": st.get("walk", 0.0), "mn9": st.get("mn9", 0.0),
+             "adn1": st.get("groom", 0.0), "adn2": st.get("groom", 0.0), "lc4": lab.get("LC4", 0.0),
+             "lplc2": lab.get("LPLC2", 0.0), "lpc1": lab.get("LPC1", 0.0), "lc10L": lab.get("LC10_L", 0.0),
+             "lc10R": lab.get("LC10_R", 0.0), "p9": st.get("walk", 0.0), "sugar": st.get("sugar_hz", 0.0),
+             "bristle": st.get("touch_hz", 0.0), "pam": st.get("pam", 0.0), "ppl1": st.get("ppl1", 0.0),
+             "hunger": hunger}
+        self.hist.push(v, r.state)
+        h = self.hist
+        page = self.stack.currentIndex()
+        if page == 0:
+            self.circuit.update_view(h, v, r.state)
+        elif page == 1:
+            self.hunger_strip.set(h.cells("hunger"), text=f"{hunger * 100:.0f} %")
+            self.etho.set_history(h)
+        elif page == 2:
+            for key, row in self.vis_strips.items():
+                row.set(h.cells(key), v[key])
+        elif page == 6:
+            for key, row in self.da_strips.items():
+                row.set(h.cells(key), text=f"{v[key]:.2f}")
+
     def _refresh(self):
         r = self.runner
         if r.failed or not r.alive:
             self._set_pill("Error", ERROR)
+            self.circuit.set_message("The engine stopped.")
             self._clear_stats()
             self.telemetry.setText("")
             self._show_warn("Engine encountered an error or stopped (see console for details). Try selecting a smaller circuit size.",
@@ -1480,12 +1545,14 @@ class Control(QWidget):
         st = r.stats()
         if not st["ready"]:
             self._set_pill("Starting", MUTED)
+            self.circuit.set_message("Starting the engine…")
             self._clear_stats()
             self.telemetry.setText("Engine initializing (initial compilation takes a few seconds)…")
             self._show_warn("")
             return
         color, name = STATE_STYLE.get(r.state, (FAINT, r.state))
         self._set_pill(name, color)
+        self._update_strips(r, st)
         self.s_gf.set(f"{st['gf']:.0f} Hz")
         self.s_mdn.set(f"{st['mdn']:.0f} Hz")
         self.s_steer.set(f"{st['steer']:+.0f}")
