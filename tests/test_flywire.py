@@ -708,3 +708,11 @@ def test_losing_the_odor_starts_a_search_toward_where_it_was_stronger_and_findin
     b.set_stimulus(1e6, 0.0, walk_bias=0.0, phero_drive=0.5, phero_steer=0.0, hunger=1.0)   # back in it
     _settle(b, 1000)
     assert b._search_ms == 0.0
+
+
+def test_the_brain_reports_the_taste_and_touch_drive_it_applies(tier):
+    b = Brain(tier)
+    b.set_stimulus(1e6, 0.0, sugar=1.0, hunger=1.0, touch=0.0)
+    assert np.isclose(b.drive_sugar_hz, FLYWIRE.sugar_hz) and b.drive_touch_hz == 0.0
+    b.set_stimulus(10.0, 0.0, sugar=1.0, hunger=0.0, touch=1.0)
+    assert b.drive_sugar_hz == 0.0 and np.isclose(b.drive_touch_hz, FLYWIRE.touch_hz)

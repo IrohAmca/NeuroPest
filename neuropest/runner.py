@@ -72,6 +72,8 @@ O_RATE_DNA02_L, O_RATE_DNA02_R = 44, 45
 O_MOTION = 46               # state index + len(STATES) * gear index, in ONE slot: the GUI reads both with one load
 O_MN9 = 47                  # spiking rate of the proboscis motor neuron MN9, Hz
 O_FEED = 48                 # 0..1: how far the proboscis is out (Brain.feed_level); the GUI eats by it
+O_SUGAR_HZ = 49              # the taste input (labellar sugar neurons), Hz per neuron, as driven now
+O_TOUCH_HZ = 50             # the head touch input (bristles, Johnston's organ), Hz per neuron
 OUT_LEN = 64
 LAB_RATE_SLOTS = {"LC4": O_RATE_LC4, "LPLC2": O_RATE_LPLC2, "LPC1": O_RATE_LPC1, "LC10_L": O_RATE_LC10_L,
                   "LC10_R": O_RATE_LC10_R, "DNa02_L": O_RATE_DNA02_L, "DNa02_R": O_RATE_DNA02_R}
@@ -285,6 +287,7 @@ def _loop(cfg: EngineConfig, brain, net, inp, out, stop, cap_frame=None, cap_met
         out[O_VMOTOR] = brain.v_motor
         out[O_URGE] = brain.flight_urge
         out[O_MN9], out[O_FEED] = brain.rates["MN9"], brain.feed_level
+        out[O_SUGAR_HZ], out[O_TOUCH_HZ] = brain.drive_sugar_hz, brain.drive_touch_hz
         for name, slot in LAB_RATE_SLOTS.items():
             out[slot] = brain.lab_rates.get(name, brain.rates.get(name, 0.0))
         lab.publish(brain, out)
@@ -967,7 +970,7 @@ class Runner:
                     pam=o[O_PAM], ppl1=o[O_PPL1], mbon_app=o[O_MBON_APP], mbon_av=o[O_MBON_AV],
                     kc_active=int(o[O_KC_ACTIVE]), cue_food=o[O_CUE_FOOD], cue_near=o[O_CUE_NEAR],
                     weights_dirty=int(o[O_MB_WEIGHTS_DIRTY]), urge=o[O_URGE], state=STATES[motion % len(STATES)],
-                    mn9=o[O_MN9], feed=o[O_FEED],
+                    mn9=o[O_MN9], feed=o[O_FEED], sugar_hz=o[O_SUGAR_HZ], touch_hz=o[O_TOUCH_HZ],
                     heading=float(self.inp[I_HEAD]))     # the fly's on-screen heading, rad (the 3D compass shows it)
 
 

@@ -129,7 +129,9 @@ uv run neuropest
     most about a third of the GUI thread the pet runs on (a drag repaints on every mouse move). Opening it in its own
     window pauses the embedded copy.
 - **Control Panel:**
-  - Dark-themed card interface displaying real-time telemetry (Giant Fiber, MDN, Steering, MN9, real-time factor, CPU load, active neuron count, valence, hunger).
+  - "Fluorescence microscope" theme: near-black ground, pale green-white text, thin dark-green hairlines, no shadows or glow; only the behaviour colours are saturated. A top bar of short tab names (Circuit, Behaviour, Senses, Odor, Hardware, Look, Memory) with the current behaviour state on the right.
+  - **Kymograph strips:** the last 22 s of a neuron group as a row of 44 cells, each a mix of the behaviour colour and the ground by rate (`neuropest/strips.py`). The **Circuit** tab draws the real FlyWire connections, 8 sensory -> 7 descending -> 6 behaviour nodes, every node a strip on one shared time axis; the active path takes the behaviour colour and carries a moving dot. The same strips appear for hunger and the ethogram (Behaviour), LC4 / LPLC2 / LC10 (Senses) and PAM / PPL1 (Memory).
+  - Telemetry kept as numbers under the circuit: real-time factor, CPU load, spikes per second, active neuron count.
   - Collapsible **Advanced Behavior Settings** (Activity at 65%, Skittishness $\times 1.00$, Wall Pain $\times 1.00$, with a single-click reset).
   - Closing the control window minimizes it to the system tray; click the tray icon to restore.
 - **System Tray Icon:**
@@ -369,7 +371,7 @@ NeuroPest/
 │   ├── app.py              # Main desktop application, transparent overlay & Qt lifecycle
 │   ├── brain.py            # Neural network coordinator, sensory encoding & motor decoding
 │   ├── capture.py          # Isolated BitBlt screen capture worker with shared memory
-│   ├── control.py          # Dark-themed control panel & telemetry window
+│   ├── control.py          # Control panel: top navigation, Circuit tab & settings pages
 │   ├── data_manager.py     # One-click connectome download & first-run setup
 │   ├── eyebuild.py         # Medulla column alignment & ommatidial cone projection
 │   ├── eyeview.py          # Shared-memory snapshots for the fly's-eye preview
@@ -386,7 +388,8 @@ NeuroPest/
 │   ├── render.py           # Procedural vector fly & multi-skin sprite renderer
 │   ├── runner.py           # Background simulation worker, shared-memory slot map & lab protocol
 │   ├── states.py           # Behavioral states, gears and the lab's neuron groups
-│   ├── theme.py            # Modern UI styling, color palettes & tray icons
+│   ├── strips.py           # Kymograph strips, the ethogram and the Circuit tab network
+│   ├── theme.py            # Fluorescence-microscope theme: colour tokens, stylesheet, tray icons
 │   ├── toy_circuit.py      # Small synthetic circuit (runs without the connectome)
 │   ├── tray.py             # System tray icon & menu
 │   ├── vision.py           # Retinotopic feature detectors (looming & small target)

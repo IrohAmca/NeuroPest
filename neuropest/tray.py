@@ -1,11 +1,24 @@
 """Tray icon and menu: the icon's eyes follow the fly's behaviour state."""
 from __future__ import annotations
 
-from PySide6.QtCore import QTimer
-from PySide6.QtGui import QAction
+from PySide6.QtCore import Qt, QTimer
+from PySide6.QtGui import QAction, QColor, QIcon, QPainter, QPixmap
 from PySide6.QtWidgets import QApplication, QMenu, QSystemTrayIcon
 
 from .theme import STATE_STYLE, fly_icon
+
+
+def _dot(colour: str, size: int = 12) -> QIcon:
+    """A filled circle in `colour`: the state dot of the menu's status line."""
+    pm = QPixmap(size, size)
+    pm.fill(Qt.transparent)
+    p = QPainter(pm)
+    p.setRenderHint(QPainter.Antialiasing)
+    p.setPen(Qt.NoPen)
+    p.setBrush(QColor(colour))
+    p.drawEllipse(1, 1, size - 2, size - 2)
+    p.end()
+    return QIcon(pm)
 
 
 class Tray(QSystemTrayIcon):
@@ -13,6 +26,8 @@ class Tray(QSystemTrayIcon):
         super().__init__(fly_icon(), app)
         self.ctrl, self.runner = ctrl, runner
         self._icons = {s: fly_icon(s) for s in STATE_STYLE}
+        self._dots = {s: _dot(c) for s, (c, _) in STATE_STYLE.items()}
+        self._dot_idle = _dot("#4a6450")
         self._shown = None
 
         menu = QMenu()
@@ -63,4 +78,5 @@ class Tray(QSystemTrayIcon):
         name = STATE_STYLE[state][1] if state in STATE_STYLE else ("Starting" if r.alive else "Stopped")
         self.setIcon(self._icons.get(state, self._icons["stand"]))
         self.setToolTip(f"NeuroPest · {name}{hunger_str}")
+        self.status.setIcon(self._dots.get(state, self._dot_idle))
         self.status.setText(f"Fly: {name}{hunger_str}")
